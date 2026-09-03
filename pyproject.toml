@@ -1,0 +1,29 @@
+[project]
+name = "voice-agent-panel"
+version = "0.1.0"
+description = "AI voice panel for Boost Camp Oslo"
+requires-python = ">=3.12"
+dependencies = [
+    "panel-core",
+    "panel-sim",
+]
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+panel-core = { workspace = true }
+panel-sim = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.pytest.ini_options]
+testpaths = ["packages"]

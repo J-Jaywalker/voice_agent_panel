@@ -1,0 +1,65 @@
+# --- Secrets -------------------------------------------------------------
+# This project holds Anthropic, Speechmatics and TTS credentials. Never commit.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
+
+# --- Python --------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# NOTE: uv.lock IS committed — this is an application, not a library, and the
+# live show must run against a known-good resolved dependency set.
+
+# --- Tooling caches ------------------------------------------------------
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# --- Rehearsal artefacts -------------------------------------------------
+# Event logs are large and numerous. Promote a specific one to a test fixture
+# under packages/panel_core/tests/fixtures/ if it earns regression-test status.
+recordings/*
+!recordings/.gitkeep
+
+# LiveKit console-mode captures
+console-recordings/
+
+# Audio: pre-rendered TTS, soundcheck captures, venue recordings
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.m4a
+
+# --- Model caches --------------------------------------------------------
+# VAD / turn-detector weights are downloaded at runtime, not vendored.
+.cache/
+models/
+*.onnx
+
+# --- Frontend (apps/operator, apps/videowall) ----------------------------
+node_modules/
+.next/
+.turbo/
+*.tsbuildinfo
+
+# --- Editors / OS --------------------------------------------------------
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# --- Claude Code ---------------------------------------------------------
+# Project settings are shared; personal overrides are not.
+.claude/settings.local.json

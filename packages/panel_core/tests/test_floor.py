@@ -1,0 +1,400 @@
+"""Floor-control tests.
+
+These are the scoping doc's acceptance criteria, expressed as assertions.
+Because the core is pure, each of these runs in microseconds and cannot flake.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from panel_core import (
+    HUMAN,
+    AgentProposal,
+    AgentSpeechEnded,
+    AgentSpeechStarted,
+    CueModerator,
+    FloorConfig,
+    FloorController,
+    HumanSpeechStarted,
+    InjectDirective,
+    OperatorAction,
+    OperatorCommand,
+    PanelCast,
+    PanelState,
+    RequestProposals,
+    Signals,
+    StartSpeech,
+    StopReason,
+    StopSpeech,
+    Tick,
+    TranscriptUpdated,
+    TurnYielded,
+)
+
+PERSONA_DIR = Path(__file__).resolve().parents[3] / "personas"
+
+
+@pytest.fixture
+def cast() -> PanelCast:
+    return PanelCast.from_dir(PERSONA_DIR)
+
+
+@pytest.fixture
+def fc(cast: PanelCast) -> FloorController:
+    return FloorController(cast, FloorConfig())
+
+
+@pytest.fixture
+def state(cast: PanelCast) -> PanelState:
+    return PanelState.for_agents(cast.ids())
+
+
+def run(fc: FloorController, state: PanelState, *events):
+    """Fold a sequence of events, collecting every command emitted."""
+    commands = []
+    for event in events:
+        state, cmds = fc.reduce(state, event)
+        commands.extend(cmds)
+    return state, commands
+
+
+def strong(**overrides) -> Signals:
+    base = {
+        "relevance": 0.9,
+        "urgency": 0.5,
+        "disagreement": 0.3,
+        "confidence": 0.9,
+        "expertise": 0.6,
+    }
+    base.update(overrides)
+    return Signals(**base)
+
+
+def weak() -> Signals:
+    return Signals(relevance=0.1, urgency=0.05, disagreement=0.0, confidence=0.2, expertise=0.0)
+
+
+# ---------------------------------------------------------------- human first
+
+
+def test_agent_stops_immediately_when_human_speaks(fc, state):
+    """Ricky always wins, and with zero overlap."""
+    state, _ = run(
+        fc,
+        state,
+        AgentProposal(t=0.0, agent="wayne", utterance="As I was saying...", signals=strong()),
+        TurnYielded(t=1.0),
+        AgentSpeechStarted(t=1.1, agent="wayne"),
+    )
+    assert state.speaking == "wayne"
+
+    state, cmds = fc.reduce(state, HumanSpeechStarted(t=2.0))
+
+    stops = [c for c in cmds if isinstance(c, StopSpeech)]
+    assert len(stops) == 1
+    assert stops[0].agent == "wayne"
+    assert stops[0].reason is StopReason.HUMAN_INTERRUPT
+    assert stops[0].overlap_ms == 0, "must never talk over the moderator"
+    assert state.speaking is None
+    assert state.floor_holder == HUMAN
+
+
+def test_human_turn_invalidates_speculative_proposals(fc, state):
+    state, _ = run(
+        fc, state, AgentProposal(t=0.0, agent="dex", utterance="Historically...", signals=strong())
+    )
+    assert state.proposals
+    state, _ = fc.reduce(state, HumanSpeechStarted(t=0.5))
+    assert not state.proposals
+
+
+# ------------------------------------------------------------- direct address
+
+
+def test_addressed_agent_gets_the_floor_over_a_higher_score(fc, state):
+    """'So Wayne, what do you think' beats Dex's better score."""
+    state, _ = run(
+        fc,
+        state,
+        TranscriptUpdated(
+            t=0.0, speaker=HUMAN, text="So Wayne, what about human oversight?", is_final=True
+        ),
+        AgentProposal(t=0.5, agent="dex", utterance="Historically...", signals=strong()),
+        AgentProposal(t=0.6, agent="wayne", utterance="Completely useless.", signals=weak()),
+    )
+    assert state.addressed_agent == "wayne"
+
+    state, cmds = fc.reduce(state, TurnYielded(t=1.0))
+    starts = [c for c in cmds if isinstance(c, StartSpeech)]
+    assert [s.agent for s in starts] == ["wayne"]
+    assert state.addressed_agent is None, "invitation is consumed by the grant"
+
+
+def test_address_detection_ignores_unnamed_questions(fc, state):
+    state, _ = fc.reduce(
+        fc_state := state, TranscriptUpdated(t=0.0, speaker=HUMAN, text="What do you all think?", is_final=True)
+    )
+    assert state.addressed_agent is None
+    del fc_state
+
+
+# ------------------------------------------------------------------ scoring
+
+
+def test_open_question_grants_floor_to_strongest_case(fc, state):
+    state, _ = run(
+        fc,
+        state,
+        TranscriptUpdated(t=0.0, speaker=HUMAN, text="Where are we now?", is_final=True),
+        AgentProposal(t=0.5, agent="dex", utterance="Historically...", signals=strong()),
+        AgentProposal(t=0.6, agent="melia", utterance="Mm.", signals=weak()),
+    )
+    _, cmds = fc.reduce(state, TurnYielded(t=1.0))
+    assert [c.agent for c in cmds if isinstance(c, StartSpeech)] == ["dex"]
+
+
+def test_silence_is_a_legitimate_outcome(fc, state):
+    """Weak proposals lose to saying nothing."""
+    state, _ = run(fc, state, AgentProposal(t=0.5, agent="melia", utterance="Mm.", signals=weak()))
+    _, cmds = fc.reduce(state, TurnYielded(t=1.0))
+    assert not [c for c in cmds if isinstance(c, StartSpeech)]
+
+
+def test_agent_can_hand_off_to_a_better_placed_colleague(fc, state):
+    """'That's actually your area, Wayne.'"""
+    state, _ = run(
+        fc,
+        state,
+        AgentProposal(
+            t=0.5, agent="dex", utterance="That's your area.", signals=strong(defer_to="wayne")
+        ),
+        AgentProposal(t=0.6, agent="wayne", utterance="Well, that's where —", signals=weak()),
+    )
+    _, cmds = fc.reduce(state, TurnYielded(t=1.0))
+    assert [c.agent for c in cmds if isinstance(c, StartSpeech)] == ["wayne"]
+
+
+# --------------------------------------------------------------- interrupting
+
+
+def test_strong_disagreement_interrupts_a_speaking_agent(fc, state):
+    state, _ = run(
+        fc,
+        state,
+        AgentProposal(t=0.0, agent="wayne", utterance="Completely useless.", signals=strong()),
+        TurnYielded(t=1.0),
+        AgentSpeechStarted(t=1.1, agent="wayne"),
+    )
+
+    state, cmds = fc.reduce(
+        state,
+        AgentProposal(
+            t=5.0,  # past the interrupt grace window
+            agent="dex",
+            utterance="Sorry, I've got to disagree there.",
+            signals=strong(disagreement=0.96, urgency=0.9),
+        ),
+    )
+    stops = [c for c in cmds if isinstance(c, StopSpeech)]
+    starts = [c for c in cmds if isinstance(c, StartSpeech)]
+    assert stops[0].agent == "wayne"
+    assert stops[0].reason is StopReason.AGENT_INTERRUPT
+    assert stops[0].overlap_ms > 0, "brief overlap is what reads as a real argument"
+    assert starts[0].agent == "dex"
+
+
+def test_no_interrupt_inside_the_grace_window(fc, state):
+    """Cutting in half a second into a turn just looks broken."""
+    state, _ = run(
+        fc,
+        state,
+        AgentProposal(t=0.0, agent="wayne", utterance="Look —", signals=strong()),
+        TurnYielded(t=1.0),
+        AgentSpeechStarted(t=1.1, agent="wayne"),
+    )
+    _, cmds = fc.reduce(
+        state,
+        AgentProposal(
+            t=1.5, agent="dex", utterance="No.", signals=strong(disagreement=1.0, urgency=1.0)
+        ),
+    )
+    assert not [c for c in cmds if isinstance(c, StopSpeech)]
+
+
+def test_mild_disagreement_does_not_interrupt(fc, state):
+    state, _ = run(
+        fc,
+        state,
+        AgentProposal(t=0.0, agent="wayne", utterance="Look —", signals=strong()),
+        TurnYielded(t=1.0),
+        AgentSpeechStarted(t=1.1, agent="wayne"),
+    )
+    _, cmds = fc.reduce(
+        state,
+        AgentProposal(
+            t=6.0, agent="melia", utterance="Mm.", signals=strong(disagreement=0.4, urgency=0.4)
+        ),
+    )
+    assert not [c for c in cmds if isinstance(c, StopSpeech)]
+
+
+# --------------------------------------------------------------- turn length
+
+
+def test_wrap_up_directive_then_hard_stop(fc, state):
+    """The 45-second monologue is the classic LLM-panel failure."""
+    state, _ = run(
+        fc,
+        state,
+        AgentProposal(t=0.0, agent="wayne", utterance="Look —", signals=strong()),
+        TurnYielded(t=1.0),
+        AgentSpeechStarted(t=1.0, agent="wayne"),
+    )
+    persona = fc.cast["wayne"]
+
+    state, cmds = fc.reduce(state, Tick(t=1.0 + persona.target_turn_seconds + 0.1))
+    assert [c for c in cmds if isinstance(c, InjectDirective)]
+
+    # Only sent once.
+    state, cmds = fc.reduce(state, Tick(t=1.0 + persona.target_turn_seconds + 1.0))
+    assert not [c for c in cmds if isinstance(c, InjectDirective)]
+
+    state, cmds = fc.reduce(state, Tick(t=1.0 + persona.max_turn_seconds + 0.1))
+    stops = [c for c in cmds if isinstance(c, StopSpeech)]
+    assert stops and stops[0].reason is StopReason.TURN_LIMIT
+    assert state.speaking is None
+
+
+# ------------------------------------------------------------- safety valves
+
+
+def test_floor_returns_to_moderator_after_consecutive_agent_turns(fc, state):
+    """The panel must not drift into an unbounded machine-to-machine loop."""
+    t = 0.0
+    for i in range(fc.config.max_consecutive_agent_turns):
+        agent = ("dex", "wayne", "melia")[i % 3]
+        state, _ = run(
+            fc,
+            state,
+            AgentProposal(t=t, agent=agent, utterance="...", signals=strong()),
+            TurnYielded(t=t + 0.1),
+            AgentSpeechStarted(t=t + 0.2, agent=agent),
+            AgentSpeechEnded(t=t + 5.0, agent=agent, completed=True),
+        )
+        t += 30.0
+
+    assert state.consecutive_agent_turns >= fc.config.max_consecutive_agent_turns
+    state, cmds = run(
+        fc, state, AgentProposal(t=t, agent="dex", utterance="...", signals=strong()), TurnYielded(t=t + 1)
+    )
+    assert [c for c in cmds if isinstance(c, CueModerator)]
+    assert not [c for c in cmds if isinstance(c, StartSpeech)]
+
+
+def test_kill_switch_silences_everything_and_blocks_new_turns(fc, state):
+    state, _ = run(
+        fc,
+        state,
+        AgentProposal(t=0.0, agent="wayne", utterance="...", signals=strong()),
+        TurnYielded(t=1.0),
+        AgentSpeechStarted(t=1.1, agent="wayne"),
+    )
+    state, cmds = fc.reduce(state, OperatorCommand(t=2.0, action=OperatorAction.KILL_ALL))
+    assert [c for c in cmds if isinstance(c, StopSpeech) and c.reason is StopReason.KILL]
+
+    _, cmds = run(
+        fc,
+        state,
+        AgentProposal(t=3.0, agent="dex", utterance="...", signals=strong()),
+        TurnYielded(t=4.0),
+    )
+    assert not [c for c in cmds if isinstance(c, StartSpeech)], "killed panel stays silent"
+
+
+def test_muted_agent_never_wins_the_floor(fc, state):
+    state, _ = fc.reduce(
+        state, OperatorCommand(t=0.0, action=OperatorAction.MUTE_AGENT, agent="wayne")
+    )
+    state, _ = run(fc, state, AgentProposal(t=0.5, agent="wayne", utterance="...", signals=strong()))
+    _, cmds = fc.reduce(state, TurnYielded(t=1.0))
+    assert not [c for c in cmds if isinstance(c, StartSpeech)]
+
+
+# -------------------------------------------------------------- speculation
+
+
+def test_partials_trigger_debounced_proposal_requests(fc, state):
+    state, cmds = fc.reduce(
+        state, TranscriptUpdated(t=10.0, speaker=HUMAN, text="So what", is_final=False)
+    )
+    assert [c for c in cmds if isinstance(c, RequestProposals)]
+
+    # Too soon — debounced.
+    state, cmds = fc.reduce(
+        state, TranscriptUpdated(t=10.1, speaker=HUMAN, text="So what do", is_final=False)
+    )
+    assert not [c for c in cmds if isinstance(c, RequestProposals)]
+
+    state, cmds = fc.reduce(
+        state,
+        TranscriptUpdated(t=10.0 + fc.config.speculation_interval_s + 0.01, speaker=HUMAN,
+                          text="So what do you think", is_final=False),
+    )
+    assert [c for c in cmds if isinstance(c, RequestProposals)]
+
+
+def test_final_transcript_always_requests_proposals(fc, state):
+    """Regression: the debounce must throttle partials only.
+
+    A human turn landing inside the debounce window — which is exactly what
+    happens on the turn straight after an agent finishes — was getting no
+    candidates at all, so the panel fell silent.
+    """
+    state, _ = fc.reduce(
+        state, TranscriptUpdated(t=10.0, speaker=HUMAN, text="So", is_final=False)
+    )
+    state, cmds = fc.reduce(
+        state, TranscriptUpdated(t=10.05, speaker=HUMAN, text="So what?", is_final=True)
+    )
+    assert [c for c in cmds if isinstance(c, RequestProposals)]
+
+
+def test_turn_immediately_after_an_agent_finishes_is_not_starved(fc, state):
+    """End-to-end shape of the bug the smoke test caught."""
+    state, _ = run(
+        fc,
+        state,
+        AgentProposal(t=0.0, agent="wayne", utterance="Look —", signals=strong()),
+        TurnYielded(t=0.1),
+        AgentSpeechStarted(t=0.2, agent="wayne"),
+        AgentSpeechEnded(t=5.0, agent="wayne", completed=True),
+    )
+    # Ricky comes straight back in at the same instant the agent stopped.
+    state, cmds = run(
+        fc,
+        state,
+        HumanSpeechStarted(t=5.0),
+        TranscriptUpdated(t=5.0, speaker=HUMAN, text="What holds it back?", is_final=True),
+    )
+    assert [c for c in cmds if isinstance(c, RequestProposals)]
+
+
+# ------------------------------------------------------------------- replay
+
+
+def test_reduce_is_deterministic(fc, cast):
+    """Same events in, same commands out — the basis of replayable rehearsals."""
+    events = [
+        TranscriptUpdated(t=0.0, speaker=HUMAN, text="So Wayne, oversight?", is_final=True),
+        AgentProposal(t=0.5, agent="wayne", utterance="Useless.", signals=strong()),
+        AgentProposal(t=0.6, agent="dex", utterance="Historically...", signals=strong()),
+        TurnYielded(t=1.0),
+        AgentSpeechStarted(t=1.1, agent="wayne"),
+        AgentProposal(t=6.0, agent="dex", utterance="Disagree.",
+                      signals=strong(disagreement=0.96, urgency=0.95)),
+    ]
+    a = run(fc, PanelState.for_agents(cast.ids()), *events)[1]
+    b = run(fc, PanelState.for_agents(cast.ids()), *events)[1]
+    assert a == b
