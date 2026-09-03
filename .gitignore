@@ -37,6 +37,7 @@ console-recordings/
 
 # Audio: pre-rendered TTS, soundcheck captures, venue recordings
 *.wav
+!packages/panel_runtime/tests/fixtures/*.wav
 *.mp3
 *.flac
 *.ogg

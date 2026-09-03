@@ -19,6 +19,36 @@ class AgentState(str, Enum):
     MUTED = "muted"
 
 
+class InvitationSource(str, Enum):
+    ADDRESS = "address"  # Ricky named an agent and asked them something
+    OPEN = "open"  # Ricky asked the room
+    OPERATOR = "operator"  # the console opened the floor by hand
+
+
+@dataclass(frozen=True, slots=True)
+class Invitation:
+    """Permission for an agent — or the panel — to take the floor.
+
+    The floor is closed by default. This is the object that opens it, and it is
+    spent as it is used. Without one, ``TurnYielded`` returns the floor to the
+    moderator and the panel stays quiet however much it wants to speak.
+    """
+
+    agent: str | None  # None = open to the whole panel
+    turns_remaining: int
+    source: InvitationSource
+    t: float
+
+    def spent(self) -> Invitation:
+        return replace(self, turns_remaining=max(0, self.turns_remaining - 1))
+
+    def is_live(self) -> bool:
+        return self.turns_remaining > 0
+
+    def admits(self, agent_id: str) -> bool:
+        return self.agent is None or self.agent == agent_id
+
+
 @dataclass(frozen=True, slots=True)
 class Proposal:
     agent: str
@@ -53,11 +83,16 @@ class PanelState:
 
     floor_holder: str | None = None  # agent id, HUMAN, or None (open)
     speaking: str | None = None  # agent id currently producing audio
-    addressed_agent: str | None = None  # human named this agent; they get priority
+    # The floor is closed unless this is set. See FEASIBILITY.md 3.8.
+    invitation: Invitation | None = None
     human_speaking: bool = False
 
     transcript: tuple[Utterance, ...] = ()
     partial: str = ""
+
+    # Set while an agent is ducked pending backchannel classification.
+    ducked_agent: str | None = None
+    human_speech_started_at: float | None = None
 
     turn_id: int = 0
     consecutive_agent_turns: int = 0

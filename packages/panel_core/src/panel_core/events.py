@@ -96,15 +96,26 @@ class AgentProposal:
 
 @dataclass(frozen=True, slots=True)
 class AgentSpeechStarted:
+    """An agent's audio has begun."""
+
     t: float
     agent: str
 
 
 @dataclass(frozen=True, slots=True)
 class AgentSpeechEnded:
+    """An agent's turn is over, carrying what it actually said.
+
+    This is how an agent turn enters conversation state. Agent speech never
+    goes near STT — we generated it, so we know it verbatim (CLAUDE.md).
+    Recording it here rather than at the start means an interrupted turn
+    records the words that were spoken, not the ones that were planned.
+    """
+
     t: float
     agent: str
     completed: bool  # False when cut off by an interrupt or the turn limit
+    utterance: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +133,8 @@ class OperatorAction(str, Enum):
     RELEASE_KILL = "release_kill"
     ADVANCE_BEAT = "advance_beat"
     HAND_TO_MODERATOR = "hand_to_moderator"
+    OPEN_FLOOR = "open_floor"  # invite an agent, or the panel if agent is None
+    CLOSE_FLOOR = "close_floor"  # revoke a live invitation
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +142,7 @@ class OperatorCommand:
     t: float
     action: OperatorAction
     agent: str | None = None
+    turns: int = 1  # OPEN_FLOOR only: how many turns the invitation is good for
 
 
 Event = (
@@ -181,6 +195,30 @@ class StopSpeech:
 
 
 @dataclass(frozen=True, slots=True)
+class DuckSpeech:
+    """Attenuate a speaking agent without stopping it.
+
+    The fast reflex. Emitted within one audio buffer of VAD onset, *before* we
+    know whether the human is interrupting or just backchannelling. A human
+    panellist does exactly this: drops their volume when someone says "mm-hm",
+    and stops only if the other person keeps going.
+    """
+
+    agent: str
+    gain_db: float
+    ramp_ms: int
+    reason: str = "human_speech"
+
+
+@dataclass(frozen=True, slots=True)
+class ResumeSpeech:
+    """Restore a ducked agent to full gain — it was only a backchannel."""
+
+    agent: str
+    ramp_ms: int
+
+
+@dataclass(frozen=True, slots=True)
 class RequestProposals:
     """Ask agents for fresh candidate turns against the current transcript."""
 
@@ -194,6 +232,20 @@ class InjectDirective:
 
     agent: str
     text: str
+
+
+@dataclass(frozen=True, slots=True)
+class HandsRaised:
+    """Agents want the floor but have no invitation to take it.
+
+    The panel does not get to act on this — Ricky does. It goes to the operator
+    console and the video wall so a raised hand is *visible* rather than
+    self-served: the audience sees three agents with something to say, and the
+    moderator chooses. That visibility is the comprehension infrastructure the
+    video wall exists for (FEASIBILITY.md 4.6).
+    """
+
+    agents: tuple[tuple[str, float], ...]  # (agent_id, floor_priority), best first
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,4 +265,14 @@ class StateChanged:
     extra: dict[str, object] = field(default_factory=dict)
 
 
-Command = StartSpeech | StopSpeech | RequestProposals | InjectDirective | CueModerator | StateChanged
+Command = (
+    StartSpeech
+    | StopSpeech
+    | DuckSpeech
+    | ResumeSpeech
+    | RequestProposals
+    | InjectDirective
+    | HandsRaised
+    | CueModerator
+    | StateChanged
+)

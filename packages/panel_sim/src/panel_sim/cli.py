@@ -30,6 +30,7 @@ from panel_core import (
     CueModerator,
     FloorConfig,
     FloorController,
+    HandsRaised,
     HumanSpeechStarted,
     InjectDirective,
     OperatorAction,
@@ -108,6 +109,12 @@ class Simulation:
             case InjectDirective():
                 console.print(f"  [yellow]↯ {self.cast[command.agent].name}: wrap up[/]")
 
+            case HandsRaised():
+                hands = "  ".join(
+                    f"{self.cast[a].name} [dim]{score:.2f}[/]" for a, score in command.agents
+                )
+                console.print(f"  [yellow]✋ wants in:[/] {hands} [dim](not invited)[/]")
+
             case CueModerator():
                 console.print(f"  [magenta]▸ hand back to Ricky ({command.reason})[/]")
 
@@ -129,6 +136,18 @@ class Simulation:
             self.emit(
                 AgentProposal(t=self.clock, agent=agent, utterance=utterance, signals=signals)
             )
+
+        # An invitation worth more than one turn keeps the floor with the panel.
+        # Re-opening arbitration is runtime behaviour, not floor logic: the core
+        # stays a reducer and never schedules anything for itself.
+        invitation = self.state.invitation
+        if (
+            self.state.speaking is None
+            and self.state.floor_holder is None
+            and invitation is not None
+            and invitation.is_live()
+        ):
+            self.emit(TurnYielded(t=self.clock))
 
     # ---------------------------------------------------------------------- turns
 
@@ -165,6 +184,13 @@ class Simulation:
         console.print(table if self.state.proposals else "[dim]no live proposals[/]")
 
 
+def _describe(invitation) -> str:
+    if invitation is None:
+        return "closed"
+    who = invitation.agent or "panel"
+    return f"{who}×{invitation.turns_remaining}({invitation.source.value})"
+
+
 def _jsonable(value):
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
@@ -175,9 +201,12 @@ def _jsonable(value):
     return str(value)
 
 
-HELP = """
+HELP = r"""
 [bold]Commands[/]
-  <text>          speak as Ricky
+  <text>          speak as Ricky — a QUESTION invites the panel, a
+                  statement invites nobody
+  /open \[agent] \[n]  open the floor by hand (backstop for a missed cue)
+  /close          revoke a standing invitation
   /scores         show live proposal scores
   /force <agent>  give an agent the floor now
   /mute <agent>   mute / unmute an agent
@@ -227,10 +256,24 @@ def main() -> None:
                 case "state":
                     console.print(
                         f"floor={sim.state.floor_holder} speaking={sim.state.speaking} "
-                        f"addressed={sim.state.addressed_agent} "
+                        f"invitation={_describe(sim.state.invitation)} "
                         f"agent_turns={sim.state.consecutive_agent_turns} "
                         f"killed={sim.state.killed} t={sim.clock:.1f}s"
                     )
+                case "open":
+                    agent, _, turns = arg.partition(" ")
+                    sim.emit(
+                        OperatorCommand(
+                            t=sim.clock,
+                            action=OperatorAction.OPEN_FLOOR,
+                            agent=agent or None,
+                            turns=int(turns) if turns.strip().isdigit() else 1,
+                        )
+                    )
+                    console.print(f"  [dim]floor open to {agent or 'the panel'}[/]")
+                case "close":
+                    sim.emit(OperatorCommand(t=sim.clock, action=OperatorAction.CLOSE_FLOOR))
+                    console.print("  [dim]floor closed[/]")
                 case "force" if arg:
                     sim.emit(
                         OperatorCommand(t=sim.clock, action=OperatorAction.FORCE_AGENT, agent=arg)

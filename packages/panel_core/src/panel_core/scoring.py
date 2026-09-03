@@ -10,10 +10,13 @@ No LLM call happens anywhere in this path (FEASIBILITY.md 3.5).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from .events import Signals
 from .personas import Persona
+
+_WORD_RE = re.compile(r"[a-z']+")
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +47,29 @@ class FloorConfig:
     # Ricky's mic wins instantly and with no overlap.
     human_duck_ms: int = 90
 
+    # --- backchannel discrimination (ADR 0001) ---
+    # The capability given up by not using LiveKit's AgentSession. Their
+    # defaults were min_duration=0.5 + resume_false_interruption; ours ducks
+    # first and classifies after, so responsiveness never trades against
+    # correctness. See FEASIBILITY.md 8.1 S0.2.
+    backchannel_duck_db: float = -15.0
+    duck_ramp_ms: int = 120
+    resume_ramp_ms: int = 220
+    # Human speech longer than this is an interruption regardless of content.
+    backchannel_max_duration_s: float = 0.6
+    # ...or shorter, if it carries this many non-backchannel words.
+    interrupt_min_words: int = 3
+
+    # --- invitation ---
+    # The floor is CLOSED by default. Agents propose constantly (speculation is
+    # what keeps the post-turn gap short) but may only *take* the floor when
+    # Ricky opens it. A statement invites nobody; a question invites the room.
+    # How many agent turns one open invitation is worth before the floor goes
+    # back to the moderator:
+    open_invitation_turns: int = 2
+    # A named agent always gets exactly one.
+    address_invitation_turns: int = 1
+
     # --- speculation ---
     speculation_interval_s: float = 0.8
 
@@ -51,6 +77,31 @@ class FloorConfig:
     # After this many agent turns in a row, hand back to the moderator so the
     # panel cannot drift into an unbounded machine-to-machine conversation.
     max_consecutive_agent_turns: int = 3
+
+
+BACKCHANNEL_LEXICON: frozenset[str] = frozenset(
+    {
+        "mm", "mmm", "mhm", "mmhm", "uhhuh", "uhuh", "hm", "hmm",
+        "yeah", "yep", "yes", "yup", "right", "sure", "ok", "okay",
+        "quite", "indeed", "true", "exactly", "totally", "wow", "oh",
+        "i", "see", "got", "it", "of", "course", "fair", "enough",
+    }
+)
+
+
+def is_backchannel(text: str, *, min_words: int) -> bool:
+    """Is this an acknowledgement rather than a bid for the floor?
+
+    Conservative by construction: unknown words count against backchannel, so
+    anything substantive interrupts. Being wrong towards 'interrupt' is safe
+    (the human wanted the floor anyway); being wrong towards 'backchannel'
+    means talking over Ricky, which is not.
+    """
+    tokens = [t for t in _WORD_RE.findall(text.lower()) if t]
+    if not tokens:
+        return True  # VAD fired but nothing transcribed yet — assume backchannel
+    substantive = [t for t in tokens if t not in BACKCHANNEL_LEXICON]
+    return len(substantive) < min_words
 
 
 def floor_priority(

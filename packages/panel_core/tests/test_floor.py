@@ -15,8 +15,11 @@ from panel_core import (
     AgentSpeechEnded,
     AgentSpeechStarted,
     CueModerator,
+    DuckSpeech,
     FloorConfig,
     FloorController,
+    HandsRaised,
+    HumanSpeechEnded,
     HumanSpeechStarted,
     InjectDirective,
     OperatorAction,
@@ -24,6 +27,7 @@ from panel_core import (
     PanelCast,
     PanelState,
     RequestProposals,
+    ResumeSpeech,
     Signals,
     StartSpeech,
     StopReason,
@@ -72,6 +76,16 @@ def strong(**overrides) -> Signals:
     return Signals(**base)
 
 
+def invite(t: float = 0.0, text: str = "What holds it back?") -> TranscriptUpdated:
+    """Ricky opening the floor.
+
+    Every test that expects an agent to speak must go through one of these.
+    That is the point: without an invitation there is no turn, so the
+    invitation is part of the acceptance criteria, not test scaffolding.
+    """
+    return TranscriptUpdated(t=t, speaker=HUMAN, text=text, is_final=True)
+
+
 def weak() -> Signals:
     return Signals(relevance=0.1, urgency=0.05, disagreement=0.0, confidence=0.2, expertise=0.0)
 
@@ -79,25 +93,100 @@ def weak() -> Signals:
 # ---------------------------------------------------------------- human first
 
 
-def test_agent_stops_immediately_when_human_speaks(fc, state):
-    """Ricky always wins, and with zero overlap."""
+def speaking_agent(fc, state, agent="wayne", t=1.0):
+    """Helper: get an agent onto the floor and speaking."""
     state, _ = run(
         fc,
         state,
-        AgentProposal(t=0.0, agent="wayne", utterance="As I was saying...", signals=strong()),
-        TurnYielded(t=1.0),
-        AgentSpeechStarted(t=1.1, agent="wayne"),
+        invite(t - 1.5),
+        AgentProposal(t=t - 1.0, agent=agent, utterance="As I was saying...", signals=strong()),
+        TurnYielded(t=t),
+        AgentSpeechStarted(t=t + 0.1, agent=agent),
     )
-    assert state.speaking == "wayne"
+    assert state.speaking == agent
+    return state
 
+
+def test_human_speech_ducks_the_agent_within_one_buffer(fc, state):
+    """The reflex. We cannot know yet whether this is a barge-in — duck anyway.
+
+    Ducking rather than stopping is what lets us be fast AND correct: the
+    transcript is ~300ms behind, so waiting to classify would cost
+    responsiveness, and assuming "interrupt" would stutter on every "mm-hm".
+    """
+    state = speaking_agent(fc, state)
     state, cmds = fc.reduce(state, HumanSpeechStarted(t=2.0))
 
+    ducks = [c for c in cmds if isinstance(c, DuckSpeech)]
+    assert len(ducks) == 1
+    assert ducks[0].agent == "wayne"
+    assert ducks[0].gain_db < 0
+    assert not [c for c in cmds if isinstance(c, StopSpeech)], "classification has not run yet"
+    assert state.speaking == "wayne", "the agent is quieter, not stopped"
+    assert state.ducked_agent == "wayne"
+
+
+def test_backchannel_resumes_the_agent(fc, state):
+    """Ricky says 'mm-hm'. The agent must not stop."""
+    state = speaking_agent(fc, state)
+    state, _ = fc.reduce(state, HumanSpeechStarted(t=2.0))
+    state, _ = fc.reduce(
+        state, TranscriptUpdated(t=2.2, speaker=HUMAN, text="mm-hm", is_final=False)
+    )
+    state, cmds = fc.reduce(state, HumanSpeechEnded(t=2.3))
+
+    assert [c for c in cmds if isinstance(c, ResumeSpeech)]
+    assert not [c for c in cmds if isinstance(c, StopSpeech)]
+    assert state.speaking == "wayne", "agent keeps the floor through a backchannel"
+    assert state.ducked_agent is None
+
+
+def test_sustained_speech_commits_an_interrupt_on_duration(fc, state):
+    """Long enough is a bid for the floor, whatever the words turn out to be."""
+    state = speaking_agent(fc, state)
+    state, _ = fc.reduce(state, HumanSpeechStarted(t=2.0))
+    state, cmds = fc.reduce(state, Tick(t=2.0 + fc.config.backchannel_max_duration_s + 0.01))
+
     stops = [c for c in cmds if isinstance(c, StopSpeech)]
-    assert len(stops) == 1
-    assert stops[0].agent == "wayne"
-    assert stops[0].reason is StopReason.HUMAN_INTERRUPT
+    assert stops and stops[0].reason is StopReason.HUMAN_INTERRUPT
     assert stops[0].overlap_ms == 0, "must never talk over the moderator"
     assert state.speaking is None
+    assert state.floor_holder == HUMAN
+
+
+def test_substantive_words_commit_an_interrupt_even_when_brief(fc, state):
+    """'Sorry Dex, let Wayne finish' is short but is not an acknowledgement."""
+    state = speaking_agent(fc, state)
+    state, _ = fc.reduce(state, HumanSpeechStarted(t=2.0))
+    state, cmds = fc.reduce(
+        state,
+        TranscriptUpdated(
+            t=2.15, speaker=HUMAN, text="sorry, could you let Wayne finish", is_final=False
+        ),
+    )
+    stops = [c for c in cmds if isinstance(c, StopSpeech)]
+    assert stops and stops[0].reason is StopReason.HUMAN_INTERRUPT
+    assert state.speaking is None
+    assert state.floor_holder == HUMAN
+
+
+def test_late_substantive_transcript_still_interrupts_after_resume(fc, state):
+    """Safety net for the race: short burst resumes, then the words arrive."""
+    state = speaking_agent(fc, state)
+    state, _ = fc.reduce(state, HumanSpeechStarted(t=2.0))
+    state, cmds = fc.reduce(state, HumanSpeechEnded(t=2.2))
+    assert [c for c in cmds if isinstance(c, ResumeSpeech)], "resumed on duration alone"
+
+    state, cmds = fc.reduce(
+        state, TranscriptUpdated(t=2.5, speaker=HUMAN, text="no, that is wrong", is_final=True)
+    )
+    assert [c for c in cmds if isinstance(c, StopSpeech)], "content overrides the resume"
+    assert state.speaking is None
+
+
+def test_human_speech_with_no_agent_speaking_just_takes_the_floor(fc, state):
+    state, cmds = fc.reduce(state, HumanSpeechStarted(t=1.0))
+    assert not [c for c in cmds if isinstance(c, (DuckSpeech, StopSpeech))]
     assert state.floor_holder == HUMAN
 
 
@@ -118,26 +207,113 @@ def test_addressed_agent_gets_the_floor_over_a_higher_score(fc, state):
     state, _ = run(
         fc,
         state,
-        TranscriptUpdated(
-            t=0.0, speaker=HUMAN, text="So Wayne, what about human oversight?", is_final=True
-        ),
+        invite(0.0, "So Wayne, what about human oversight?"),
         AgentProposal(t=0.5, agent="dex", utterance="Historically...", signals=strong()),
         AgentProposal(t=0.6, agent="wayne", utterance="Completely useless.", signals=weak()),
     )
-    assert state.addressed_agent == "wayne"
+    assert state.invitation.agent == "wayne"
 
     state, cmds = fc.reduce(state, TurnYielded(t=1.0))
     starts = [c for c in cmds if isinstance(c, StartSpeech)]
     assert [s.agent for s in starts] == ["wayne"]
-    assert state.addressed_agent is None, "invitation is consumed by the grant"
+    assert not state.invitation.is_live(), "invitation is spent by the grant"
 
 
-def test_address_detection_ignores_unnamed_questions(fc, state):
-    state, _ = fc.reduce(
-        fc_state := state, TranscriptUpdated(t=0.0, speaker=HUMAN, text="What do you all think?", is_final=True)
+def test_a_named_agent_answers_alone(fc, state):
+    """Asking Wayne is not asking the panel. Dex does not get to answer for him."""
+    state, _ = run(
+        fc,
+        state,
+        invite(0.0, "Wayne, does oversight actually scale?"),
+        AgentProposal(t=0.5, agent="dex", utterance="Historically...", signals=strong()),
     )
-    assert state.addressed_agent is None
-    del fc_state
+    _, cmds = fc.reduce(state, TurnYielded(t=1.0))
+    assert not [c for c in cmds if isinstance(c, StartSpeech)]
+    assert [c for c in cmds if isinstance(c, CueModerator)]
+
+
+def test_an_unnamed_question_opens_the_floor_to_the_panel(fc, state):
+    state, _ = fc.reduce(state, invite(0.0, "What do you all think?"))
+    assert state.invitation is not None
+    assert state.invitation.agent is None, "open to the room, not to one agent"
+
+
+# ------------------------------------------------------- the floor is closed
+
+
+def test_a_statement_invites_nobody(fc, state):
+    """The bug this whole model exists to fix.
+
+    Ricky talking about the product is not a cue. Agents may want the floor —
+    they just do not get to take it.
+    """
+    state, cmds = run(
+        fc,
+        state,
+        TranscriptUpdated(
+            t=0.0,
+            speaker=HUMAN,
+            text="We have been doing real-time transcription for a decade now.",
+            is_final=True,
+        ),
+        AgentProposal(t=0.5, agent="dex", utterance="Historically...", signals=strong()),
+        AgentProposal(t=0.6, agent="wayne", utterance="Rubbish.", signals=strong()),
+    )
+    assert state.invitation is None
+
+    _, cmds = fc.reduce(state, TurnYielded(t=1.0))
+    assert not [c for c in cmds if isinstance(c, StartSpeech)], "nobody was invited"
+    assert [c for c in cmds if isinstance(c, CueModerator)]
+
+
+def test_wanting_the_floor_is_surfaced_to_the_operator(fc, state):
+    """A raised hand is visible, not self-served — Ricky decides."""
+    state, _ = run(
+        fc,
+        state,
+        TranscriptUpdated(t=0.0, speaker=HUMAN, text="That is the state of it.", is_final=True),
+        AgentProposal(t=0.5, agent="dex", utterance="Historically...", signals=strong()),
+        AgentProposal(t=0.6, agent="melia", utterance="Mm.", signals=weak()),
+    )
+    _, cmds = fc.reduce(state, TurnYielded(t=1.0))
+    hands = [c for c in cmds if isinstance(c, HandsRaised)]
+    assert hands, "the operator console needs to see interest it is holding back"
+    assert hands[0].agents[0][0] == "dex", "ranked, best case first"
+
+
+def test_operator_can_open_a_floor_the_patterns_missed(fc, state):
+    """The backstop. Detection is deliberately conservative, so this must work."""
+    state, _ = run(
+        fc,
+        state,
+        TranscriptUpdated(t=0.0, speaker=HUMAN, text="Say more about that.", is_final=True),
+        AgentProposal(t=0.5, agent="dex", utterance="Historically...", signals=strong()),
+    )
+    assert state.invitation is None
+
+    state, _ = fc.reduce(
+        state, OperatorCommand(t=0.9, action=OperatorAction.OPEN_FLOOR, agent=None, turns=1)
+    )
+    _, cmds = fc.reduce(state, TurnYielded(t=1.0))
+    assert [c.agent for c in cmds if isinstance(c, StartSpeech)] == ["dex"]
+
+
+def test_an_open_invitation_is_spent_and_the_floor_goes_back(fc, state):
+    """Two agents on one question, then back to Ricky — not an infinite relay."""
+    config = FloorConfig(open_invitation_turns=1)
+    fc = FloorController(fc.cast, config)
+    state, _ = run(
+        fc,
+        state,
+        invite(0.0),
+        AgentProposal(t=0.5, agent="dex", utterance="Historically...", signals=strong()),
+        TurnYielded(t=1.0),
+        AgentSpeechStarted(t=1.1, agent="dex"),
+    )
+    state, cmds = fc.reduce(state, AgentSpeechEnded(t=6.0, agent="dex", completed=True))
+    assert state.invitation is None
+    assert [c.reason for c in cmds if isinstance(c, CueModerator)] == ["invitation_spent"]
+    assert not [c for c in cmds if isinstance(c, RequestProposals)]
 
 
 # ------------------------------------------------------------------ scoring
@@ -156,10 +332,13 @@ def test_open_question_grants_floor_to_strongest_case(fc, state):
 
 
 def test_silence_is_a_legitimate_outcome(fc, state):
-    """Weak proposals lose to saying nothing."""
-    state, _ = run(fc, state, AgentProposal(t=0.5, agent="melia", utterance="Mm.", signals=weak()))
+    """Weak proposals lose to saying nothing, even on an open invitation."""
+    state, _ = run(
+        fc, state, invite(0.0), AgentProposal(t=0.5, agent="melia", utterance="Mm.", signals=weak())
+    )
     _, cmds = fc.reduce(state, TurnYielded(t=1.0))
     assert not [c for c in cmds if isinstance(c, StartSpeech)]
+    assert [c.reason for c in cmds if isinstance(c, CueModerator)] == ["no_candidate"]
 
 
 def test_agent_can_hand_off_to_a_better_placed_colleague(fc, state):
@@ -167,6 +346,7 @@ def test_agent_can_hand_off_to_a_better_placed_colleague(fc, state):
     state, _ = run(
         fc,
         state,
+        invite(0.0),
         AgentProposal(
             t=0.5, agent="dex", utterance="That's your area.", signals=strong(defer_to="wayne")
         ),
@@ -183,6 +363,7 @@ def test_strong_disagreement_interrupts_a_speaking_agent(fc, state):
     state, _ = run(
         fc,
         state,
+        invite(0.0),
         AgentProposal(t=0.0, agent="wayne", utterance="Completely useless.", signals=strong()),
         TurnYielded(t=1.0),
         AgentSpeechStarted(t=1.1, agent="wayne"),
@@ -210,6 +391,7 @@ def test_no_interrupt_inside_the_grace_window(fc, state):
     state, _ = run(
         fc,
         state,
+        invite(0.0),
         AgentProposal(t=0.0, agent="wayne", utterance="Look —", signals=strong()),
         TurnYielded(t=1.0),
         AgentSpeechStarted(t=1.1, agent="wayne"),
@@ -227,6 +409,7 @@ def test_mild_disagreement_does_not_interrupt(fc, state):
     state, _ = run(
         fc,
         state,
+        invite(0.0),
         AgentProposal(t=0.0, agent="wayne", utterance="Look —", signals=strong()),
         TurnYielded(t=1.0),
         AgentSpeechStarted(t=1.1, agent="wayne"),
@@ -248,6 +431,7 @@ def test_wrap_up_directive_then_hard_stop(fc, state):
     state, _ = run(
         fc,
         state,
+        invite(0.0),
         AgentProposal(t=0.0, agent="wayne", utterance="Look —", signals=strong()),
         TurnYielded(t=1.0),
         AgentSpeechStarted(t=1.0, agent="wayne"),
@@ -278,6 +462,7 @@ def test_floor_returns_to_moderator_after_consecutive_agent_turns(fc, state):
         state, _ = run(
             fc,
             state,
+            invite(t - 0.1),
             AgentProposal(t=t, agent=agent, utterance="...", signals=strong()),
             TurnYielded(t=t + 0.1),
             AgentSpeechStarted(t=t + 0.2, agent=agent),
@@ -287,9 +472,13 @@ def test_floor_returns_to_moderator_after_consecutive_agent_turns(fc, state):
 
     assert state.consecutive_agent_turns >= fc.config.max_consecutive_agent_turns
     state, cmds = run(
-        fc, state, AgentProposal(t=t, agent="dex", utterance="...", signals=strong()), TurnYielded(t=t + 1)
+        fc,
+        state,
+        invite(t),
+        AgentProposal(t=t, agent="dex", utterance="...", signals=strong()),
+        TurnYielded(t=t + 1),
     )
-    assert [c for c in cmds if isinstance(c, CueModerator)]
+    assert [c.reason for c in cmds if isinstance(c, CueModerator)] == ["agent_turn_limit"]
     assert not [c for c in cmds if isinstance(c, StartSpeech)]
 
 
@@ -297,6 +486,7 @@ def test_kill_switch_silences_everything_and_blocks_new_turns(fc, state):
     state, _ = run(
         fc,
         state,
+        invite(0.0),
         AgentProposal(t=0.0, agent="wayne", utterance="...", signals=strong()),
         TurnYielded(t=1.0),
         AgentSpeechStarted(t=1.1, agent="wayne"),
@@ -307,6 +497,7 @@ def test_kill_switch_silences_everything_and_blocks_new_turns(fc, state):
     _, cmds = run(
         fc,
         state,
+        invite(3.0),
         AgentProposal(t=3.0, agent="dex", utterance="...", signals=strong()),
         TurnYielded(t=4.0),
     )
@@ -317,7 +508,12 @@ def test_muted_agent_never_wins_the_floor(fc, state):
     state, _ = fc.reduce(
         state, OperatorCommand(t=0.0, action=OperatorAction.MUTE_AGENT, agent="wayne")
     )
-    state, _ = run(fc, state, AgentProposal(t=0.5, agent="wayne", utterance="...", signals=strong()))
+    state, _ = run(
+        fc,
+        state,
+        invite(0.0, "Wayne, what about oversight?"),
+        AgentProposal(t=0.5, agent="wayne", utterance="...", signals=strong()),
+    )
     _, cmds = fc.reduce(state, TurnYielded(t=1.0))
     assert not [c for c in cmds if isinstance(c, StartSpeech)]
 
@@ -366,6 +562,7 @@ def test_turn_immediately_after_an_agent_finishes_is_not_starved(fc, state):
     state, _ = run(
         fc,
         state,
+        invite(0.0),
         AgentProposal(t=0.0, agent="wayne", utterance="Look —", signals=strong()),
         TurnYielded(t=0.1),
         AgentSpeechStarted(t=0.2, agent="wayne"),
@@ -398,3 +595,36 @@ def test_reduce_is_deterministic(fc, cast):
     a = run(fc, PanelState.for_agents(cast.ids()), *events)[1]
     b = run(fc, PanelState.for_agents(cast.ids()), *events)[1]
     assert a == b
+
+
+def test_agent_speech_enters_the_transcript_without_stt(fc, state):
+    """The rule that keeps the feedback loop closed.
+
+    An agent's words reach conversation state on the event that ends its turn —
+    never by being heard back through a microphone.
+    """
+    state, _ = run(
+        fc,
+        state,
+        invite(0.0),
+        AgentProposal(t=0.5, agent="dex", utterance="Historically, no.", signals=strong()),
+        TurnYielded(t=1.0),
+        AgentSpeechStarted(t=1.1, agent="dex"),
+        AgentSpeechEnded(t=6.0, agent="dex", completed=True, utterance="Historically, no."),
+    )
+    assert state.transcript[-1].speaker == "dex"
+    assert state.transcript[-1].text == "Historically, no."
+
+
+def test_agents_hear_each_other(fc, state):
+    """A second agent's proposal is built against the first agent's words."""
+    state, _ = run(
+        fc,
+        state,
+        invite(0.0),
+        AgentProposal(t=0.5, agent="dex", utterance="Trust is the blocker.", signals=strong()),
+        TurnYielded(t=1.0),
+        AgentSpeechStarted(t=1.1, agent="dex"),
+        AgentSpeechEnded(t=6.0, agent="dex", completed=True, utterance="Trust is the blocker."),
+    )
+    assert "Trust is the blocker." in state.recent_text()
