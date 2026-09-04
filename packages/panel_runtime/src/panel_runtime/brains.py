@@ -72,7 +72,13 @@ _UTTERANCE_OPEN = re.compile(r'"utterance"\s*:\s*"((?:[^"\\]|\\.)*)')
 
 @dataclass(frozen=True, slots=True)
 class BrainConfig:
-    model: str = "claude-opus-5"
+    # S0.7 bake-off (docs/spike-phase0.md): haiku-4.5 is both the cheapest and
+    # the fastest of the three — 2582ms total vs 4110-4129ms for sonnet-5 and
+    # 6207-6218ms for opus-5 — because the cost here is generation time, not
+    # reasoning, and no model/effort setting changes that. Haiku rejects the
+    # `effort` param outright (400), so it is unconfigurable rather than merely
+    # fast: `effort` is omitted from the request whenever the model is a haiku.
+    model: str = "claude-haiku-4-5-20251001"
     effort: str = "medium"
     max_tokens: int = 1200
     # A proposal that arrives after the floor has been decided is worthless, so
@@ -83,6 +89,12 @@ class BrainConfig:
     # candidates. Streaming is the real answer — this bound now only catches a
     # genuinely stuck request.
     timeout_s: float = 12.0
+
+    def output_config(self) -> dict:
+        config: dict = {"format": {"type": "json_schema", "schema": PROPOSAL_SCHEMA}}
+        if not self.model.startswith("claude-haiku"):
+            config["effort"] = self.effort
+        return config
 
 
 class AsyncBrain(Protocol):
@@ -110,10 +122,7 @@ class ClaudeBrain:
                 self.client.messages.create(
                     model=self.config.model,
                     max_tokens=self.config.max_tokens,
-                    output_config={
-                        "effort": self.config.effort,
-                        "format": {"type": "json_schema", "schema": PROPOSAL_SCHEMA},
-                    },
+                    output_config=self.config.output_config(),
                     system=[
                         {
                             "type": "text",
@@ -243,10 +252,7 @@ class StreamingClaudeBrain:
         async with self.client.messages.stream(
             model=self.config.model,
             max_tokens=self.config.max_tokens,
-            output_config={
-                "effort": self.config.effort,
-                "format": {"type": "json_schema", "schema": PROPOSAL_SCHEMA},
-            },
+            output_config=self.config.output_config(),
             system=[
                 {
                     "type": "text",

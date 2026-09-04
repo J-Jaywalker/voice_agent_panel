@@ -65,7 +65,7 @@ class StubBrain:
 class ClaudeBrain:
     """Live brain. Mirrors the production request shape."""
 
-    def __init__(self, model: str = "claude-opus-5", effort: str = "medium") -> None:
+    def __init__(self, model: str = "claude-haiku-4-5-20251001", effort: str = "medium") -> None:
         import anthropic
 
         if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -74,14 +74,19 @@ class ClaudeBrain:
         self.model = model
         self.effort = effort
 
+    def _output_config(self) -> dict:
+        config: dict = {"format": {"type": "json_schema", "schema": PROPOSAL_SCHEMA}}
+        # Haiku rejects the `effort` param outright (400) — see
+        # docs/spike-phase0.md S0.7. Omit it rather than pin an unconfigurable model.
+        if not self.model.startswith("claude-haiku"):
+            config["effort"] = self.effort
+        return config
+
     def propose(self, persona: Persona, state: PanelState) -> tuple[str, Signals] | None:
         response = self.client.messages.create(
             model=self.model,
             max_tokens=1200,
-            output_config={
-                "effort": self.effort,
-                "format": {"type": "json_schema", "schema": PROPOSAL_SCHEMA},
-            },
+            output_config=self._output_config(),
             system=[
                 {
                     "type": "text",

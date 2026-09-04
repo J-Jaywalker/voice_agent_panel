@@ -39,6 +39,7 @@ from speechmatics.rt import (
     ServerMessageType,
     TranscriptionConfig,
     TranscriptResult,
+    Model,
 )
 
 # 16-bit signed LE at 16kHz — the same PCM the VAD and mixer use, so a mic block
@@ -55,7 +56,7 @@ class STTConfig:
     # `model` property — but speechmatics-rt 1.1.1 has no such field, so the
     # SDK is behind the API. Left as-is deliberately rather than guessing at an
     # undocumented parameter; revisit on the next SDK release.
-    operating_point: OperatingPoint = OperatingPoint.ENHANCED
+    model: Model = Model.ENHANCED
     max_delay: float = 0.7
     enable_partials: bool = True
     # End-of-turn tuning (spike S0.6). Too short and Ricky gets cut off
@@ -68,7 +69,7 @@ class STTConfig:
     def to_transcription_config(self, channels: tuple[str, ...]) -> TranscriptionConfig:
         return TranscriptionConfig(
             language=self.language,
-            operating_point=self.operating_point,
+            model=self.model,
             max_delay=self.max_delay,
             enable_partials=self.enable_partials,
             conversation_config=ConversationConfig(

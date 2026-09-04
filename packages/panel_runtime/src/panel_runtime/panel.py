@@ -67,8 +67,12 @@ from panel_core import (
     StartSpeech,
     StopSpeech,
     Tick,
+    TranscriptUpdated,
+    TurnYielded,
 )
 from rich.console import Console
+from rich.live import Live
+from rich.text import Text
 
 from .brains import (
     BrainConfig,
@@ -146,6 +150,8 @@ class PanelRuntime:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._speaking_task: asyncio.Task | None = None
         self._speaking_turn = None
+        self._ricky_final_text = ""
+        self._ricky_live: Live | None = None
         # Live candidates, one per agent, filling while the human is still
         # talking. The floor decides *who* speaks; this holds *what* they say.
         self._candidates: dict[str, Candidate] = {}
@@ -398,10 +404,41 @@ class PanelRuntime:
         finally:
             pump_task.cancel()
 
+    def _ricky_renderable(self, partial: str = "") -> Text:
+        line = Text("  ")
+        line.append("Ricky: ", style="bold")
+        line.append(self._ricky_final_text)
+        if partial:
+            if self._ricky_final_text:
+                line.append(" ")
+            line.append(partial, style="dim")
+        return line
+
+    def _render_ricky_line(self, partial: str = "") -> None:
+        if self._ricky_live is None:
+            self._ricky_live = Live(console=console, auto_refresh=False, transient=False)
+            self._ricky_live.start()
+        self._ricky_live.update(self._ricky_renderable(partial), refresh=True)
+
+    def _close_ricky_line(self) -> None:
+        if self._ricky_live is not None:
+            self._ricky_live.update(self._ricky_renderable(), refresh=True)
+            self._ricky_live.stop()
+            self._ricky_live = None
+        self._ricky_final_text = ""
+
     async def _run_stt(self) -> None:
         """Forward Speechmatics events into the single ordered event path."""
         while self._running:
             event = await self.stt.events.get()
+            if isinstance(event, TranscriptUpdated):
+                if event.is_final:
+                    self._ricky_final_text = f"{self._ricky_final_text} {event.text}".strip()
+                    self._render_ricky_line()
+                else:
+                    self._render_ricky_line(event.text)
+            elif isinstance(event, TurnYielded):
+                self._close_ricky_line()
             self.emit(event)
 
     async def _run_ticks(self) -> None:
