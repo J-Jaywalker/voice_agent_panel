@@ -23,6 +23,7 @@ class InvitationSource(str, Enum):
     ADDRESS = "address"  # Ricky named an agent and asked them something
     OPEN = "open"  # Ricky asked the room
     OPERATOR = "operator"  # the console opened the floor by hand
+    INTRODUCTION = "introduction"  # the one-shot "introduce yourselves" round
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +101,12 @@ class PanelState:
 
     last_proposal_request_t: float = -999.0
     killed: bool = False
+
+    # Agents still owed a turn in the current introduction round, or None if
+    # no round is active. `intro_done` latches permanently once the round
+    # completes and is never reset — the round may run exactly once per show.
+    intro_queue: tuple[str, ...] | None = None
+    intro_done: bool = False
 
     # ---------------------------------------------------------------- helpers
 

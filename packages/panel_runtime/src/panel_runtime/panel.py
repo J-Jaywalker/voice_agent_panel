@@ -13,7 +13,7 @@ Shape of it:
 
     mic ──┬─> Silero VAD ──> HumanSpeechStarted/Ended ─┐
           │                                            ├─> FloorController ──> commands
-          └─> speechmatics-rt ──> TranscriptUpdated ───┤        (pure)              │
+          └─> Agent STT ─────────> TranscriptUpdated ───┤        (pure)              │
                                   TurnYielded ─────────┘                            │
                                                                                     v
         speakers <── Mixer <── TTS <── StartSpeech ·  DuckSpeech · StopSpeech · ResumeSpeech
@@ -210,17 +210,25 @@ class PanelRuntime:
             case StopSpeech():
                 # Audible immediately; the provider is told afterwards.
                 self.mixer.stop(command.agent)
+                task = self._speaking_task
                 if self._speaking_turn is not None:
                     self._speaking_turn.cancel()
-                if self._speaking_task is not None:
-                    self._speaking_task.cancel()
+                if task is not None:
+                    task.cancel()
                 console.print(
                     f"  [red]⏹ {self.cast[command.agent].name}[/] "
                     f"[dim]({command.reason.value})[/]"
                 )
-                self.emit(
-                    AgentSpeechEnded(t=time.monotonic(), agent=command.agent, completed=False)
-                )
+                # `speak()`'s own CancelledError handler emits AgentSpeechEnded
+                # with the utterance actually spoken so far. Emitting it again
+                # here would double-fire the floor's continuation logic (e.g.
+                # popping the same agent out of an introduction round twice).
+                # Only fall back to emitting it ourselves when there is no
+                # task to cancel — nothing else will ever report the stop.
+                if task is None:
+                    self.emit(
+                        AgentSpeechEnded(t=time.monotonic(), agent=command.agent, completed=False)
+                    )
 
             case DuckSpeech():
                 self.mixer.duck(command.agent, command.gain_db, command.ramp_ms)

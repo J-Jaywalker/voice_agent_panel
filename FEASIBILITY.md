@@ -86,7 +86,7 @@ Keep diarization in reserve only if the venue forces a shared/summed feed on you
 |---|---|
 | Audio transport, device I/O, VAD (Silero) | LiveKit, used as a library |
 | TTS + cancellation | LiveKit TTS plugin |
-| STT — one client per **human** mic | **`speechmatics-rt`** direct |
+| STT — one client per **human** mic | **Agent STT** (Speechmatics preview API), raw WebSocket protocol |
 | **Floor arbitration, interrupts, overlap, turn caps** | **`panel_core` (ours)** |
 
 No `AgentSession` for the agent loop. No `speechmatics-voice`. No cloud SFU —
@@ -124,13 +124,12 @@ an async framework wrapped around a live audio pipeline. **Take LiveKit's
 heuristics, not its control flow.** Tracked as a Phase 0 deliverable (§8.1 S0.2).
 
 **Package landscape.** `livekit-plugins-speechmatics` → `speechmatics-voice` →
-`speechmatics-rt` are layers, not alternatives. `speechmatics-rt` (v1.1.1) is the
-thin real-time WebSocket client — `websockets` and `typing-extensions`, nothing
-else. `speechmatics-voice` (v0.2.8) is a voice-agent wrapper whose value is its
-`AgentSession` integration, which we are not using. Skipping it also avoids a
-version skew (it declares `speechmatics-rt>=0.5.3`, an open bound now resolving
-across a major version to 1.1.1) and keeps `onnxruntime` + `transformers` out of
-the tree.
+`speechmatics-rt` were the layered alternatives considered; none of them is what
+we run. STT now talks Speechmatics' **Agent STT** preview API directly over a raw
+`websockets` connection — no Speechmatics SDK in the dependency tree at all, since
+no released client speaks this protocol yet. `speechmatics-voice`'s value was its
+`AgentSession` integration, which we are not using regardless. Keeps
+`onnxruntime` + `transformers` out of the tree.
 
 **Speechmatics Flow is deprecated** — confirmed internally, 3 Sept 2026.
 
@@ -158,10 +157,11 @@ A naive pipeline is: Ricky stops → EOU detected → 3 agents think → arbitra
 | Network/jitter | 50–100ms |
 | **Total to first audio** | **~0.9–1.8s** |
 
-**End-of-turn is now silence-threshold tuning on `speechmatics-rt`.** SMART_TURN
-semantic endpointing ships with the `speechmatics-voice` wrapper we rejected
-(§3.4), so that 300–500ms figure has to be earned by tuning rather than
-inherited — see §8.1 S0.6.
+**End-of-turn detection is native to Agent STT** — its `EndOfTurn` message
+replaces the silence-threshold tuning we previously owned on `speechmatics-rt`.
+There is no local knob for this figure any more; it is earned or lost by the
+provider's turn detector, so it needs measuring against the venue mic rather than
+tuned in code — see §8.1 S0.6.
 
 That's survivable for a panel — real panellists pause too — but it's noticeably slower than human turn-taking, and it stacks up across a 20-minute run.
 
@@ -348,21 +348,21 @@ Calendar is 1 Sept → 21 Oct = ~7 weeks. The doc's phases sum to ~4–5 weeks, 
 ### 8.1 Phase 0 spike — deliverables
 
 Revised 3 Sept. **The integration-tier fork is closed** (§3.4, ADR 0001): LiveKit
-as a library, `speechmatics-rt` direct, floor in `panel_core`. The spike no longer
-compares options — it **validates the risky parts of the chosen path**, which is a
-better use of the same four days.
+as a library, STT direct against the provider's own protocol, floor in
+`panel_core`. The spike no longer compares options — it **validates the risky
+parts of the chosen path**, which is a better use of the same four days.
 
 Confidence in that choice is ~85%. The residual 15% is not "the other tier might
 have been better" — it is "this tier has risks worth measuring". These are them.
 
 | # | Deliverable | Gate |
 |---|---|---|
-| S0.1 | Dependency baseline: `livekit-agents` + `speechmatics-rt` pinned, imports clean, local audio device in and out | No `speechmatics-voice`, no `onnxruntime`. |
+| S0.1 | Dependency baseline: `livekit-agents` pinned, Agent STT reachable over raw `websockets`, imports clean, local audio device in and out | No `speechmatics-voice`, no `onnxruntime`. |
 | S0.2 | **Backchannel discrimination** | The capability we gave up with `AgentSession` (§3.4). Prove "mm-hm" and "right" do **not** stop a speaking agent, while a real barge-in does. Implement as parameters in the reducer, with tests. |
 | S0.3 | Barge-in latency: mic energy → agent audio ducked, owning our own mixer | **< 150ms.** The core claim of the whole architecture. |
 | S0.4 | TTS cancellation mid-utterance | Hard gate — a provider that cannot cancel is disqualified before Phase 2. Decides §10 item 2. |
-| S0.5 | Two `speechmatics-rt` sessions, two mic channels | Identity-by-channel works; no diarization needed (§3.3). |
-| S0.6 | End-of-turn tuning on `speechmatics-rt` silence thresholds | No SMART_TURN, so this must be tuned rather than inherited. Feeds the §3.6 latency budget. |
+| S0.5 | Two Agent STT sessions, two mic channels | Identity-by-channel works; no diarization needed (§3.3). |
+| S0.6 | Measure Agent STT's native end-of-turn latency/accuracy against the venue mic | No local tuning surface any more — this is now a measurement, not a calibration. Feeds the §3.6 latency budget. |
 | S0.7 | Model TTFT bake-off + structured-output stream shape | Sonnet 5 / Haiku 4.5 / Opus 5 fast mode. Confirm signal fields arrive before `utterance`. Decides §10 item 3. |
 
 All of S0.1–S0.4 run against a laptop mic and speakers — no server, no venue
@@ -396,7 +396,7 @@ If item 1 or item 6 cannot be met, that's a material change to the risk profile 
 
 | # | Decision | Owner | Needed by |
 |---|---|---|---|
-| 1 | ~~Audio transport and integration tier~~ — **resolved 3 Sept, ADR 0001**: LiveKit as a library (transport/VAD/TTS), `speechmatics-rt` direct for STT, no `AgentSession`, no cloud SFU, floor in `panel_core` | Eng | ✅ done |
+| 1 | ~~Audio transport and integration tier~~ — **resolved 3 Sept, ADR 0001**: LiveKit as a library (transport/VAD/TTS), STT direct against the provider's own protocol, no `AgentSession`, no cloud SFU, floor in `panel_core` | Eng | ✅ done |
 | 2 | TTS provider (gate on cancellation latency) | Eng | End of Phase 0 |
 | 3 | Agent model + effort setting | Eng | End of Phase 0 |
 | 4 | Final personas, names, fictional employers | Content | End of week 2 |
@@ -412,7 +412,7 @@ If item 1 or item 6 cannot be met, that's a material change to the risk profile 
 1. Promote echo isolation from acceptance criterion to top-level architectural constraint.
 2. Split barge-in (VAD) from comprehension (STT) — don't put transcription in the interrupt path.
 3. One STT channel per human mic; drop the diarization dependency.
-4. Use LiveKit as a *library* (transport, VAD, TTS) rather than a framework — no `AgentSession` for the agent loop, no cloud SFU. STT is `speechmatics-rt` direct, one client per human mic. Floor arbitration stays in `panel_core`. (ADR 0001.)
+4. Use LiveKit as a *library* (transport, VAD, TTS) rather than a framework — no `AgentSession` for the agent loop, no cloud SFU. STT is Agent STT, one client per human mic, no SDK in between. Floor arbitration stays in `panel_core`. (ADR 0001.)
 5. Keep the LLM out of floor arbitration — deterministic core.
 6. Add speculative generation during the human's turn.
 7. Change Amnesty International to a fictional employer.

@@ -5,10 +5,10 @@ description = "I/O adapters: STT, VAD, TTS, audio mixer. Everything panel_core r
 requires-python = ">=3.12"
 dependencies = [
     "panel-core",
-    "speechmatics-rt>=1.1.1",
     "sounddevice>=0.4.7",
     "numpy>=1.26",
-    # Raw WS for TTS: cancellation semantics are the point, so we own them.
+    # Raw WS for TTS (cancellation semantics are the point, so we own them) and
+    # for Speechmatics Agent STT, which has no SDK during preview.
     "websockets>=13.0",
     # LiveKit as a library (VAD, TTS plugins) — not as a framework. ADR 0001.
     # panel_core does not depend on panel_runtime, so core work never pays for this.

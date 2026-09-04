@@ -1,20 +1,23 @@
-"""Speechmatics real-time STT, one channel per human mic.
+"""Speechmatics Agent STT, one WebSocket per human mic.
 
-`speechmatics-rt` direct — not `speechmatics-voice`, not the LiveKit STT plugin,
-not Flow. See ADR 0001 and CLAUDE.md.
+The preview Agent STT endpoint (`/v2/agent`, model `linden-1`) spoken directly
+over raw `websockets` — there is no SDK for it yet, so the protocol is
+hand-rolled here the same way `tts.py` hand-rolls ElevenLabs.
 
 Two things this layer is responsible for and the floor controller is not:
 
-**Channel identity.** One `AsyncMultiChannelClient` carries every human mic on a
-single WebSocket, each tagged with a channel id. Speaker attribution is then a
-property of the wiring rather than of diarisation, which is what makes it
-reliable enough to drive floor decisions (FEASIBILITY.md 3.3).
+**Channel identity.** Agent STT has no multi-channel mode, so each human mic is
+its own connection. That is the stronger form of the same property the
+multi-channel client gave us: speaker attribution is a fact about the wiring,
+not a diarisation result (FEASIBILITY.md 3.3). Diarisation is therefore off —
+there is one speaker on the far end of each socket and we already know who.
 
-**End of turn.** `ConversationConfig.end_of_utterance_silence_trigger` gives us
-`EndOfUtterance` from the server, which becomes `TurnYielded`. This is the
+**End of turn.** `EndOfTurn` from the server becomes `TurnYielded`. This is the
 *understanding* path and it is deliberately not in the barge-in path: VAD owns
 stopping, STT owns understanding (CLAUDE.md). Nothing here is allowed to be on
-the critical path for interrupting an agent.
+the critical path for interrupting an agent — which is why the endpoint's own
+`SpeechStarted`/`SpeechEnded` messages are logged and dropped rather than
+turned into `HumanSpeechStarted`/`HumanSpeechEnded`.
 
 Agent speech never enters this path. Ever. That is the feedback loop that ends
 the show — agent turns enter conversation state as text, because we generated
@@ -25,73 +28,90 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
+import logging
+import os
 import time
 from dataclasses import dataclass
-from typing import Self
+from typing import Any, Self
 
+import websockets
 from panel_core import HUMAN, TranscriptUpdated, TurnYielded
-from speechmatics.rt import (
-    AsyncMultiChannelClient,
-    AudioEncoding,
-    AudioFormat,
-    ConversationConfig,
-    OperatingPoint,
-    ServerMessageType,
-    TranscriptionConfig,
-    TranscriptResult,
-    Model,
-)
+
+log = logging.getLogger(__name__)
 
 # 16-bit signed LE at 16kHz — the same PCM the VAD and mixer use, so a mic block
 # is fed to both without conversion.
 STT_SAMPLE_RATE = 16_000
 
+AGENT_STT_WS = "wss://preview.rt.speechmatics.com/v2/agent"
+
+# The only model the agent endpoint serves during preview.
+DEFAULT_MODEL = "linden-1"
+
 
 @dataclass(frozen=True, slots=True)
 class STTConfig:
-    """Deployment configuration for the transcription session."""
+    """Deployment configuration for the transcription session.
 
+    Agent STT drops several RT-API knobs: no multi-channel, no
+    `max_delay`/`max_delay_mode`, no translation, no audio filtering, no
+    `enable_entities`, no audio events. End-of-turn is the server's own
+    `EndOfTurn` decision rather than a silence trigger we tune, so the old
+    `end_of_utterance_silence_trigger` has no equivalent here.
+    """
+
+    url: str = AGENT_STT_WS
     language: str = "en"
-    # The server emits a deprecation Warning for operating_point, pointing at a
-    # `model` property — but speechmatics-rt 1.1.1 has no such field, so the
-    # SDK is behind the API. Left as-is deliberately rather than guessing at an
-    # undocumented parameter; revisit on the next SDK release.
-    model: Model = Model.ENHANCED
-    max_delay: float = 0.7
+    model: str = DEFAULT_MODEL
+    domain: str | None = None
+    output_locale: str | None = None
+    # One known mic per connection, so identity comes from the wiring.
+    diarization: str = "none"
+    speaker_diarization_config: dict[str, Any] | None = None
     enable_partials: bool = True
-    # End-of-turn tuning (spike S0.6). Too short and Ricky gets cut off
-    # mid-thought; too long and the panel feels sluggish. Re-measure on the
-    # venue rig with the real mics — room tone changes this.
-    end_of_utterance_silence_trigger: float = 0.6
+    punctuation_overrides: dict[str, Any] | None = None
     sample_rate: int = STT_SAMPLE_RATE
     chunk_size: int = 1024
+    connect_timeout_s: float = 5.0
+    # A preview endpoint dropping mid-show must not end the panel. Backoff is
+    # capped low: a socket that stays down for seconds is already a failure the
+    # operator can see, and retrying fast costs us nothing.
+    reconnect_initial_s: float = 0.25
+    reconnect_max_s: float = 4.0
+    close_timeout_s: float = 5.0
 
-    def to_transcription_config(self, channels: tuple[str, ...]) -> TranscriptionConfig:
-        return TranscriptionConfig(
-            language=self.language,
-            model=self.model,
-            max_delay=self.max_delay,
-            enable_partials=self.enable_partials,
-            conversation_config=ConversationConfig(
-                end_of_utterance_silence_trigger=self.end_of_utterance_silence_trigger
-            ),
-            channel_diarization_labels=list(channels),
-        )
+    def to_transcription_config(self) -> dict[str, Any]:
+        config: dict[str, Any] = {
+            "language": self.language,
+            "model": self.model,
+            "enable_partials": self.enable_partials,
+            "diarization": self.diarization,
+        }
+        if self.domain is not None:
+            config["domain"] = self.domain
+        if self.output_locale is not None:
+            config["output_locale"] = self.output_locale
+        if self.punctuation_overrides is not None:
+            config["punctuation_overrides"] = self.punctuation_overrides
+        if self.diarization != "none" and self.speaker_diarization_config is not None:
+            config["speaker_diarization_config"] = self.speaker_diarization_config
+        return config
 
-    def to_audio_format(self) -> AudioFormat:
-        return AudioFormat(
-            encoding=AudioEncoding.PCM_S16LE,
-            sample_rate=self.sample_rate,
-            chunk_size=self.chunk_size,
-        )
+    def to_start_recognition(self) -> dict[str, Any]:
+        return {
+            "message": "StartRecognition",
+            "audio_format": {
+                "type": "raw",
+                "encoding": "pcm_s16le",
+                "sample_rate": self.sample_rate,
+            },
+            "transcription_config": self.to_transcription_config(),
+        }
 
 
 class PushAudioSource:
-    """A live mic dressed up as the file-like object the client wants.
-
-    `speechmatics-rt` streams from anything with a `read`, and awaits it if it
-    is a coroutine (`_audio_sources._make_iter`). That is the hook that lets a
-    real-time source work without a thread or a temp file.
+    """A live mic turned into an awaitable byte stream.
 
     `feed()` is called from the PortAudio callback thread, so it must never
     block, allocate unboundedly, or touch the event loop directly — hence
@@ -103,7 +123,13 @@ class PushAudioSource:
         self._queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=max_blocks)
         self._buffer = bytearray()
         self._closed = False
+        self._eof = False
         self.dropped_blocks = 0
+
+    @property
+    def eof(self) -> bool:
+        """True once the mic has closed and every buffered block is drained."""
+        return self._eof and not self._buffer
 
     def feed(self, pcm: bytes) -> None:
         """Called from the audio thread. Non-blocking by construction."""
@@ -130,15 +156,159 @@ class PushAudioSource:
         self._loop.call_soon_threadsafe(self._queue.put_nowait, None)
 
     async def read(self, size: int) -> bytes:
-        """Await until `size` bytes are available, or the source closes."""
+        """Await until `size` bytes are available, or the source closes.
+
+        Returns short — possibly empty — only at end of stream, so a caller can
+        treat `b""` as "the mic is gone" rather than "nothing yet".
+        """
         while len(self._buffer) < size:
+            if self._eof:
+                break
             block = await self._queue.get()
             if block is None:
+                self._eof = True
                 break
             self._buffer.extend(block)
         chunk = bytes(self._buffer[:size])
         del self._buffer[:size]
         return chunk
+
+
+class _AgentSTTSession:
+    """One mic, one socket, reconnected for as long as the show is running."""
+
+    def __init__(
+        self,
+        *,
+        speaker: str,
+        source: PushAudioSource,
+        config: STTConfig,
+        api_key: str,
+        events: asyncio.Queue,
+        name: str,
+    ) -> None:
+        self._speaker = speaker
+        self._source = source
+        self._config = config
+        self._api_key = api_key
+        self._events = events
+        self._name = name
+        self._running = True
+        self._started = False
+
+    async def run(self) -> None:
+        backoff = self._config.reconnect_initial_s
+        while self._running:
+            self._started = False
+            try:
+                await self._session()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — a dead socket must not end the show
+                log.warning("stt[%s]: session failed: %s", self._name, exc)
+            if not self._running or self._source.eof:
+                return
+            # A socket that carried transcripts and then broke is a transient
+            # fault, not a bad config — retry it at full speed.
+            backoff = (
+                self._config.reconnect_initial_s
+                if self._started
+                else min(backoff * 2, self._config.reconnect_max_s)
+            )
+            await asyncio.sleep(backoff)
+
+    async def _session(self) -> None:
+        async with websockets.connect(
+            self._config.url,
+            additional_headers={"Authorization": f"Bearer {self._api_key}"},
+            open_timeout=self._config.connect_timeout_s,
+        ) as ws:
+            await ws.send(json.dumps(self._config.to_start_recognition()))
+            await self._await_started(ws)
+            self._started = True
+            log.info("stt[%s]: recognition started", self._name)
+
+            seq_no = 0
+
+            async def send_audio() -> None:
+                nonlocal seq_no
+                while True:
+                    frame = await self._source.read(self._config.chunk_size)
+                    if not frame:
+                        return
+                    await ws.send(frame)
+                    seq_no += 1
+
+            receiver = asyncio.create_task(self._receive(ws), name=f"agent-stt-recv-{self._name}")
+            sender = asyncio.create_task(send_audio(), name=f"agent-stt-send-{self._name}")
+            try:
+                done, _ = await asyncio.wait(
+                    {receiver, sender}, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in done:
+                    task.result()
+            finally:
+                sender.cancel()
+                with contextlib.suppress(Exception):
+                    await ws.send(json.dumps({"message": "EndOfStream", "last_seq_no": seq_no}))
+                    await asyncio.wait_for(receiver, timeout=self._config.close_timeout_s)
+                receiver.cancel()
+                await asyncio.gather(receiver, sender, return_exceptions=True)
+
+    async def _await_started(self, ws: websockets.ClientConnection) -> None:
+        while True:
+            message = json.loads(await ws.recv())
+            kind = message.get("message")
+            if kind == "RecognitionStarted":
+                return
+            if kind == "Error":
+                raise RuntimeError(f"StartRecognition rejected: {message}")
+            log.debug("stt[%s]: %s before RecognitionStarted", self._name, kind)
+
+    async def _receive(self, ws: websockets.ClientConnection) -> None:
+        async for raw in ws:
+            message = json.loads(raw)
+            match message.get("message"):
+                case "AddSegment":
+                    self._emit_transcript(message, is_final=True)
+                case "AddPartialSegment":
+                    self._emit_transcript(message, is_final=False)
+                case "EndOfTurn":
+                    # End of turn — the floor may now be arbitrated. This is
+                    # the *understanding* path; the barge-in reflex already
+                    # fired on VAD hundreds of milliseconds ago.
+                    self._events.put_nowait(TurnYielded(t=time.monotonic()))
+                case "SpeechStarted" | "SpeechEnded":
+                    # Deliberately inert. Endpointing for barge-in belongs to
+                    # the local VAD; routing these into the floor would put a
+                    # network round-trip in the interrupt path (CLAUDE.md).
+                    pass
+                case "Warning":
+                    log.warning("stt[%s]: %s", self._name, message)
+                case "Error":
+                    raise RuntimeError(f"server error: {message}")
+                case "EndOfTranscript":
+                    return
+                case _:
+                    log.debug("stt[%s]: %s", self._name, message.get("message"))
+
+    def _emit_transcript(self, message: dict[str, Any], *, is_final: bool) -> None:
+        text = (message.get("segment") or {}).get("transcript", "").strip()
+        if not text:
+            return
+        self._events.put_nowait(
+            TranscriptUpdated(
+                # The runtime clock, not the audio timeline: the reducer reasons
+                # about when it *learned* something, not when it was uttered.
+                t=time.monotonic(),
+                speaker=self._speaker,
+                text=text,
+                is_final=is_final,
+            )
+        )
+
+    def stop(self) -> None:
+        self._running = False
 
 
 class PanelSTT:
@@ -160,61 +330,20 @@ class PanelSTT:
 
         For Boost Camp that is `{"ricky": HUMAN}` today, and a second entry the
         day an audience mic is added — which is a wiring change, not a code one.
+        Each entry is its own connection.
         """
         if not channels:
             raise ValueError("at least one channel is required")
         self.channels = channels
         self.config = config or STTConfig()
-        self._api_key = api_key
+        key = api_key or os.environ.get("SPEECHMATICS_API_KEY")
+        if not key:
+            raise RuntimeError("SPEECHMATICS_API_KEY is not set")
+        self._api_key = key
         self.events: asyncio.Queue = asyncio.Queue()
         self.sources: dict[str, PushAudioSource] = {}
-        self._client: AsyncMultiChannelClient | None = None
-        self._task: asyncio.Task | None = None
-
-    # ------------------------------------------------------------------ wiring
-
-    def _speaker_for(self, channel: str | None) -> str:
-        if channel is None:
-            # Single-channel deployments do not tag results.
-            return next(iter(self.channels.values()))
-        return self.channels.get(channel, HUMAN)
-
-    def _register(self, client: AsyncMultiChannelClient) -> None:
-        def on_transcript(message: dict) -> None:
-            self._emit_transcript(message, is_final=True)
-
-        def on_partial(message: dict) -> None:
-            self._emit_transcript(message, is_final=False)
-
-        def on_end_of_utterance(message: dict) -> None:
-            # End of turn — the floor may now be arbitrated. Note that this is
-            # the *understanding* path; the barge-in reflex already fired on VAD
-            # hundreds of milliseconds ago.
-            del message
-            self.events.put_nowait(TurnYielded(t=time.monotonic()))
-
-        client.on(ServerMessageType.ADD_TRANSCRIPT, on_transcript)
-        client.on(ServerMessageType.ADD_PARTIAL_TRANSCRIPT, on_partial)
-        client.on(ServerMessageType.END_OF_UTTERANCE, on_end_of_utterance)
-
-    def _emit_transcript(self, message: dict, *, is_final: bool) -> None:
-        result = TranscriptResult.from_message(message)
-        text = result.metadata.transcript.strip()
-        if not text:
-            return
-        channel = None
-        if result.results:
-            channel = getattr(result.results[0], "channel", None) or message.get("channel")
-        self.events.put_nowait(
-            TranscriptUpdated(
-                # The runtime clock, not the audio timeline: the reducer reasons
-                # about when it *learned* something, not when it was uttered.
-                t=time.monotonic(),
-                speaker=self._speaker_for(channel),
-                text=text,
-                is_final=is_final,
-            )
-        )
+        self._sessions: dict[str, _AgentSTTSession] = {}
+        self._tasks: list[asyncio.Task] = []
 
     # ------------------------------------------------------------------ session
 
@@ -222,20 +351,19 @@ class PanelSTT:
         loop = asyncio.get_running_loop()
         self.sources = {c: PushAudioSource(loop) for c in self.channels}
 
-        client = AsyncMultiChannelClient(api_key=self._api_key)
-        self._register(client)
-        self._client = client
-
-        self._task = asyncio.create_task(
-            client.transcribe(
-                dict(self.sources),
-                transcription_config=self.config.to_transcription_config(
-                    tuple(self.channels)
-                ),
-                audio_format=self.config.to_audio_format(),
-            ),
-            name="speechmatics-rt",
-        )
+        for channel, speaker in self.channels.items():
+            session = _AgentSTTSession(
+                speaker=speaker or HUMAN,
+                source=self.sources[channel],
+                config=self.config,
+                api_key=self._api_key,
+                events=self.events,
+                name=channel,
+            )
+            self._sessions[channel] = session
+            self._tasks.append(
+                asyncio.create_task(session.run(), name=f"agent-stt-{channel}")
+            )
 
     def feed(self, channel: str, pcm: bytes) -> None:
         """Push one mic block. Safe to call from the PortAudio callback."""
@@ -244,15 +372,21 @@ class PanelSTT:
             source.feed(pcm)
 
     async def stop(self) -> None:
+        for session in self._sessions.values():
+            session.stop()
         for source in self.sources.values():
             source.close()
-        if self._task is not None:
+        if self._tasks:
+            done = asyncio.gather(*self._tasks, return_exceptions=True)
             try:
-                await asyncio.wait_for(self._task, timeout=5.0)
+                await asyncio.wait_for(done, timeout=self.config.close_timeout_s)
             except (TimeoutError, asyncio.CancelledError):
-                self._task.cancel()
-        if self._client is not None:
-            await self._client.close()
+                for task in self._tasks:
+                    task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks = []
+        self._sessions = {}
 
     async def __aenter__(self) -> Self:
         await self.start()

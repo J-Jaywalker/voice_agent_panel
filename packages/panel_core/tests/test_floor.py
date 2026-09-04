@@ -386,6 +386,41 @@ def test_strong_disagreement_interrupts_a_speaking_agent(fc, state):
     assert starts[0].agent == "dex"
 
 
+def test_stale_end_of_an_interrupted_turn_does_not_disturb_the_challenger(fc, state):
+    """The interrupted agent's own AgentSpeechEnded arrives after the
+    challenger already has the floor. It must not re-trigger continuation
+    logic (extra RequestProposals, popping an introduction queue, etc.) —
+    the challenger, not the arbitrator, owns what happens next."""
+    state, _ = run(
+        fc,
+        state,
+        invite(0.0),
+        AgentProposal(t=0.0, agent="wayne", utterance="Completely useless.", signals=strong()),
+        TurnYielded(t=1.0),
+        AgentSpeechStarted(t=1.1, agent="wayne"),
+    )
+    state, cmds = fc.reduce(
+        state,
+        AgentProposal(
+            t=5.0,
+            agent="dex",
+            utterance="Sorry, I've got to disagree there.",
+            signals=strong(disagreement=0.96, urgency=0.9),
+        ),
+    )
+    assert [c.agent for c in cmds if isinstance(c, StartSpeech)] == ["dex"]
+    state, _ = fc.reduce(state, AgentSpeechStarted(t=5.05, agent="dex"))
+    assert state.speaking == "dex"
+
+    state, cmds = fc.reduce(
+        state,
+        AgentSpeechEnded(t=5.1, agent="wayne", completed=False, utterance="Completely..."),
+    )
+    assert state.speaking == "dex", "the challenger keeps the floor"
+    assert not [c for c in cmds if isinstance(c, RequestProposals)]
+    assert not [c for c in cmds if isinstance(c, CueModerator)]
+
+
 def test_no_interrupt_inside_the_grace_window(fc, state):
     """Cutting in half a second into a turn just looks broken."""
     state, _ = run(
@@ -614,6 +649,226 @@ def test_agent_speech_enters_the_transcript_without_stt(fc, state):
     )
     assert state.transcript[-1].speaker == "dex"
     assert state.transcript[-1].text == "Historically, no."
+
+
+# --------------------------------------------------------- introduction round
+
+
+def _introduce(t: float = 0.0) -> TranscriptUpdated:
+    return TranscriptUpdated(
+        t=t, speaker=HUMAN, text="Let's have all of you introduce yourselves.", is_final=True
+    )
+
+
+def test_introduce_yourselves_invites_the_whole_panel(fc, state):
+    state, _ = fc.reduce(state, _introduce(0.0))
+    assert state.invitation is not None
+    assert state.invitation.agent is None
+    assert set(state.intro_queue) == set(fc.cast.ids())
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Let's have all of you introduce yourselves.",
+        "Can everyone give a quick intro?",
+        "Let's do intros before we start.",
+        "Time for introductions.",
+        "Could you introduce yourself to the crowd?",
+        "Why don't you each give an introduction.",
+        "Go ahead and introduce yourself, Wayne.",
+    ],
+)
+def test_introduction_trigger_is_broad(fc, state, text):
+    """Any variation on introduce/introduction/intro must trigger the round —
+    deliberately cast wide, since the one-shot latch is what makes a stray
+    hit cheap and missing the real cue on stage is the worse failure."""
+    state, _ = fc.reduce(state, TranscriptUpdated(t=0.0, speaker=HUMAN, text=text, is_final=True))
+    assert state.intro_queue is not None
+    assert set(state.intro_queue) == set(fc.cast.ids())
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "She's quite introverted.",
+        "That was an introspective answer.",
+        "We have been doing real-time transcription for a decade now.",
+    ],
+)
+def test_introduction_trigger_does_not_false_positive(fc, state, text):
+    state, _ = fc.reduce(state, TranscriptUpdated(t=0.0, speaker=HUMAN, text=text, is_final=True))
+    assert state.intro_queue is None
+
+
+def test_every_agent_gets_exactly_one_introduction_turn(fc, state):
+    """All three must speak, in whatever order the floor scores them."""
+    state, _ = fc.reduce(state, _introduce(0.0))
+
+    spoken = []
+    t = 1.0
+    while state.intro_queue:
+        for agent_id in fc.cast.ids():
+            if agent_id not in (state.intro_queue or ()):
+                continue
+            state, _ = fc.reduce(
+                state,
+                AgentProposal(t=t, agent=agent_id, utterance="Hello.", signals=weak()),
+            )
+        state, cmds = fc.reduce(state, TurnYielded(t=t + 0.1))
+        starts = [c for c in cmds if isinstance(c, StartSpeech)]
+        assert len(starts) == 1, "one winner per turn, never silence during introductions"
+        winner = starts[0].agent
+        assert winner not in spoken, "no repeats"
+        spoken.append(winner)
+        state, _ = fc.reduce(state, AgentSpeechStarted(t=t + 0.2, agent=winner))
+        state, _ = fc.reduce(
+            state, AgentSpeechEnded(t=t + 1.0, agent=winner, completed=True, utterance="Hello.")
+        )
+        t += 2.0
+
+    assert set(spoken) == set(fc.cast.ids())
+    assert state.invitation is None
+    assert state.intro_done is True
+
+
+def test_introductions_cannot_be_retriggered_once_complete(fc, state):
+    state, _ = fc.reduce(state, _introduce(0.0))
+    t = 1.0
+    for agent_id in fc.cast.ids():
+        state, _ = fc.reduce(
+            state, AgentProposal(t=t, agent=agent_id, utterance="Hi.", signals=weak())
+        )
+        state, cmds = fc.reduce(state, TurnYielded(t=t + 0.1))
+        winner = next(c.agent for c in cmds if isinstance(c, StartSpeech))
+        state, _ = fc.reduce(state, AgentSpeechStarted(t=t + 0.2, agent=winner))
+        state, _ = fc.reduce(
+            state, AgentSpeechEnded(t=t + 1.0, agent=winner, completed=True, utterance="Hi.")
+        )
+        t += 2.0
+    assert state.intro_done is True
+
+    # Safety: saying it again does nothing, ever.
+    state, _ = fc.reduce(state, _introduce(t))
+    assert state.invitation is None
+    assert state.intro_queue is None
+
+
+def test_introduction_round_survives_the_agent_turn_limit(fc, state):
+    """Three agents is exactly `max_consecutive_agent_turns` in this config —
+    the safety valve that stops a machine-to-machine relay must not also cut
+    the introduction round one turn short."""
+    config = FloorConfig(max_consecutive_agent_turns=2)
+    fc = FloorController(fc.cast, config)
+    state, _ = fc.reduce(state, _introduce(0.0))
+
+    t = 1.0
+    spoken = []
+    while state.intro_queue:
+        agent_id = state.intro_queue[0]
+        state, _ = fc.reduce(
+            state, AgentProposal(t=t, agent=agent_id, utterance="Hi.", signals=weak())
+        )
+        state, cmds = fc.reduce(state, TurnYielded(t=t + 0.1))
+        starts = [c for c in cmds if isinstance(c, StartSpeech)]
+        assert starts, "must not be cut off by the consecutive-turn safety valve"
+        winner = starts[0].agent
+        spoken.append(winner)
+        state, _ = fc.reduce(state, AgentSpeechStarted(t=t + 0.2, agent=winner))
+        state, _ = fc.reduce(
+            state, AgentSpeechEnded(t=t + 1.0, agent=winner, completed=True, utterance="Hi.")
+        )
+        t += 2.0
+
+    assert set(spoken) == set(fc.cast.ids())
+
+
+def test_a_turn_limit_cutoff_still_advances_the_introduction_round(fc, state):
+    """Regression: a rambling first introduction hitting the hard turn limit
+    must not strand the round. `AgentSpeechEnded(completed=False)` for a
+    turn-limit stop must still pop the queue and ask the rest for a turn —
+    only an agent interrupt (where a challenger already holds the floor)
+    should skip that."""
+    state, _ = fc.reduce(state, _introduce(0.0))
+    first = state.intro_queue[0]
+    state, _ = fc.reduce(
+        state, AgentProposal(t=1.0, agent=first, utterance="I'm...", signals=weak())
+    )
+    state, cmds = fc.reduce(state, TurnYielded(t=1.1))
+    assert [c.agent for c in cmds if isinstance(c, StartSpeech)] == [first]
+    state, _ = fc.reduce(state, AgentSpeechStarted(t=1.2, agent=first))
+
+    # The floor hard-stops the agent for running long — mirrors `_tick`'s
+    # TURN_LIMIT branch: `speaking` is cleared before the StopSpeech is even
+    # issued, same shape as the runtime's real turn-limit path.
+    state, cmds = fc.reduce(
+        state, Tick(t=1.2 + fc.cast[first].max_turn_seconds + 0.1)
+    )
+    assert [c for c in cmds if isinstance(c, StopSpeech)]
+    assert state.speaking is None
+
+    state, cmds = fc.reduce(
+        state,
+        AgentSpeechEnded(t=1.2 + fc.cast[first].max_turn_seconds + 0.2, agent=first,
+                          completed=False, utterance="I'm..."),
+    )
+    assert first not in state.intro_queue, "must still advance, not stall"
+    assert [c for c in cmds if isinstance(c, RequestProposals)]
+
+
+def test_ricky_interrupting_the_round_allows_a_clean_retry(fc, state):
+    """An abandoned round has not 'been done' — the safety latch must not
+    engage, or the show is stuck with two agents introduced and no way to
+    finish."""
+    state, _ = fc.reduce(state, _introduce(0.0))
+    state, _ = fc.reduce(
+        state, AgentProposal(t=1.0, agent="dex", utterance="Hi.", signals=weak())
+    )
+    state, cmds = fc.reduce(state, TurnYielded(t=1.1))
+    winner = next(c.agent for c in cmds if isinstance(c, StartSpeech))
+    state, _ = fc.reduce(state, AgentSpeechStarted(t=1.2, agent=winner))
+
+    # Ricky cuts in mid-round.
+    state, _ = fc.reduce(state, HumanSpeechStarted(t=1.5))
+    state, _ = fc.reduce(
+        state, TranscriptUpdated(t=1.6, speaker=HUMAN, text="hang on, stop", is_final=True)
+    )
+    assert state.invitation is None
+    assert state.intro_queue is None
+    assert state.intro_done is False, "not done — only abandoned"
+
+    state, _ = fc.reduce(state, _introduce(2.0))
+    assert state.invitation is not None
+    assert set(state.intro_queue) == set(fc.cast.ids()), "starts over, nobody is skipped"
+
+
+def test_agents_speaking_outside_the_invitation_do_not_count_as_introduced(fc, state):
+    """A proposal from an agent already checked off must never win again
+    inside the same round."""
+    state, _ = fc.reduce(state, _introduce(0.0))
+    state, _ = fc.reduce(
+        state, AgentProposal(t=1.0, agent="dex", utterance="Hi.", signals=strong())
+    )
+    state, cmds = fc.reduce(state, TurnYielded(t=1.1))
+    first = next(c.agent for c in cmds if isinstance(c, StartSpeech))
+    state, _ = fc.reduce(state, AgentSpeechStarted(t=1.2, agent=first))
+    state, _ = fc.reduce(
+        state, AgentSpeechEnded(t=2.0, agent=first, completed=True, utterance="Hi.")
+    )
+    assert first not in state.intro_queue
+
+    # The agent who already went proposes again with a much stronger score,
+    # alongside one remaining agent's weaker proposal.
+    remaining = state.intro_queue[0]
+    state, _ = fc.reduce(
+        state, AgentProposal(t=2.1, agent=first, utterance="Also...", signals=strong())
+    )
+    state, _ = fc.reduce(
+        state, AgentProposal(t=2.1, agent=remaining, utterance="Hi.", signals=weak())
+    )
+    _, cmds = fc.reduce(state, TurnYielded(t=2.2))
+    winner = [c.agent for c in cmds if isinstance(c, StartSpeech)]
+    assert winner == [remaining], "already introduced — ineligible this round"
 
 
 def test_agents_hear_each_other(fc, state):

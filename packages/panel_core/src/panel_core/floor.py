@@ -66,6 +66,20 @@ _HANDOVER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# The one-shot introduction round. Deliberately not folded into _HANDOVER_RE:
+# this is usually a statement, not a question, and it must guarantee every
+# agent a turn rather than let the strongest score win repeatedly.
+#
+# Cast wide on purpose: "introduce yourselves", "quick introductions",
+# "give us an intro", "let's do intros" all count. The one-shot latch is what
+# makes that safe — a stray hit costs one round, not a recurring hazard, and
+# missing the real cue on stage is the worse failure. Matches "intro",
+# "intros", and anything sharing the "introduc-" stem (introduce/
+# introduces/introducing/introduction/introductions/introduced), but not
+# "introvert"/"introspective" — the optional suffix must reach a word
+# boundary, so a bare "intro" stem followed by more letters does not count.
+_INTRODUCTION_RE = re.compile(r"\bintro(?:duc\w*|s)?\b", re.IGNORECASE)
+
 
 class FloorController:
     """Holds the cast and config; the state itself is passed in and out."""
@@ -190,6 +204,10 @@ class FloorController:
             consecutive_agent_turns=0,
             proposals={},
             invitation=None,  # Ricky is taking the floor back
+            # An incomplete introduction round is abandoned, not spent — it
+            # has not "been done", so the safety latch does not engage and
+            # the phrase can be said again to restart it cleanly.
+            intro_queue=None,
         )
         commands.append(self._paint(state))
         return state, commands
@@ -233,9 +251,16 @@ class FloorController:
         # Finals only. A partial can match a pattern the completed sentence
         # does not, and a stale invitation is a live mic on the wrong agent.
         if event.speaker == HUMAN and event.is_final:
-            invitation = self._detect_invitation(text, t=event.t)
-            if invitation is not None:
-                state = replace(state, invitation=invitation)
+            if (
+                not state.intro_done
+                and state.intro_queue is None
+                and _INTRODUCTION_RE.search(text)
+            ):
+                state = self._start_introductions(state, t=event.t)
+            else:
+                invitation = self._detect_invitation(text, t=event.t)
+                if invitation is not None:
+                    state = replace(state, invitation=invitation)
 
         # Speculate during the human's turn so the gap after end-of-turn is
         # TTS latency only (FEASIBILITY.md 3.6). Debounced here rather than in
@@ -274,7 +299,14 @@ class FloorController:
                 self._paint(state),
             ]
 
-        if state.consecutive_agent_turns >= self.config.max_consecutive_agent_turns:
+        if (
+            invitation.source is not InvitationSource.INTRODUCTION
+            and state.consecutive_agent_turns >= self.config.max_consecutive_agent_turns
+        ):
+            # The introduction round is exempt: it is self-limiting by
+            # construction (bounded by the cast size) and must not be cut
+            # short by the same safety valve that stops a machine-to-machine
+            # relay.
             return state, [CueModerator(reason="agent_turn_limit"), self._paint(state)]
 
         winner = self._arbitrate(state, invitation=invitation, now=event.t)
@@ -368,14 +400,42 @@ class FloorController:
 
         commands: list[Command] = [self._paint(state)]
 
-        if not event.completed:
-            # Cut off — whoever interrupted is already being granted the floor.
+        if not event.completed and state.speaking is not None:
+            # Cut off by an agent interrupt — the challenger was already
+            # granted the floor synchronously, in the same reduce() call that
+            # issued the StopSpeech. `state.speaking` is that challenger, not
+            # this agent (an interrupted turn always clears its own
+            # `speaking` a few lines up), so there is nothing left to
+            # arbitrate here.
+            #
+            # A human interrupt or a turn-limit hard stop also arrives with
+            # `completed=False`, but both clear `state.speaking` to None
+            # themselves before this event lands — so they fall through to
+            # the same continuation logic as a normal completion. That is
+            # deliberate: nobody else has taken the floor, so the panel (or
+            # the introduction round) must still be given its next turn
+            # rather than stalling silently until Ricky speaks again.
             return state, commands
 
         # A completed agent turn does NOT reopen the floor. The panel continues
         # only if the invitation had turns left on it; otherwise it goes back to
         # Ricky, which is what stops three agents relaying to each other.
         state = state.cleared_proposals()
+
+        if state.intro_queue is not None and event.agent in state.intro_queue:
+            remaining = tuple(a for a in state.intro_queue if a != event.agent)
+            if remaining:
+                state = replace(state, intro_queue=remaining, last_proposal_request_t=event.t)
+                commands.append(RequestProposals(agents=remaining, reason="introduction_round"))
+                commands.append(self._paint(state))
+                return state, commands
+
+            # Everyone has introduced themselves. Latch it shut — permanently,
+            # by design — and hand back to the moderator.
+            state = replace(state, intro_queue=None, intro_done=True, invitation=None)
+            commands.append(CueModerator(reason="introductions_complete"))
+            commands.append(self._paint(state))
+            return state, commands
 
         invitation = state.invitation
         if invitation is None or not invitation.is_live():
@@ -450,6 +510,7 @@ class FloorController:
                     floor_holder=None,
                     proposals={},
                     invitation=None,
+                    intro_queue=None,  # abandoned, not spent — safe to retry later
                 )
                 return state, commands + [self._paint(state)]
 
@@ -486,6 +547,7 @@ class FloorController:
                     consecutive_agent_turns=0,
                     proposals={},
                     invitation=None,
+                    intro_queue=None,  # abandoned, not spent — safe to retry later
                 )
                 return state, cmds + [self._paint(state)]
 
@@ -504,7 +566,8 @@ class FloorController:
                 return state, [self._paint(state)]
 
             case OperatorAction.CLOSE_FLOOR:
-                return replace(state, invitation=None), [self._paint(state)]
+                state = replace(state, invitation=None, intro_queue=None)
+                return state, [self._paint(state)]
 
             case OperatorAction.ADVANCE_BEAT:
                 state = replace(state, beat_index=state.beat_index + 1, proposals={})
@@ -516,12 +579,21 @@ class FloorController:
     # ---------------------------------------------------------------- helpers
 
     def _eligible(self, state: PanelState, invitation: Invitation | None) -> dict[str, Proposal]:
+        # During an introduction round, only agents still owed a turn count —
+        # otherwise the strongest scorer could win a second time before the
+        # weaker ones have spoken at all.
+        intro_pending = (
+            state.intro_queue
+            if invitation is not None and invitation.source is InvitationSource.INTRODUCTION
+            else None
+        )
         return {
             a: p
             for a, p in state.proposals.items()
             if not state.agents[a].muted
             and state.agents[a].state is not AgentState.SPEAKING
             and (invitation is None or invitation.admits(a))
+            and (intro_pending is None or a in intro_pending)
         }
 
     def _score(self, state: PanelState, agent_id: str, proposal: Proposal, *, now: float) -> float:
@@ -550,6 +622,12 @@ class FloorController:
             reverse=True,
         )
         best_score, best_agent = scored[0]
+
+        if invitation.source is InvitationSource.INTRODUCTION:
+            # Scoring only orders who goes next. Nobody loses to silence, and
+            # nobody hands off — every agent speaks for itself.
+            return best_agent
+
         if best_score < self.config.min_floor_priority:
             return None
 
@@ -595,6 +673,28 @@ class FloorController:
             t=t,
         )
 
+    def _start_introductions(self, state: PanelState, *, t: float) -> PanelState:
+        """Invite the whole panel to introduce itself, one turn each.
+
+        Unlike an ordinary open invitation, this guarantees every agent a
+        turn — the orchestration layer (floor-priority scoring, via
+        `_arbitrate`) only decides the order, never whether someone gets
+        skipped. Callers must already have checked `intro_done`: this is the
+        one-shot round, and there is no event that resets `intro_done` once
+        it latches.
+        """
+        agents = tuple(state.agents.keys())
+        return replace(
+            state,
+            invitation=Invitation(
+                agent=None,
+                turns_remaining=len(agents),
+                source=InvitationSource.INTRODUCTION,
+                t=t,
+            ),
+            intro_queue=agents,
+        )
+
     def _grant(
         self, state: PanelState, agent_id: str, *, now: float, forced: bool = False
     ) -> tuple[PanelState, list[Command]]:
@@ -635,5 +735,7 @@ class FloorController:
                 "invitation_turns": state.invitation.turns_remaining if state.invitation else 0,
                 "consecutive_agent_turns": state.consecutive_agent_turns,
                 "killed": state.killed,
+                "intro_remaining": state.intro_queue,
+                "intro_done": state.intro_done,
             },
         )

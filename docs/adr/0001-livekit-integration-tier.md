@@ -11,8 +11,11 @@
 
 1. **Use LiveKit as a library, not as a framework.** Take its audio transport, VAD
    (Silero) and TTS plugins. Do **not** use `AgentSession` for the agent loop.
-2. **STT is `speechmatics-rt` directly** — one client per human mic.
-   `speechmatics-voice` is ruled out.
+2. **STT is direct against the provider's own protocol** — one client per human
+   mic, no framework wrapper in between. `speechmatics-voice` is ruled out.
+   (Originally `speechmatics-rt`; superseded 4 Sept 2026 by Agent STT — see
+   addendum below. The reasoning on this page is unaffected: neither is
+   `speechmatics-voice`, neither brings `AgentSession`.)
 3. **Floor arbitration stays in `panel_core`**, which owns the output mixer.
 
 Referred to elsewhere as **Tier B**.
@@ -117,11 +120,9 @@ defaults we cannot regression-test.
   (18 tests green throughout). Keep it that way.
 - We must implement backchannel discrimination ourselves. Track as a Phase 0
   deliverable, not a Phase 2 discovery.
-- We avoid the `speechmatics-voice` 0.2.8 → `speechmatics-rt` >=0.5.3 version
-  skew (an open lower bound now resolving to 1.1.1, across a major version).
-- No `onnxruntime` / `transformers` dependency, since SMART_TURN goes with the
-  wrapper. End-of-turn is silence-threshold tuning on `speechmatics-rt`, so that
-  tuning matters more than it would have.
+- No `onnxruntime` / `transformers` dependency — that comes with the
+  `speechmatics-voice` wrapper, which we don't use regardless of which STT
+  client sits underneath.
 - LiveKit transport remains available if remote/browser participants (video
   wall, remote operator) are ever needed.
 
@@ -136,8 +137,9 @@ risks worth measuring". That is why the spike shifts from *comparing tiers* to
 - < 150 ms barge-in while owning our own mixer — the core claim
 - TTS cancellation — unchanged hard gate on provider choice
 - **Backchannel discrimination** — prove "mm-hm" does not stop an agent
-- Two `speechmatics-rt` sessions, identity-by-channel (§3.3)
-- End-of-turn tuning without SMART_TURN
+- Two STT sessions, identity-by-channel (§3.3)
+- End-of-turn latency/accuracy on the venue mic (now the provider's native
+  detector, not a local threshold — see addendum)
 
 ---
 
@@ -149,10 +151,26 @@ floor. Decide in the room, not in the spec.
 
 ---
 
+## Addendum — 4 September 2026: STT client swapped to Agent STT
+
+The STT client named in decision 2 changed from `speechmatics-rt` (a released
+SDK) to **Agent STT**, a preview WebSocket API, spoken directly with
+`websockets` since no released client supports it yet. This does not reopen
+this ADR — Tier B, "own the mixer," and "no `AgentSession`" are all unaffected.
+What it does change:
+
+- **The end-of-turn silence-threshold tuning this ADR discusses (§"What this
+  costs us", old S0.6) no longer exists.** Agent STT emits its own `EndOfTurn`
+  natively; there is no local knob. This trades a tuning surface we could
+  regression-test in `panel_core` for one we cannot — worth watching in
+  rehearsal, since there is no code-side fix if it's too eager or too slow on
+  the venue rig.
+- `speechmatics-rt` is no longer a dependency at all.
+
 ## References
 
 - FEASIBILITY.md §3.1 (echo isolation), §3.2 (VAD vs STT), §3.3 (channel-per-mic),
   §3.4 (LiveKit), §3.6 (speculation), §3.7 (overlap), §8.1 (spike)
-- `livekit-plugins-speechmatics` 1.7.1 · `speechmatics-voice` 0.2.8 ·
-  `speechmatics-rt` 1.1.1
+- `livekit-plugins-speechmatics` 1.7.1 · `speechmatics-voice` 0.2.8
+- Speechmatics Agent STT: preview API, `wss://preview.rt.speechmatics.com/v2/agent`
 - Speechmatics Flow: deprecated, confirmed internally 3 Sept 2026
