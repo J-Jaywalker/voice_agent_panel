@@ -29,7 +29,7 @@ from .events import (
     TranscriptUpdated,
     TurnYielded,
 )
-from .floor import FloorController
+from .floor import AddressRole, CueReason, FloorController
 from .personas import PanelCast, Persona
 from .prompts import (
     GUARDRAILS,
@@ -37,6 +37,7 @@ from .prompts import (
     build_system_prompt,
     build_turn_prompt,
     sanitise,
+    stable_prefix,
 )
 from .scoring import (
     FloorConfig,
@@ -58,12 +59,14 @@ __all__ = [
     "GUARDRAILS",
     "HUMAN",
     "PROPOSAL_SCHEMA",
+    "AddressRole",
     "AgentProposal",
     "AgentSpeechEnded",
     "AgentSpeechStarted",
     "AgentState",
     "Command",
     "CueModerator",
+    "CueReason",
     "DuckSpeech",
     "Event",
     "FloorConfig",
@@ -98,4 +101,5 @@ __all__ = [
     "is_backchannel",
     "may_interrupt",
     "sanitise",
+    "stable_prefix",
 ]

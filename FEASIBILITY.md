@@ -201,7 +201,7 @@ The doc's schema is a good start. Add:
 
 ```yaml
 agent:
-  name: Dexter-K6
+  name: Dexter
   job_title: Senior AI Infrastructure & Security Engineer
   employer: Irrational Industries        # fictional, always
   voice_id: <tts-voice>

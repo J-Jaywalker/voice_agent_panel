@@ -11,7 +11,8 @@ and the AV requirements the venue needs. Settled decisions live in
 
 ```bash
 uv sync
-uv run pytest              # floor, mixer and chunker criteria, ~0.3s
+uv run pytest              # everything
+uv run pytest packages/panel_core   # floor, mixer, chunker and phrasing criteria, <1s
 uv run panel-sim           # text-mode panel — no audio, no credentials
 uv run panel               # the live pipeline — mic in, agents out
 uv run barge-in            # interrupt reflex only — headphones required
@@ -52,10 +53,13 @@ uv run panel --list-devices
 > audio reaches the mic. Agent audio never enters the STT path by construction,
 > but the VAD will still hear it and duck.
 
-**Ask a question and the panel answers. Make a statement and it stays quiet** —
-that is the whole floor rule, and it is deliberately one a moderator can hold in
-his head on stage. Naming an agent narrows the invitation to them. Agents that
-want in but were not invited show as `✋ wants in`, for Ricky to call on.
+**Ask the panel a question and it answers. Make a statement and it stays quiet**
+— that is the whole floor rule, and it is deliberately one a moderator can hold
+in his head on stage. Naming an agent narrows the invitation to them; a courtesy
+tag like "is that okay?" invites nobody. See
+[Moderator phrasings](#moderator-phrasings) for what the floor does and does not
+recognise. Agents that want in but were not invited show as `✋ wants in`, for
+Ricky to call on.
 
 The event log replays through modified floor logic afterwards, because
 `panel_core` reads no clocks of its own.
@@ -178,12 +182,56 @@ Enforced in `floor.py`, in strict order:
 
 1. **Human moderator** — absolute. Ricky speaking ducks any agent within one
    audio buffer, then stops it or resumes it once classification lands.
-2. **Explicitly invited agent** — "So Wayne, …" outranks any score.
+2. **Explicitly invited agent** — "So Wayne, …" outranks any score, though Wayne
+   may still hand off to a better-placed colleague.
 3. **Strongest contextual case** — weighted signals, deterministic.
 4. **Everyone else** — including saying nothing, which is a legitimate outcome.
 
 Safety valves: per-persona turn-length caps, a consecutive-agent-turn limit that
 hands back to the moderator, and an operator kill switch.
+
+## Moderator phrasings
+
+Who Ricky addressed is decided by **grammatical role, not position in the
+sentence**. Three roles, in strict precedence:
+
+| Role | Example | Addressee |
+|---|---|---|
+| Subject of a request | "can **Melia** speak?", "over to **Melia**", "what about **Melia**" | Melia |
+| Vocative | "**Melia**, can you continue?", "what do you think, **Wayne**?" | Melia / Wayne |
+| Oblique | "sorry for interrupting **Dexter**" | **nobody, ever** |
+
+So "Sorry Dexter, can Melia speak?" invites Melia — Dexter is a vocative on an
+apology, Melia is the subject of the request, and the subject wins. Position-based
+matching got this backwards and put the agent being *stood down* on the PA.
+
+Two non-outcomes matter as much as the outcomes:
+
+- **Courtesy tags invite nobody.** "Is that okay?", "does that work?", "right?"
+  are question-shaped but aimed at the person being interrupted. A question mark
+  alone no longer opens the floor.
+- **Two agents in the same role is ambiguous**, and ambiguity keeps the floor
+  closed and puts the tie in front of the operator. A missed invitation costs
+  one beat; a wrong one puts an agent on the PA over Ricky in front of 400
+  people.
+
+The corpus is the spec.
+[`packages/panel_core/tests/test_address.py`](packages/panel_core/tests/test_address.py)
+holds every phrasing the floor is known to handle and what it is allowed to do
+about each — vocatives, requests, apologies, courtesy tags, statements, ties.
+**When a phrasing misfires in rehearsal, add a row.** That is the intended
+maintenance loop: the spec grows by observation, not by guessing at grammar.
+
+Two consequences for rehearsal:
+
+- **Brief Ricky on the reliable form** — a short vocative and a request, "Melia,
+  carry on." Compound apologies ("sorry Dexter, can Melia speak? sorry for
+  interrupting, is that okay?") are the hardest input the floor sees and the
+  phrasing he is least attached to. Stagecraft is a legitimate mitigation.
+- **A misheard name is a floor failure, not a transcript blemish.** "Melia"
+  transcribed as "Amelia" matched no agent and cost a turn on stage.
+  `personas/*.yaml` carries `aliases` and `sounds_like` for exactly this — the
+  alias is what the floor accepts, `sounds_like` is what STT is told to expect.
 
 ## Conventions
 
@@ -192,6 +240,8 @@ hands back to the moderator, and an operator kill switch.
   TTS. Never send raw model output to a PA.
 - New floor behaviour lands with a test in `packages/panel_core/tests/`. Those
   tests are the scoping doc's acceptance criteria — keep them readable as such.
+- A new moderator phrasing lands as a row in `tests/test_address.py`, not as a
+  tweak to a regex. See [Moderator phrasings](#moderator-phrasings).
 - Audio devices, sample rates and buffer sizes are **deployment config**. The
   panel runs on a different machine at the venue; nothing may be hardcoded and
   no latency measured on a dev box is a result, only a budget.

@@ -52,9 +52,9 @@ def test_does_not_split_inside_a_decimal():
 
 
 def test_does_not_split_on_an_initial():
-    chunks, tail = stream("That is R. Wayne's argument and I do not accept it at all.")
+    chunks, tail = stream("That is J. Smith's argument and I do not accept it at all.")
     spoken = [*chunks, tail]
-    assert any(c and "R. Wayne" in c for c in spoken), "the initial must stay attached"
+    assert any(c and "J. Smith" in c for c in spoken), "the initial must stay attached"
 
 
 def test_short_fragments_are_merged_forward():

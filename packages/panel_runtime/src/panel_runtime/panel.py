@@ -65,6 +65,7 @@ from panel_core import (
     RequestProposals,
     ResumeSpeech,
     StartSpeech,
+    StateChanged,
     StopSpeech,
     Tick,
     TranscriptUpdated,
@@ -108,10 +109,20 @@ class Candidate:
     async def add(self, sentence: str) -> None:
         await self._queue.put(sentence)
 
-    async def close(self) -> None:
+    def close(self) -> None:
+        """Synchronous on purpose: it has to be safe from a cancel handler.
+
+        The queue is unbounded, so putting the sentinel never blocks and there
+        is nothing to await. Making that explicit matters because the one
+        caller that must not be skipped is `_stream_one`'s `CancelledError`
+        path — a stream torn down mid-flight while `speak()` is consuming it
+        would otherwise leave the sentinel unsent, and `speak()` would wait on
+        a queue nobody is ever going to close, holding the floor for the rest
+        of the show.
+        """
         if not self._closed:
             self._closed = True
-            await self._queue.put(None)
+            self._queue.put_nowait(None)
 
     async def sentences(self):
         while True:
@@ -142,7 +153,7 @@ class PanelRuntime:
 
         self.mixer = Mixer(cast.ids(), VAD_SAMPLE_RATE)
         self.brain = StreamingClaudeBrain(BrainConfig())
-        self.stt = PanelSTT({"ricky": "human"}, config=STTConfig())
+        self.stt = PanelSTT({"ricky": "human"}, config=STTConfig.from_cast(cast))
         self.tts = ElevenLabsTTS(TTSConfig()) if use_tts else None
 
         self.events: asyncio.Queue = asyncio.Queue()
@@ -155,8 +166,39 @@ class PanelRuntime:
         # Live candidates, one per agent, filling while the human is still
         # talking. The floor decides *who* speaks; this holds *what* they say.
         self._candidates: dict[str, Candidate] = {}
-        self._proposal_tasks: list[asyncio.Task] = []
+        # One in-flight brain stream per agent, keyed so a re-request can tell
+        # "already running, leave it" from "nothing running, start one" — see
+        # `_request_proposals`. `_proposal_turn` records the `state.turn_id`
+        # each task was started against, which is what makes a genuinely
+        # superseded turn distinguishable from an agent simply being asked
+        # again mid-turn.
+        self._proposal_tasks: dict[str, asyncio.Task] = {}
+        self._proposal_turn: dict[str, int] = {}
         self._running = True
+        self._last_intro_remaining: tuple[str, ...] | None = None
+        self._last_intro_done = False
+        # Diagnostic-only state for `_show_state_change`: what was last
+        # printed, so a repaint that changed nothing stays silent.
+        self._last_invitation: tuple[str | None, str | None] = (None, None)
+        self._last_address_conflict: tuple[str, ...] = ()
+        # True from the moment a synthetic TurnYielded is queued until its
+        # arbitration resolves. Blocks a second proposal from queuing another
+        # one in the meantime — without it, two proposals landing back to
+        # back before the first grant's AgentSpeechStarted comes back around
+        # the queue can each re-open arbitration and award the floor to two
+        # different agents at once.
+        self._rearbitration_inflight = False
+        # The specific synthetic TurnYielded this runtime is waiting on, if
+        # any. Cleared unconditionally once *that exact event* has finished
+        # being reduced — see `_drain_events`. Two panel_core paths
+        # (`_turn_yielded`'s already-speaking guard, `_grant`'s
+        # missing-proposal path) resolve an arbitration with `state, []`: no
+        # `AgentSpeechStarted`, no `CueModerator`. Clearing only on those two
+        # commands left the flag stuck forever whenever one of those paths
+        # fired, gating every later proposal out of re-arbitration. Identity
+        # on the event, not the command it produced, is what makes this
+        # robust to outcomes we cannot enumerate from here.
+        self._pending_rearbitration_event: TurnYielded | None = None
 
         if log_path:
             log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -189,6 +231,56 @@ class PanelRuntime:
             self.state, commands = self.fc.reduce(self.state, event)
             for command in commands:
                 await self._execute(command)
+            if isinstance(event, AgentSpeechStarted):
+                # The floor is genuinely occupied now — safe to consider a
+                # fresh re-arbitration once this agent's turn ends.
+                self._rearbitration_inflight = False
+            if event is self._pending_rearbitration_event:
+                # The synthetic TurnYielded we emitted to trigger this
+                # arbitration attempt has now been fully reduced, whatever the
+                # outcome — a grant, a CueModerator, or one of the silent
+                # `state, []` guards in panel_core that emits neither. The
+                # attempt is resolved either way, so the gate comes down
+                # unconditionally rather than only on the two commands that
+                # happen to fire on the happy path.
+                self._rearbitration_inflight = False
+                self._pending_rearbitration_event = None
+            self._maybe_rearbitrate(event)
+
+    def _maybe_rearbitrate(self, event) -> None:
+        """Re-open arbitration once a proposal lands with the floor idle.
+
+        `_proposal` (panel_core's `floor.py`) only *stores* a candidate — it
+        never grants the floor itself, because a pure reducer must not
+        schedule anything for itself. The floor is only granted from inside
+        `_turn_yielded`, which fires solely on `TurnYielded`, and this
+        runtime's only source of that event is Speechmatics' `EndOfTurn`
+        (`stt.py`). With Ricky silent after handing off multiple turns (e.g.
+        the introduction round, or any open invitation worth more than one
+        turn), nothing would otherwise re-trigger arbitration and the panel
+        would stall with a live invitation and idle proposals forever.
+
+        `panel_sim` has the same requirement and synthesises `TurnYielded`
+        once after gathering a batch of proposals (see its `_gather`). Here
+        proposals stream in one at a time over the wire, so the check runs
+        after each one instead — it is a no-op once someone is already
+        speaking or the invitation is spent.
+        """
+        if not isinstance(event, AgentProposal) or self._rearbitration_inflight:
+            return
+        state = self.state
+        invitation = state.invitation
+        if (
+            state.speaking is None
+            and state.floor_holder is None
+            and not state.human_speaking
+            and invitation is not None
+            and invitation.is_live()
+        ):
+            self._rearbitration_inflight = True
+            turn_yielded = TurnYielded(t=time.monotonic())
+            self._pending_rearbitration_event = turn_yielded
+            self.emit(turn_yielded)
 
     def _record(self, event) -> None:
         if not self.log_path:
@@ -202,6 +294,7 @@ class PanelRuntime:
     async def _execute(self, command) -> None:
         match command:
             case RequestProposals():
+                console.print(f"  [dim]… gathering proposals ({command.reason})[/]")
                 self._request_proposals(command.agents)
 
             case StartSpeech():
@@ -249,37 +342,126 @@ class PanelRuntime:
                 console.print(f"  [yellow]✋ wants in:[/] {hands} [dim](not invited)[/]")
 
             case CueModerator():
-                console.print(f"  [magenta]▸ back to Ricky ({command.reason})[/]")
+                # Arbitration resolved with nobody granted — the floor is
+                # still idle, so a later proposal is free to try again.
+                self._rearbitration_inflight = False
+                # `command.reason` is a `CueReason` — a `str`-mixin `Enum`, so
+                # plain interpolation prints "CueReason.NO_PROPOSALS" rather
+                # than the value. `.value` is what tells "nobody proposed"
+                # apart from "the one agent Ricky named had nothing", which is
+                # the entire point of the enum replacing the old undifferen-
+                # tiated `no_candidate` string.
+                console.print(f"  [magenta]▸ back to Ricky ({command.reason.value})[/]")
+
+            case StateChanged():
+                self._show_state_change(command)
+
+            case _:
+                pass
+
+    def _show_state_change(self, command: StateChanged) -> None:
+        """Surface intro-round progress and invitation/addressee diagnostics.
+
+        `StateChanged` fires on nearly every transition, so this only prints
+        on the fields that changed rather than on every paint. The invitation
+        fields are the whole reason this rewrite happened: the original
+        failure printed `▸ back to Ricky (no_candidate)` twice with no way to
+        tell "nobody proposed" from "the invitation was held by the wrong
+        agent" — that answer was sitting in `extra["invited"]` all along, just
+        never rendered.
+        """
+        remaining = command.extra.get("intro_remaining")
+        if remaining != self._last_intro_remaining:
+            self._last_intro_remaining = remaining
+            if remaining:
+                names = ", ".join(self.cast[a].name for a in remaining)
+                console.print(f"  [dim]intros: {len(remaining)} remaining — {names}[/]")
+
+        done = command.extra.get("intro_done")
+        if done and not self._last_intro_done:
+            self._last_intro_done = True
+            console.print("  [dim]intros: all done[/]")
+
+        invited = command.extra.get("invited")
+        source = command.extra.get("invitation_source")
+        if (invited, source) != self._last_invitation:
+            self._last_invitation = (invited, source)
+            if source is None:
+                console.print("  [dim]floor: closed (no live invitation)[/]")
+            else:
+                who = self.cast[invited].name if invited else "the panel"
+                role = command.extra.get("invitation_role") or "-"
+                rule = command.extra.get("invitation_rule") or "-"
+                console.print(
+                    f"  [dim]floor: invited {who} — {source}/{role} ({rule})[/]"
+                )
+
+        conflict = command.extra.get("address_conflict") or ()
+        if conflict != self._last_address_conflict:
+            self._last_address_conflict = conflict
+            if conflict:
+                names = ", ".join(self.cast[a].name for a in conflict)
+                console.print(
+                    f"  [yellow]✋ ambiguous address:[/] {names} [dim](floor stays closed)[/]"
+                )
 
     # --------------------------------------------------------------- proposals
 
     def _request_proposals(self, agents: tuple[str, ...]) -> None:
-        """Speculate during the human's turn. Supersedes any in-flight request.
+        """Speculate during the human's turn. Additive, not cancel-and-restart.
+
+        The floor re-requests proposals on roughly every 0.8s of partial
+        transcript, and unconditionally on every final segment, but a brain
+        takes 2-3s to reach `SignalsReady`. Cancelling every in-flight stream
+        on each request — the previous behaviour — meant no agent ever
+        finished before `EndOfTurn` arrived: `state.proposals` was reliably
+        empty at the first arbitration, a guaranteed spurious `no_proposals`.
+
+        Only genuinely stale work is torn down: a task started against a turn
+        a grant has since superseded (`state.turn_id` has moved on, so its
+        `Signals` were scored against a conversational moment nobody can act
+        on any more), or an agent no longer in the requested set at all. The
+        agent currently on the PA is never touched here regardless of either
+        test — its task may still be feeding `speak()`'s `Candidate` queue
+        live, and cancelling it would cut off audio already playing.
 
         Each agent streams. Signals arrive first and go straight to the floor
         controller, so arbitration can run while the text is still being
         written. Sentences accumulate in a `Candidate`, ready to be spoken the
         moment that agent is granted the floor.
         """
-        for task in self._proposal_tasks:
+        current_turn = self.state.turn_id
+        requested = set(agents)
+        speaking = self.state.speaking
+
+        for agent_id, task in list(self._proposal_tasks.items()):
+            if agent_id == speaking:
+                continue
+            stale = agent_id not in requested or self._proposal_turn.get(agent_id) != current_turn
+            if not stale:
+                continue
             if not task.done():
                 task.cancel()
-        self._proposal_tasks = []
+            del self._proposal_tasks[agent_id]
+            self._proposal_turn.pop(agent_id, None)
 
         snapshot = self.state
         for agent_id in agents:
-            if agent_id == self.state.speaking:
+            if agent_id == speaking:
                 continue
+            existing = self._proposal_tasks.get(agent_id)
+            if existing is not None and not existing.done():
+                continue  # already in flight against this turn — let it run
             candidate = Candidate(agent_id)
             self._candidates[agent_id] = candidate
-            self._proposal_tasks.append(
-                asyncio.create_task(
-                    self._stream_one(candidate, snapshot), name=f"propose-{agent_id}"
-                )
+            self._proposal_turn[agent_id] = current_turn
+            self._proposal_tasks[agent_id] = asyncio.create_task(
+                self._stream_one(candidate, snapshot), name=f"propose-{agent_id}"
             )
 
     async def _stream_one(self, candidate: Candidate, snapshot: PanelState) -> None:
         persona = self.cast[candidate.agent]
+        spoke = False
         try:
             async for event in self.brain.stream(persona, snapshot):
                 if isinstance(event, SignalsReady):
@@ -295,14 +477,36 @@ class PanelRuntime:
                         )
                     )
                 elif isinstance(event, SentenceReady):
+                    spoke = True
                     await candidate.add(event.text)
                 elif isinstance(event, ProposalComplete):
-                    await candidate.close()
+                    candidate.close()
         except asyncio.CancelledError:
+            # Close before re-raising. `speak()` may already be consuming this
+            # queue — the agent whose turn is being granted is only protected
+            # from `_request_proposals` once `AgentSpeechStarted` has come back
+            # around the event queue and set `state.speaking`, and until then a
+            # turn-superseded teardown can reach a stream that is feeding live
+            # audio. Closing ends that turn with whatever was actually said;
+            # leaving it open wedges the floor.
+            candidate.close()
             raise
         except Exception as exc:  # noqa: BLE001 — one dead brain must not stop the panel
             console.print(f"  [red]x {candidate.agent} brain failed: {str(exc)[:60]}[/]")
-            await candidate.close()
+            candidate.close()
+        finally:
+            if not spoke and self._candidates.get(candidate.agent) is candidate:
+                # This generation produced no speakable text, so it must not be
+                # left parked where a grant can find it. `state.proposals` can
+                # still hold an *earlier* generation's hand-raise for the same
+                # agent — the proposal and the candidate are separate objects
+                # with separate lifetimes, and `_request_proposals` replaces the
+                # candidate whenever the previous stream has finished. Dropping
+                # it makes `_start_speaking` report an agent with nothing to say
+                # instead of printing a name over silence, which is the whole
+                # failure this guard exists for. The identity check is what
+                # keeps a late teardown from evicting a newer, live candidate.
+                del self._candidates[candidate.agent]
 
     # ------------------------------------------------------------------ speech
 
@@ -310,7 +514,14 @@ class PanelRuntime:
         persona = self.cast[command.agent]
         candidate = self._candidates.get(command.agent)
         if candidate is None:
-            console.print(f"  [red]x {persona.name} has no candidate turn[/]")
+            # Either nothing was ever requested for this agent, or the stream
+            # that was requested finished without producing a speakable word
+            # and `_stream_one` dropped it. Both mean the same thing here and
+            # both must be *loud*: the failure this replaces was an agent's
+            # name appearing on stage with nothing under it and the turn quietly
+            # consumed, which from the console was indistinguishable from an
+            # agent choosing to say nothing.
+            console.print(f"  [red]x {persona.name} has nothing to say — turn skipped[/]")
             self.emit(
                 AgentSpeechEnded(t=time.monotonic(), agent=command.agent, completed=False)
             )

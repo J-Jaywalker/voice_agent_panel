@@ -21,7 +21,8 @@ Floor hierarchy, in strict order:
 from __future__ import annotations
 
 import re
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from enum import Enum
 
 from .events import (
     HUMAN,
@@ -54,17 +55,237 @@ from .state import AgentState, Invitation, InvitationSource, PanelState, Proposa
 
 WRAP_UP = "You are running long. Land your point in one more sentence."
 
-# Ricky opened the floor if he asked a question, or handed over explicitly.
-# Deliberately conservative: a missed invitation costs one beat and the operator
-# can open the floor by hand, whereas a false one puts an agent on a PA over the
-# moderator in front of 400 people.
-_QUESTION_RE = re.compile(r"\?\s*$")
+
+class CueReason(str, Enum):
+    """Why the floor is handing back to the moderator.
+
+    These strings are the operator console's and the video wall's vocabulary,
+    so they are an enum rather than scattered literals. The `no_*` family used
+    to be a single `no_candidate`, which told a rehearsal that nobody spoke but
+    not why — "nobody proposed" and "the one agent Ricky named had nothing" are
+    completely different problems and want completely different fixes.
+    """
+
+    NO_INVITATION = "no_invitation"  # Ricky made a remark, not a request
+    AMBIGUOUS_ADDRESS = "ambiguous_address"  # two agents addressed; we do not guess
+    NO_PROPOSALS = "no_proposals"  # the panel had nothing queued at all
+    INVITED_AGENT_SILENT = "invited_agent_silent"  # the named agent had nothing
+    BELOW_FLOOR = "below_floor"  # proposals existed but lost to silence
+    INVITATION_SPENT = "invitation_spent"
+    INVITATION_EXPIRED = "invitation_expired"  # TTL reaped one nobody acted on
+    AGENT_TURN_LIMIT = "agent_turn_limit"
+    INTRODUCTIONS_COMPLETE = "introductions_complete"
+
+
+class AddressRole(str, Enum):
+    """The grammatical role a name occurrence holds in a clause.
+
+    Position is not role. "Sorry, Dexter, can I just interrupt? Uh, Melia, can
+    you continue?" names Dexter first, but Dexter is being *dismissed* — the
+    leftmost name is the one agent who must not get the floor. So we classify
+    each occurrence and take the strongest role, never the earliest.
+    """
+
+    SUBJECT_OF_REQUEST = "subject_of_request"  # "can Melia speak", "over to Melia"
+    VOCATIVE = "vocative"  # "Melia, can you continue?"
+    OBLIQUE = "oblique"  # "sorry for interrupting Dexter" — never an addressee
+
+
+# How strongly a clause resolves. Combined across clauses and across transcript
+# segments by *precedence*, never by recency: an addressee named in the first
+# half of a turn is not undone by a vaguer question in the second half.
+_STRENGTH_SUBJECT = 3
+_STRENGTH_VOCATIVE = 2
+_STRENGTH_OPEN = 1
+
+_ROLE_STRENGTH: dict[AddressRole, int] = {
+    AddressRole.SUBJECT_OF_REQUEST: _STRENGTH_SUBJECT,
+    AddressRole.VOCATIVE: _STRENGTH_VOCATIVE,
+    AddressRole.OBLIQUE: 0,
+}
+
+# Ricky opened the floor if he asked the panel something, or handed over
+# explicitly. Deliberately conservative: a missed invitation costs one beat and
+# the operator can open the floor by hand, whereas a false one puts an agent on
+# a PA over the moderator in front of 400 people.
 _HANDOVER_RE = re.compile(
     r"\b(?:over to you|take (?:that|this) one|jump in|go ahead|your thoughts"
     r"|thoughts on that|any thoughts|anyone|anybody|what say you"
     r"|tell (?:me|us) about|let's hear)\b",
     re.IGNORECASE,
 )
+
+# Continuation cues. "Melia, can you continue to elaborate on that" is a
+# handover even though none of the phrases above appear — the original bug only
+# minted an invitation at all because that sentence happened to end in "?".
+# Gated on `_FIRST_PERSON_RE` so "we continue to invest in this" and "let me
+# elaborate on that" stay statements, which is the whole point of a closed
+# floor.
+_CONTINUATION_RE = re.compile(
+    r"\b(?:continue|elaborate|carry on|go on|say more|said more|expand on"
+    r"|finish your point|keep going|pick (?:that|it) up|take (?:that|it) further"
+    r"|more on that)\b",
+    re.IGNORECASE,
+)
+_FIRST_PERSON_RE = re.compile(
+    r"\b(?:i|i'm|i'll|i've|we|we'll|we've|my|our)\b|\blet (?:me|us)\b",
+    re.IGNORECASE,
+)
+
+# A question aimed at the panel, as opposed to at the moderator's own place in
+# the conversation. A bare "?" is not enough: "is that okay?", "does that
+# work?", "do you mind?" are courtesy tags on the end of Ricky's own sentence
+# and used to open the floor to whoever happened to score best.
+_CONTENT_QUESTION_RE = re.compile(
+    r"\b(?:who|what|which|how|why|where|when|whose|anyone|anybody|everyone"
+    r"|thought|thoughts|reaction|reactions|views?)\b",
+    re.IGNORECASE,
+)
+_COURTESY_TAG_RE = re.compile(
+    r"""^
+    (?:(?:and|so|but|or|well|okay|ok|uh|um|er|erm|right|now)[\s,]+)*
+    (?:
+        (?:is|does|was|would|will|are|isn't|doesn't)\s+(?:that|this|it)\s+
+            (?:okay|ok|alright|all\s+right|fine|good|clear|work|works|
+               make\s+sense|sound\s+(?:okay|ok|good|right))
+      | if\s+(?:that|this)(?:'s|\s+is)?\s+(?:okay|ok|alright|all\s+right|fine|good)
+      | (?:do|would)\s+you\s+mind
+      | (?:is|are)\s+(?:we|you)\s+(?:okay|ok|good|alright|all\s+right|happy)
+      | (?:right|okay|ok|yeah|yes|no|sorry|sure|hm+|mm+)
+    )
+    [\s,]* [.?!]* \s* $""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# A request whose subject is the moderator himself. "Sorry, Dexter, can I just
+# interrupt?" is a question, and Dexter is in vocative position, but nobody is
+# being invited to speak — Ricky is asking permission to keep the floor. Blocks
+# the VOCATIVE and OPEN paths only: "can I hear from Melia?" is still a request
+# for Melia.
+_SELF_DIRECTED_RE = re.compile(
+    r"\b(?:can|could|may|might|shall|should)\s+(?:i|we)\b"
+    r"|\blet\s+(?:me|us)\b"
+    r"|\bi'?(?:m| am)\s+going to\b"
+    r"|\bi\s+(?:just\s+)?(?:want|need|have)\s+to\b",
+    re.IGNORECASE,
+)
+
+# A request addressed to "you". This is what binds a vocative to the clause:
+# "Sorry, Dexter, can you wrap up?" resolves to Dexter, while "Sorry, Dexter,
+# can Melia speak?" does not.
+_SECOND_PERSON_REQUEST_RE = re.compile(
+    r"\b(?:can|could|would|will|do|did|are|have|shall|should)\s+you\b"
+    r"|\byou'?(?:d|ll|re)\b"
+    r"|\byour\s+(?:thoughts?|view|views|take|turn|point|reaction)\b"
+    r"|\bwhat\s+do\s+you\s+think\b"
+    r"|\b(?:carry on|go on|continue|elaborate|say more|expand on|keep going"
+    r"|wrap up|finish your point|go ahead|jump in|over to you)\b",
+    re.IGNORECASE,
+)
+
+# --- context tests, applied to the text either side of a name occurrence ---
+
+# Never an addressee: the object of an apology, an interruption, or a
+# comparison. "Sorry for interrupting Dexter" and "do you agree with Dexter"
+# both name Dexter in a role that cannot receive the floor.
+_OBLIQUE_LEFT_RE = re.compile(
+    r"\b(?:interrupting|interrupt|interrupted|cutting off|cutting|cut off"
+    r"|talking over|talk over|spoke over|butting in on|jumping in on"
+    r"|after|before|with|alongside|unlike|than|agree with|disagree with"
+    r"|compared to|instead of|rather than|as well as|about what)\s*$",
+    re.IGNORECASE,
+)
+
+# An apology or a thank-you immediately before a name is a *dismissal* of that
+# agent, not an invitation to them — unless the same clause also carries a
+# second-person request, which is what makes "Sorry, Dexter, can you wrap up?"
+# different from "Sorry, Dexter, can Melia speak?".
+_DISMISSAL_LEFT_RE = re.compile(
+    r"\b(?:sorry|apologies|apologise|apologize|excuse me|pardon|forgive me"
+    r"|thanks|thank you|thankyou|hold on|hang on|one moment)\b[\s,]*$",
+    re.IGNORECASE,
+)
+
+# The strongest role: the name is what is being requested.
+_SUBJECT_LEFT_RE = re.compile(
+    r"(?:"
+    r"\b(?:can|could|would|will|shall|should|might|may)\s+"
+    r"|\b(?:let'?s\s+)?hear\s+from\s+"
+    r"|\blet\s+"
+    r"|\bi'?d\s+(?:like|love)\s+(?:to\s+hear\s+from\s+)?"
+    r"|\bi\s+want\s+(?:to\s+hear\s+from\s+)?"
+    r"|\bwhat\s+(?:does|do|would|did|will)\s+"
+    r"|\b(?:what|how)\s+about\s+"
+    r"|\b(?:over|back|straight|across|round)\s+to\s+"
+    r"|\b(?:ask|asking)\s+"
+    r"|\b(?:bring|bringing|get|getting)\s+(?:in\s+)?"
+    r"|\bstart(?:ing)?\s+with\s+"
+    r"|\bstraight\s+in\s+with\s+"
+    r")$",
+    re.IGNORECASE,
+)
+_SUBJECT_RIGHT_RE = re.compile(
+    r"^(?:'|’)?s?\s*"
+    r"(?:thought|thoughts|take|view|views|turn|perspective|reaction|reactions"
+    r"|point of view|go\b)",
+    re.IGNORECASE,
+)
+
+# Vocative position: the name stands alone as an address, either at the head of
+# the clause (possibly behind filler — "so", "uh", "okay") or trailing after a
+# comma ("what do you think, Wayne?").
+_VOCATIVE_LEFT_RE = re.compile(
+    r"^(?:(?:so|and|but|or|now|then|okay|ok|right|well|alright|uh|um|er|erm"
+    r"|hey|look|listen|sorry|apologies|thanks|thank you|first|firstly|finally"
+    r"|maybe|perhaps|actually|please|come on)[\s,]+)*$",
+    re.IGNORECASE,
+)
+_TRAILING_VOCATIVE_LEFT_RE = re.compile(r",[\s]*$")
+_VOCATIVE_RIGHT_RE = re.compile(r"^[\s]*(?:,|$|[.?!])")
+_TRAILING_VOCATIVE_RIGHT_RE = re.compile(
+    r"^[\s,]*(?:please|thanks|thank you)?[\s,]*[.?!]*$", re.IGNORECASE
+)
+
+# Sentence, then clause. Both matter: the vocative test needs to know where a
+# clause begins, and a turn is routinely two sentences with two different
+# addressees in it.
+_COORDINATOR_GAP_RE = re.compile(r"^[\s,]*(?:and|or|&|plus|along with)?[\s,]*$", re.IGNORECASE)
+
+_SENTENCE_RE = re.compile(r"[^.?!;]+[.?!;]?")
+_CLAUSE_SPLIT_RE = re.compile(
+    r",\s*(?=(?:and|but|so|then|now|uh|um|er|erm|okay|ok|right|well|alright"
+    r"|also|meanwhile|instead)\b)",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _RoleHit:
+    """One name occurrence, classified. Internal to detection."""
+
+    agent: str
+    role: AddressRole
+    rule: str
+
+    @property
+    def strength(self) -> int:
+        return _ROLE_STRENGTH[self.role]
+
+
+@dataclass(frozen=True, slots=True)
+class _Detection:
+    """What an utterance invites, and on what grounds.
+
+    ``conflict`` is non-empty when two different agents tied at the top role.
+    That is a first-class outcome, not a failure: the floor stays closed and
+    the operator is shown the tie.
+    """
+
+    strength: int = 0
+    agent: str | None = None
+    role: str = ""
+    rule: str = ""
+    conflict: tuple[str, ...] = ()
 
 # The one-shot introduction round. Deliberately not folded into _HANDOVER_RE:
 # this is usually a statement, not a question, and it must guarantee every
@@ -81,15 +302,94 @@ _HANDOVER_RE = re.compile(
 _INTRODUCTION_RE = re.compile(r"\bintro(?:duc\w*|s)?\b", re.IGNORECASE)
 
 
+def _clauses(text: str) -> list[tuple[str, bool]]:
+    """Split a final transcript into ``(clause, is_question)`` pairs.
+
+    Sentences first, then comma-plus-conjunction boundaries inside them, so
+    "Thanks Dexter, and Melia, what do you think?" separates the agent being
+    thanked off from the agent being asked. ``is_question`` is a property of
+    the sentence, inherited by its clauses.
+    """
+    out: list[tuple[str, bool]] = []
+    for sentence in _SENTENCE_RE.findall(text):
+        chunk = sentence.strip()
+        if not chunk:
+            continue
+        is_question = chunk.endswith("?")
+        for clause in _CLAUSE_SPLIT_RE.split(chunk):
+            trimmed = clause.strip().strip(",").strip()
+            if trimmed:
+                out.append((trimmed, is_question))
+    return out
+
+
+def _coordination_groups(
+    clause: str, occurrences: list[tuple[int, int, str]]
+) -> list[list[tuple[int, int, str]]]:
+    """Group name occurrences joined by nothing but a coordinator.
+
+    "Melia and Wayne, can you take that?" addresses a group, and the group is
+    what has a grammatical role — classifying the two names separately gets
+    neither of them, and picking one is exactly the guess this rewrite exists
+    to stop. Names separated by any real words ("Melia, do you agree with
+    Dexter?") are separate groups and get separate roles.
+    """
+    groups: list[list[tuple[int, int, str]]] = []
+    for occurrence in occurrences:
+        if groups:
+            previous = groups[-1][-1]
+            gap = clause[previous[1] : occurrence[0]]
+            if _COORDINATOR_GAP_RE.match(gap):
+                groups[-1].append(occurrence)
+                continue
+        groups.append([occurrence])
+    return groups
+
+
+def _is_handover(clause: str) -> bool:
+    """Does this clause hand the floor over, question mark or not?"""
+    if _HANDOVER_RE.search(clause):
+        return True
+    return bool(_CONTINUATION_RE.search(clause)) and not _FIRST_PERSON_RE.search(clause)
+
+
+def _opens_to_panel(clause: str, *, is_question: bool) -> bool:
+    """Is this a question put to the panel, rather than a courtesy tag?
+
+    The old rule was "ends in a question mark", which let "is that okay?" open
+    the floor. An open invitation now needs an explicit handover or an actual
+    content question.
+    """
+    if _COURTESY_TAG_RE.match(clause):
+        return False
+    if _SELF_DIRECTED_RE.search(clause):
+        return False
+    if _is_handover(clause):
+        return True
+    return is_question and bool(_CONTENT_QUESTION_RE.search(clause))
+
+
 class FloorController:
     """Holds the cast and config; the state itself is passed in and out."""
 
     def __init__(self, cast: PanelCast, config: FloorConfig | None = None) -> None:
         self.cast = cast
         self.config = config or FloorConfig()
+        # Sorted, longest alias first. Sorting is the part that matters:
+        # `Persona.aliases()` returns a set, whose iteration order is not
+        # stable across processes, and the role tests read the *end* of a
+        # match as right-hand context — so an unstable alternation order
+        # would make address detection vary run to run. Length ordering on
+        # top of that costs nothing and settles which alias wins when one is
+        # a prefix of another separated by punctuation, the only case where
+        # alternation order changes how much text a match consumes.
         self._address_patterns = {
             agent_id: re.compile(
-                r"\b(" + "|".join(re.escape(a) for a in persona.aliases()) + r")\b",
+                r"\b("
+                + "|".join(
+                    re.escape(a) for a in sorted(persona.aliases(), key=lambda a: (-len(a), a))
+                )
+                + r")\b",
                 re.IGNORECASE,
             )
             for agent_id, persona in cast.personas.items()
@@ -148,6 +448,7 @@ class FloorController:
                 human_speech_started_at=event.t,
                 proposals={},  # a human turn invalidates speculative candidates
                 invitation=None,  # ...and revokes the standing invitation
+                address_conflict=(),  # ...and any unresolved tie with it
             )
             return state, [self._paint(state)]
 
@@ -204,6 +505,7 @@ class FloorController:
             consecutive_agent_turns=0,
             proposals={},
             invitation=None,  # Ricky is taking the floor back
+            address_conflict=(),
             # An incomplete introduction round is abandoned, not spent — it
             # has not "been done", so the safety latch does not engage and
             # the phrase can be said again to restart it cleanly.
@@ -258,9 +560,8 @@ class FloorController:
             ):
                 state = self._start_introductions(state, t=event.t)
             else:
-                invitation = self._detect_invitation(text, t=event.t)
-                if invitation is not None:
-                    state = replace(state, invitation=invitation)
+                state, detect_cmds = self._apply_detection(state, text, t=event.t)
+                commands.extend(detect_cmds)
 
         # Speculate during the human's turn so the gap after end-of-turn is
         # TTS latency only (FEASIBILITY.md 3.6). Debounced here rather than in
@@ -286,16 +587,28 @@ class FloorController:
         self, state: PanelState, event: TurnYielded
     ) -> tuple[PanelState, list[Command]]:
         """End of turn confirmed. Arbitrate — but only if the floor is open."""
+        if state.speaking is not None:
+            # A stray or duplicate TurnYielded that outran the state it was
+            # based on (e.g. the runtime re-opening arbitration after a
+            # proposal, racing a grant that already landed). TurnYielded means
+            # "the human's turn just ended" — nonsensical while an agent
+            # already holds the floor, so it is a no-op rather than a second
+            # concurrent grant.
+            return state, []
         state = replace(state, floor_holder=None, human_speaking=False)
 
         invitation = state.invitation
         if invitation is None or not invitation.is_live():
-            # Ricky made a remark, not an invitation. Agents may want the floor;
-            # wanting it is not taking it. Their interest goes to the operator
-            # console and the video wall, and he decides.
+            # Ricky made a remark, not an invitation — or he addressed two
+            # agents at once and we refused to guess between them. Agents may
+            # want the floor; wanting it is not taking it. Their interest goes
+            # to the operator console and the video wall, and he decides.
+            reason = (
+                CueReason.AMBIGUOUS_ADDRESS if state.address_conflict else CueReason.NO_INVITATION
+            )
             return state, [
                 *self._hands_raised(state, now=event.t),
-                CueModerator(reason="no_invitation"),
+                CueModerator(reason=reason),
                 self._paint(state),
             ]
 
@@ -307,13 +620,19 @@ class FloorController:
             # construction (bounded by the cast size) and must not be cut
             # short by the same safety valve that stops a machine-to-machine
             # relay.
-            return state, [CueModerator(reason="agent_turn_limit"), self._paint(state)]
+            return state, [CueModerator(reason=CueReason.AGENT_TURN_LIMIT), self._paint(state)]
 
-        winner = self._arbitrate(state, invitation=invitation, now=event.t)
+        winner, reason = self._arbitrate(state, invitation=invitation, now=event.t)
         if winner is None:
             # Invited, but nobody had anything worth the airtime. Silence is a
-            # legitimate outcome — cue Ricky so the beat does not hang.
-            return state, [CueModerator(reason="no_candidate"), self._paint(state)]
+            # legitimate outcome — cue Ricky so the beat does not hang, and say
+            # which rule produced the silence. The invitation deliberately
+            # survives: an empty proposal set for two or three seconds is
+            # normal, and only the TTL reaps one nobody ever acts on.
+            return state, [
+                CueModerator(reason=reason or CueReason.NO_PROPOSALS),
+                self._paint(state),
+            ]
 
         return self._grant(state, winner, now=event.t)
 
@@ -433,19 +752,19 @@ class FloorController:
             # Everyone has introduced themselves. Latch it shut — permanently,
             # by design — and hand back to the moderator.
             state = replace(state, intro_queue=None, intro_done=True, invitation=None)
-            commands.append(CueModerator(reason="introductions_complete"))
+            commands.append(CueModerator(reason=CueReason.INTRODUCTIONS_COMPLETE))
             commands.append(self._paint(state))
             return state, commands
 
         invitation = state.invitation
         if invitation is None or not invitation.is_live():
-            state = replace(state, invitation=None)
-            commands.append(CueModerator(reason="invitation_spent"))
+            state = replace(state, invitation=None, address_conflict=())
+            commands.append(CueModerator(reason=CueReason.INVITATION_SPENT))
             return state, commands
 
         if state.consecutive_agent_turns >= self.config.max_consecutive_agent_turns:
             state = replace(state, invitation=None)
-            commands.append(CueModerator(reason="agent_turn_limit"))
+            commands.append(CueModerator(reason=CueReason.AGENT_TURN_LIMIT))
             return state, commands
 
         targets = state.idle_agents()
@@ -466,7 +785,10 @@ class FloorController:
             return self._commit_human_interrupt(state, t=event.t)
 
         if state.speaking is None:
-            return state, []
+            # Only reap a stale invitation when nothing is on the PA: an
+            # invitation being acted on right now is live conversation, not a
+            # leftover, whatever its clock says.
+            return self._expire_invitation(state, now=event.t)
 
         agent = state.agents[state.speaking]
         persona = self.cast[state.speaking]
@@ -510,6 +832,7 @@ class FloorController:
                     floor_holder=None,
                     proposals={},
                     invitation=None,
+                    address_conflict=(),
                     intro_queue=None,  # abandoned, not spent — safe to retry later
                 )
                 return state, commands + [self._paint(state)]
@@ -547,6 +870,7 @@ class FloorController:
                     consecutive_agent_turns=0,
                     proposals={},
                     invitation=None,
+                    address_conflict=(),
                     intro_queue=None,  # abandoned, not spent — safe to retry later
                 )
                 return state, cmds + [self._paint(state)]
@@ -561,12 +885,17 @@ class FloorController:
                         turns_remaining=max(1, event.turns),
                         source=InvitationSource.OPERATOR,
                         t=event.t,
+                        role="operator",
+                        rule="operator_open_floor",
                     ),
+                    # The operator opening the floor by hand *is* the answer to
+                    # an ambiguous address.
+                    address_conflict=(),
                 )
                 return state, [self._paint(state)]
 
             case OperatorAction.CLOSE_FLOOR:
-                state = replace(state, invitation=None, intro_queue=None)
+                state = replace(state, invitation=None, intro_queue=None, address_conflict=())
                 return state, [self._paint(state)]
 
             case OperatorAction.ADVANCE_BEAT:
@@ -577,6 +906,39 @@ class FloorController:
                 return state, []
 
     # ---------------------------------------------------------------- helpers
+
+    def _apply_detection(
+        self, state: PanelState, text: str, *, t: float
+    ) -> tuple[PanelState, list[Command]]:
+        """Fold one final transcript segment into the standing invitation.
+
+        Precedence, not recency. A moderator's act of moderation routinely
+        arrives as two or three transcript segments — "Sorry Dexter, can Melia
+        speak?" then "Sorry for interrupting Dexter, is that okay?" — and the
+        trailing courtesy must not downgrade the invitation from "Melia" to
+        "whoever scores best". A fresh ADDRESS always supersedes; a fresh OPEN
+        only displaces a live ADDRESS once
+        `FloorConfig.invitation_supersede_window_s` has passed.
+        """
+        invitation, conflict = self._detect_invitation(text, t=t)
+
+        if conflict:
+            # Ambiguity is an outcome. Stay closed, revoke nothing that was
+            # already specific, and put the tie in front of the operator.
+            state = replace(state, address_conflict=conflict)
+            return state, [self._paint(state)]
+
+        if invitation is None:
+            return state, []
+
+        standing = state.invitation
+        if standing is not None and standing.is_live():
+            fresh = t - standing.t < self.config.invitation_supersede_window_s
+            if fresh and invitation.precedence() < standing.precedence():
+                return state, []
+
+        state = replace(state, invitation=invitation, address_conflict=())
+        return state, [self._paint(state)]
 
     def _eligible(self, state: PanelState, invitation: Invitation | None) -> dict[str, Proposal]:
         # During an introduction round, only agents still owed a turn count —
@@ -605,17 +967,43 @@ class FloorController:
             config=self.config,
         )
 
-    def _arbitrate(self, state: PanelState, *, invitation: Invitation, now: float) -> str | None:
-        """Pick a winner from within the invitation, or None for silence."""
+    def _arbitrate(
+        self, state: PanelState, *, invitation: Invitation, now: float
+    ) -> tuple[str | None, CueReason | None]:
+        """Pick a winner from within the invitation, or None for silence.
+
+        Returns the winner and, when there is none, *why* — "nobody proposed"
+        and "the one agent Ricky named had nothing to say" are different
+        problems, and a rehearsal that cannot tell them apart cannot be tuned.
+        """
         candidates = self._eligible(state, invitation)
         if not candidates:
-            return None
+            if invitation.agent is not None:
+                return None, CueReason.INVITED_AGENT_SILENT
+            return None, CueReason.NO_PROPOSALS
 
         # Ricky named them. They answer. The score floor exists so that silence
         # can win an *open* invitation — it has no business overruling a direct
         # question put to a specific panellist.
         if invitation.agent is not None:
-            return invitation.agent if invitation.agent in candidates else None
+            if invitation.agent not in candidates:
+                return None, CueReason.INVITED_AGENT_SILENT
+            # ...but a handoff is still honoured. "Melia's the one to follow
+            # here" is information the panel generated about itself, and
+            # throwing it away is how a named grant ends up answering a
+            # question its own agent just said it was the wrong one for. The
+            # score floor stays bypassed: a direct question deserves an answer.
+            deferred = candidates[invitation.agent].signals.defer_to
+            # Evaluated against the *unrestricted* eligible set: a named
+            # invitation admits only the named agent, so the handoff target is
+            # by construction outside `candidates`.
+            if (
+                deferred
+                and deferred != invitation.agent
+                and deferred in self._eligible(state, None)
+            ):
+                return deferred, None
+            return invitation.agent, None
 
         scored = sorted(
             ((self._score(state, a, p, now=now), a) for a, p in candidates.items()),
@@ -626,16 +1014,37 @@ class FloorController:
         if invitation.source is InvitationSource.INTRODUCTION:
             # Scoring only orders who goes next. Nobody loses to silence, and
             # nobody hands off — every agent speaks for itself.
-            return best_agent
+            return best_agent, None
 
         if best_score < self.config.min_floor_priority:
-            return None
+            return None, CueReason.BELOW_FLOOR
 
         # An agent may hand off to a better-placed colleague.
         defer_to = candidates[best_agent].signals.defer_to
         if defer_to and defer_to in candidates:
-            return defer_to
-        return best_agent
+            return defer_to, None
+        return best_agent, None
+
+    def _expire_invitation(
+        self, state: PanelState, *, now: float
+    ) -> tuple[PanelState, list[Command]]:
+        """Reap an invitation nobody ever acted on.
+
+        `no_candidate` deliberately leaves the invitation standing — the
+        proposal set is legitimately empty for a couple of seconds after a
+        human turn, and clearing it there would make the panel unanswerable.
+        The cost of that is an invitation that outlives its moment, and a
+        *mis-addressed* one would otherwise stand for the rest of the show.
+        This is the only thing that clears it.
+        """
+        invitation = state.invitation
+        if invitation is None or state.human_speaking:
+            return state, []
+        deadline = invitation.expires_at(self.config.invitation_ttl_s)
+        if deadline is None or now < deadline:
+            return state, []
+        state = replace(state, invitation=None, address_conflict=())
+        return state, [CueModerator(reason=CueReason.INVITATION_EXPIRED), self._paint(state)]
 
     def _hands_raised(self, state: PanelState, *, now: float) -> list[Command]:
         """Surface interest the panel is not allowed to act on."""
@@ -648,30 +1057,172 @@ class FloorController:
         )
         return [HandsRaised(agents=tuple((a, round(sc, 3)) for sc, a in scored))]
 
-    def _detect_invitation(self, text: str, *, t: float) -> Invitation | None:
-        """Did Ricky actually open the floor?
+    def _detect_invitation(
+        self, text: str, *, t: float
+    ) -> tuple[Invitation | None, tuple[str, ...]]:
+        """Did Ricky actually open the floor, and to whom?
 
         A statement invites nobody, however interesting it is — that is the
         whole rule, and it is one a moderator can hold in his head on stage:
         *ask a question and the panel answers; make a point and they let you
         make it.* Naming an agent narrows the invitation to them.
+
+        Returns the invitation (or None) and any set of agents that tied for
+        addressee. A tie yields no invitation at all: see `_detect`.
         """
-        if not (_QUESTION_RE.search(text) or _HANDOVER_RE.search(text)):
-            return None
-        agent = self._detect_address(text)
-        if agent is not None:
-            return Invitation(
-                agent=agent,
-                turns_remaining=self.config.address_invitation_turns,
-                source=InvitationSource.ADDRESS,
-                t=t,
+        detection = self._detect(text)
+
+        if detection.conflict:
+            return None, detection.conflict
+
+        if detection.agent is not None:
+            return (
+                Invitation(
+                    agent=detection.agent,
+                    turns_remaining=self.config.address_invitation_turns,
+                    source=InvitationSource.ADDRESS,
+                    t=t,
+                    role=detection.role,
+                    rule=detection.rule,
+                ),
+                (),
             )
-        return Invitation(
-            agent=None,
-            turns_remaining=self.config.open_invitation_turns,
-            source=InvitationSource.OPEN,
-            t=t,
-        )
+
+        if detection.strength >= _STRENGTH_OPEN:
+            return (
+                Invitation(
+                    agent=None,
+                    turns_remaining=self.config.open_invitation_turns,
+                    source=InvitationSource.OPEN,
+                    t=t,
+                    role="open",
+                    rule=detection.rule,
+                ),
+                (),
+            )
+        return None, ()
+
+    # ------------------------------------------------------------- detection
+
+    def _detect(self, text: str) -> _Detection:
+        """Resolve a whole final transcript to at most one addressee.
+
+        Clause by clause, then combined by *precedence* rather than recency: an
+        agent named as the subject of a request outranks one merely in vocative
+        position, which outranks an open question, and an agent named in an
+        oblique role ("sorry for interrupting Dexter") outranks nothing at all
+        because it can never be an addressee.
+
+        Two different agents at the same top strength is a genuine ambiguity
+        and is reported as one. Guessing between them is the failure mode this
+        whole function exists to remove.
+        """
+        hits: list[_RoleHit] = []
+        open_rule = ""
+        for clause, is_question in _clauses(text):
+            hits.extend(self._classify_clause(clause, is_question=is_question))
+            if not open_rule and _opens_to_panel(clause, is_question=is_question):
+                open_rule = "handover" if _is_handover(clause) else "content_question"
+
+        addressed = [h for h in hits if h.strength > 0]
+        if addressed:
+            top = max(h.strength for h in addressed)
+            winners = {h.agent: h for h in addressed if h.strength == top}
+            if len(winners) > 1:
+                # Ambiguity, not a coin toss. The floor stays closed.
+                first = next(iter(winners.values()))
+                return _Detection(
+                    strength=top,
+                    agent=None,
+                    role=first.role.value,
+                    rule="ambiguous_" + first.rule,
+                    conflict=tuple(sorted(winners)),
+                )
+            only = next(iter(winners.values()))
+            return _Detection(
+                strength=top, agent=only.agent, role=only.role.value, rule=only.rule
+            )
+
+        if open_rule:
+            return _Detection(strength=_STRENGTH_OPEN, agent=None, role="open", rule=open_rule)
+        return _Detection()
+
+    def _classify_clause(self, clause: str, *, is_question: bool) -> list[_RoleHit]:
+        """Classify every name occurrence in one clause by grammatical role.
+
+        Coordinated names ("can Melia and Wayne take that?", "Melia, Dexter,
+        thoughts?") are classified as one group and share the resulting role.
+        That is what makes them come out *ambiguous* rather than resolving to
+        whichever one the regexes happened to reach first.
+        """
+        if _COURTESY_TAG_RE.match(clause):
+            # "Is that okay?", "does that work?" — Ricky checking in on his own
+            # sentence. Nobody is addressed and nobody is invited, even if a
+            # name happens to trail off the end of it.
+            return []
+
+        second_person = bool(_SECOND_PERSON_REQUEST_RE.search(clause))
+        self_directed = bool(_SELF_DIRECTED_RE.search(clause))
+        requested = second_person or is_question or _is_handover(clause)
+
+        occurrences = [
+            (match.start(), match.end(), agent_id)
+            for agent_id, pattern in self._address_patterns.items()
+            for match in pattern.finditer(clause)
+        ]
+        occurrences.sort()
+
+        hits: list[_RoleHit] = []
+        for group in _coordination_groups(clause, occurrences):
+            role_rule = self._classify_span(
+                left=clause[: group[0][0]],
+                right=clause[group[-1][1] :],
+                second_person=second_person,
+                self_directed=self_directed,
+                requested=requested,
+            )
+            if role_rule is None:
+                continue
+            role, rule = role_rule
+            for _, _, agent_id in group:
+                hits.append(_RoleHit(agent_id, role, rule))
+        return hits
+
+    def _classify_span(
+        self,
+        *,
+        left: str,
+        right: str,
+        second_person: bool,
+        self_directed: bool,
+        requested: bool,
+    ) -> tuple[AddressRole, str] | None:
+        """One name (or coordinated group), in the context it appeared in."""
+        # Oblique first. An occurrence that cannot be an addressee must not be
+        # rescued by also sitting somewhere that looks vocative.
+        if _OBLIQUE_LEFT_RE.search(left):
+            return AddressRole.OBLIQUE, "oblique_object"
+        if _DISMISSAL_LEFT_RE.search(left) and not second_person:
+            # "Sorry Dexter, can Melia speak?" — Dexter is being stood down.
+            # With a second-person request in the clause it is the opposite:
+            # "Sorry, Dexter, can you wrap up?" is addressed to Dexter.
+            return AddressRole.OBLIQUE, "dismissal_object"
+
+        if _SUBJECT_LEFT_RE.search(left):
+            return AddressRole.SUBJECT_OF_REQUEST, "subject_left"
+        if _SUBJECT_RIGHT_RE.match(right):
+            return AddressRole.SUBJECT_OF_REQUEST, "subject_possessive"
+
+        if not requested or self_directed:
+            # A name in a statement, or in Ricky's own permission request, is
+            # mentioned rather than addressed.
+            return None
+
+        if _VOCATIVE_LEFT_RE.match(left) and _VOCATIVE_RIGHT_RE.match(right):
+            return AddressRole.VOCATIVE, "vocative_leading"
+        if _TRAILING_VOCATIVE_LEFT_RE.search(left) and _TRAILING_VOCATIVE_RIGHT_RE.match(right):
+            return AddressRole.VOCATIVE, "vocative_trailing"
+        return None
 
     def _start_introductions(self, state: PanelState, *, t: float) -> PanelState:
         """Invite the whole panel to introduce itself, one turn each.
@@ -691,8 +1242,11 @@ class FloorController:
                 turns_remaining=len(agents),
                 source=InvitationSource.INTRODUCTION,
                 t=t,
+                role="introduction",
+                rule="introduction_round",
             ),
             intro_queue=agents,
+            address_conflict=(),
         )
 
     def _grant(
@@ -710,29 +1264,31 @@ class FloorController:
             state,
             turn_id=state.turn_id + 1,
             consecutive_agent_turns=state.consecutive_agent_turns + 1,
-            invitation=state.invitation.spent() if state.invitation else None,
+            # `now` refreshes the TTL clock: an invitation producing turns is
+            # live conversation and must not age out mid-exchange.
+            invitation=state.invitation.spent(t=now) if state.invitation else None,
+            address_conflict=(),
         )
         return state, [
             StartSpeech(agent=agent_id, utterance=proposal.utterance, turn_id=state.turn_id)
         ]
 
-    def _detect_address(self, text: str) -> str | None:
-        """Did the human name an agent? Deterministic, no model call."""
-        best: tuple[int, str] | None = None
-        for agent_id, pattern in self._address_patterns.items():
-            match = pattern.search(text)
-            if match and (best is None or match.start() < best[0]):
-                best = (match.start(), agent_id)
-        return best[1] if best else None
-
     def _paint(self, state: PanelState) -> StateChanged:
+        invitation = state.invitation
         return StateChanged(
             floor_holder=state.floor_holder,
             speaking=state.speaking,
             turn_id=state.turn_id,
             extra={
-                "invited": state.invitation.agent if state.invitation else None,
-                "invitation_turns": state.invitation.turns_remaining if state.invitation else 0,
+                "invited": invitation.agent if invitation else None,
+                "invitation_turns": invitation.turns_remaining if invitation else 0,
+                # Provenance for the operator console and the rehearsal log: a
+                # rehearsal has to be able to see *why* the floor opened where
+                # it did, not just that it did.
+                "invitation_source": invitation.source.value if invitation else None,
+                "invitation_role": invitation.role if invitation else None,
+                "invitation_rule": invitation.rule if invitation else None,
+                "address_conflict": state.address_conflict,
                 "consecutive_agent_turns": state.consecutive_agent_turns,
                 "killed": state.killed,
                 "intro_remaining": state.intro_queue,

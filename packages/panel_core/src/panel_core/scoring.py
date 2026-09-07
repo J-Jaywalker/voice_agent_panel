@@ -69,6 +69,18 @@ class FloorConfig:
     open_invitation_turns: int = 2
     # A named agent always gets exactly one.
     address_invitation_turns: int = 1
+    # An invitation nobody ever acts on must not sit on the floor for the rest
+    # of the show. `no_candidate` deliberately does NOT clear the invitation —
+    # an empty proposal set for two or three seconds is normal — so this is the
+    # only thing that reaps a mis-addressed one. Measured from the invitation's
+    # last activity: `Invitation.spent()` refreshes the clock, so a live
+    # exchange never ages out. The introduction round is exempt.
+    invitation_ttl_s: float = 25.0
+    # A later, vaguer invitation may not downgrade a live specific one inside
+    # this window — "Melia, can you continue? ... is that okay?" is one act of
+    # moderation arriving as two transcript segments. A fresh ADDRESS always
+    # supersedes; only an OPEN is held off, and only for this long.
+    invitation_supersede_window_s: float = 8.0
 
     # --- speculation ---
     speculation_interval_s: float = 0.8

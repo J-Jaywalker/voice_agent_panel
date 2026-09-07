@@ -37,6 +37,11 @@ from panel_core import (
     TurnYielded,
 )
 
+# `CueReason` is the floor's own vocabulary and is not re-exported from the
+# package root, which `panel_core` reserves for the event/command surface.
+# The phrasing corpus that exercises `AddressRole` lives in test_address.py.
+from panel_core.floor import CueReason
+
 PERSONA_DIR = Path(__file__).resolve().parents[3] / "personas"
 
 
@@ -282,11 +287,19 @@ def test_wanting_the_floor_is_surfaced_to_the_operator(fc, state):
 
 
 def test_operator_can_open_a_floor_the_patterns_missed(fc, state):
-    """The backstop. Detection is deliberately conservative, so this must work."""
+    """The backstop. Detection is deliberately conservative, so this must work.
+
+    The prompt used to be "Say more about that.", which detection now reads as
+    a handover — continuation cues became invitations deliberately (an agent
+    told to elaborate should elaborate). So this exercises the backstop with a
+    phrasing that genuinely is not an invitation on its face.
+    """
     state, _ = run(
         fc,
         state,
-        TranscriptUpdated(t=0.0, speaker=HUMAN, text="Say more about that.", is_final=True),
+        TranscriptUpdated(
+            t=0.0, speaker=HUMAN, text="That is roughly where the market sits.", is_final=True
+        ),
         AgentProposal(t=0.5, agent="dex", utterance="Historically...", signals=strong()),
     )
     assert state.invitation is None
@@ -332,13 +345,19 @@ def test_open_question_grants_floor_to_strongest_case(fc, state):
 
 
 def test_silence_is_a_legitimate_outcome(fc, state):
-    """Weak proposals lose to saying nothing, even on an open invitation."""
+    """Weak proposals lose to saying nothing, even on an open invitation.
+
+    The reason is `below_floor`, not the old catch-all `no_candidate`: a
+    rehearsal needs to tell "the panel had nothing" from "the panel had
+    something and it was not good enough" from "the one agent Ricky named said
+    nothing", because those are three different fixes.
+    """
     state, _ = run(
         fc, state, invite(0.0), AgentProposal(t=0.5, agent="melia", utterance="Mm.", signals=weak())
     )
     _, cmds = fc.reduce(state, TurnYielded(t=1.0))
     assert not [c for c in cmds if isinstance(c, StartSpeech)]
-    assert [c.reason for c in cmds if isinstance(c, CueModerator)] == ["no_candidate"]
+    assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [CueReason.BELOW_FLOOR]
 
 
 def test_agent_can_hand_off_to_a_better_placed_colleague(fc, state):

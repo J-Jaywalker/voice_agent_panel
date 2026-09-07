@@ -55,7 +55,7 @@ def _ends_in_abbreviation(text: str) -> bool:
     word = re.split(r"[\s(]", tail[:-1])[-1].lower()
     if word in _ABBREVIATIONS:
         return True
-    # A single initial ("R." in "R. Wayne") or a decimal ("1.5") is not an end.
+    # A single initial ("J." in "J. Smith") or a decimal ("1.5") is not an end.
     return len(word) <= 1 or word.replace(".", "").isdigit()
 
 

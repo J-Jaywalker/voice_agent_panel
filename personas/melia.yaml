@@ -5,7 +5,7 @@
 # fictional body. Attributing invented opinions to a real NGO in front of 400
 # customers is an avoidable exposure — see FEASIBILITY.md 4.1.
 id: melia
-name: Melia-1
+name: Melia
 job_title: Chief AI Ethics & Human Continuity Officer
 employer: The Kestrel Foundation   # fictional
 background: >-
@@ -40,3 +40,14 @@ relationships:
   dex: "The only one here who says 'I don't know' out loud."
 
 forbidden_topics: []
+
+# STT has mis-transcribed Ricky saying "Melia" as "Amelia" live, which the
+# floor's address regex then can't match (the leading "A" removes the word
+# boundary). `sounds_like` biases the transcription itself; `aliases` is the
+# belt-and-braces fallback for whatever the vocabulary bias still misses.
+aliases:
+  - amelia
+sounds_like:
+  - "meh lee uh"
+  - "mee lee uh"
+  - "muh lee uh"

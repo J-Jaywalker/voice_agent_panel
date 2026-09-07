@@ -26,6 +26,19 @@ class InvitationSource(str, Enum):
     INTRODUCTION = "introduction"  # the one-shot "introduce yourselves" round
 
 
+# How specific an invitation is. A vaguer invitation must never quietly
+# displace a more specific one: "Melia, can you continue? ... is that okay?"
+# arrives as two segments, and the second must not downgrade the first from
+# "Melia answers" to "whoever scores best answers". Compared in
+# `FloorController._transcript`; see also `invitation_supersede_window_s`.
+_INVITATION_PRECEDENCE: dict[InvitationSource, int] = {
+    InvitationSource.OPEN: 1,
+    InvitationSource.ADDRESS: 2,
+    InvitationSource.OPERATOR: 2,  # a deliberate human act, as specific as a name
+    InvitationSource.INTRODUCTION: 3,  # a bounded round; nothing may cut across it
+}
+
+
 @dataclass(frozen=True, slots=True)
 class Invitation:
     """Permission for an agent — or the panel — to take the floor.
@@ -33,21 +46,52 @@ class Invitation:
     The floor is closed by default. This is the object that opens it, and it is
     spent as it is used. Without one, ``TurnYielded`` returns the floor to the
     moderator and the panel stays quiet however much it wants to speak.
+
+    ``role`` and ``rule`` are provenance, not behaviour: they record *why* the
+    floor opened (which grammatical role the addressee held, and which pattern
+    matched) so the operator console and the rehearsal log can show the
+    reasoning rather than just the outcome.
     """
 
     agent: str | None  # None = open to the whole panel
     turns_remaining: int
     source: InvitationSource
     t: float
+    role: str = ""  # AddressRole value, or "open"/"introduction"/"operator"
+    rule: str = ""  # the specific pattern that matched, for the console
 
-    def spent(self) -> Invitation:
-        return replace(self, turns_remaining=max(0, self.turns_remaining - 1))
+    def spent(self, *, t: float | None = None) -> Invitation:
+        """Consume one turn.
+
+        ``t`` refreshes the invitation's clock. An invitation that is actually
+        producing turns is live conversation and must not age out mid-exchange;
+        the TTL exists for one that never produces a turn at all (see
+        ``FloorConfig.invitation_ttl_s``).
+        """
+        remaining = max(0, self.turns_remaining - 1)
+        if t is None:
+            return replace(self, turns_remaining=remaining)
+        return replace(self, turns_remaining=remaining, t=t)
 
     def is_live(self) -> bool:
         return self.turns_remaining > 0
 
     def admits(self, agent_id: str) -> bool:
         return self.agent is None or self.agent == agent_id
+
+    def precedence(self) -> int:
+        """How specific this invitation is. Higher wins a collision."""
+        return _INVITATION_PRECEDENCE[self.source]
+
+    def expires_at(self, ttl_s: float) -> float | None:
+        """When this invitation goes stale, or None if it never does.
+
+        The introduction round is exempt: it is bounded by the cast size and
+        cutting it short strands agents who have not spoken yet.
+        """
+        if self.source is InvitationSource.INTRODUCTION:
+            return None
+        return self.t + ttl_s
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +130,12 @@ class PanelState:
     speaking: str | None = None  # agent id currently producing audio
     # The floor is closed unless this is set. See FEASIBILITY.md 3.8.
     invitation: Invitation | None = None
+    # Agents that tied for "the one Ricky addressed", when the utterance named
+    # more than one in the same grammatical role. Ambiguity is an outcome, not
+    # an error: the floor stays CLOSED and the tie is surfaced to the operator
+    # rather than guessed at. A missed invitation costs one beat; a wrong one
+    # puts an agent on the PA over the moderator.
+    address_conflict: tuple[str, ...] = ()
     human_speaking: bool = False
 
     transcript: tuple[Utterance, ...] = ()

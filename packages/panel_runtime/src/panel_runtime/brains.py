@@ -28,6 +28,19 @@ moment they arrive:
    while the text is still being written.
 2. **Sentences**, as the chunker finds boundaries. Each goes straight to TTS, so
    first audio depends on the first clause instead of the last token.
+
+**A proposal without words is not a proposal.** The model answers the "you will
+almost certainly not be speaking" branch of `build_turn_prompt` by scoring
+itself low *and* returning `"utterance": ""` — measured at 9/9 and 8/9 of runs
+before the prompt was tightened, on every persona, not just one. Releasing the
+signals the instant the six numbers land therefore raised a hand on behalf of
+an agent that had nothing to say: the floor granted the turn, `speak()` drained
+an already-closed empty queue, and an agent's name went up on stage over
+silence. So `SignalsReady` waits for the numbers *and* for the first real
+character of the utterance — 0-409ms later, measured, and 0ms in half of runs
+because the opening quote arrives in the same chunk as `novelty`. That is the
+same rule the non-streaming `ClaudeBrain.propose` has always applied with
+`if not utterance: return None`; the streaming path simply lost it.
 """
 
 from __future__ import annotations
@@ -50,6 +63,7 @@ from panel_core import (
     build_system_prompt,
     build_turn_prompt,
     sanitise,
+    stable_prefix,
 )
 
 from .chunking import SentenceChunker
@@ -215,10 +229,41 @@ def _unescape(raw: str) -> str:
     try:
         return json.loads(f'"{raw}"')
     except json.JSONDecodeError:
-        # A trailing half-escape. Drop the last character and retry once.
+        # A trailing half-escape that isn't the well-understood partial
+        # `\uXXXX` case `_escaped_stable_prefix` already trims before this is
+        # ever called — genuinely malformed input, in other words. Drop the
+        # last character and retry once on the chance that helps; if not,
+        # return the raw text rather than raise, since a brain that cannot
+        # decode its own output must not be the reason the panel goes down.
         with contextlib.suppress(json.JSONDecodeError):
             return json.loads(f'"{raw[:-1]}"')
         return raw
+
+
+# A `\u` escape needs four hex digits before it means anything at all; fewer
+# than that at the very *end* of the buffer is one still arriving mid-stream,
+# not a malformed one — the next token will bring the rest. Left alone,
+# `_unescape` decodes the partial escape as best it can (or gives up and
+# returns it as literal backslash-u-digits text), and either way that result
+# is not a prefix of what the same position decodes to once the escape
+# finishes arriving: two personas have an em-dash speech tic
+# (`personas/wayne.yaml`, `personas/dexter.yaml`, both "... —"), and "\u2014"
+# streams in a few bytes at a time exactly like anything else the model
+# writes. Trimming the partial escape back to its opening backslash keeps
+# `_unescape` from ever being asked to decode a value the next token could
+# still change out from under it — the matching argument for tags, brackets,
+# parens and labels lives in `stable_prefix()` in `panel_core.prompts`; this
+# one case is resolved here instead because it is a property of the raw,
+# still-JSON-escaped text, not the decoded utterance `stable_prefix` sees.
+_TRAILING_PARTIAL_UNICODE_ESCAPE = re.compile(r"\\u[0-9a-fA-F]{0,3}\Z")
+
+
+def _escaped_stable_prefix(raw: str) -> str:
+    """Trim a `\\uXXXX` escape off the end of `raw` if it has not finished
+    arriving yet. `raw` is still in JSON-escaped form — whatever
+    `_UTTERANCE_OPEN` captured — not yet decoded."""
+    match = _TRAILING_PARTIAL_UNICODE_ESCAPE.search(raw)
+    return raw[: match.start()] if match else raw
 
 
 class StreamingClaudeBrain:
@@ -249,6 +294,22 @@ class StreamingClaudeBrain:
         def ms() -> float:
             return 1000.0 * (time.monotonic() - started)
 
+        async def sentences(fresh: str):
+            # Shared by the in-stream path below and the end-of-stream
+            # resolution after the loop, so there is exactly one place that
+            # turns a fresh slice of sanitised text into `SentenceReady`
+            # events — two independent copies of this would be two
+            # independent places for them to drift apart.
+            nonlocal index
+            for sentence in chunker.push(fresh):
+                index += 1
+                event = SentenceReady(
+                    agent=persona.id, text=sentence, index=index, elapsed_ms=ms()
+                )
+                if on_event:
+                    on_event(event)
+                yield event
+
         async with self.client.messages.stream(
             model=self.config.model,
             max_tokens=self.config.max_tokens,
@@ -265,7 +326,49 @@ class StreamingClaudeBrain:
             async for text in response.text_stream:
                 buffer += text
 
-                if not signals_sent:
+                # The utterance is read *before* the signals are released, even
+                # though it arrives after them in the stream. Whether this agent
+                # has any words at all is part of whether it has a proposal at
+                # all, so it has to be known by the time the hand goes up.
+                fresh = ""
+                match = _UTTERANCE_OPEN.search(buffer)
+                if match:
+                    # sanitise() before chunking: markup must never reach TTS,
+                    # and a stray tag would also corrupt sentence boundaries.
+                    #
+                    # sanitise() is not prefix-monotonic, though: an unclosed
+                    # tag, bracket, stage direction or leading label can all
+                    # still change shape once more text arrives, and this
+                    # used to diff two independently sanitised strings
+                    # against that risk — which is exactly how a leaked
+                    # "<em" or a chopped "Wayne" happened. `stable_prefix()`
+                    # is what makes the diff safe: it withholds everything
+                    # from the first still-open construct onward, so `full`
+                    # is only ever computed from the part of the utterance
+                    # nothing left in the stream can rewrite, and the assert
+                    # below is the structural check that this promise holds
+                    # rather than a comment asking the next edit to be
+                    # careful. `_escaped_stable_prefix` does the same job one
+                    # layer down, for a `\uXXXX` escape still arriving.
+                    escaped = _escaped_stable_prefix(match.group(1))
+                    full = sanitise(stable_prefix(_unescape(escaped)))
+                    assert full.startswith(emitted_utterance), (
+                        "stable_prefix() broke its own invariant: a later, "
+                        "larger sanitised prefix must always extend the text "
+                        "already emitted to TTS, never rewrite it. See "
+                        "stable_prefix()'s docstring in panel_core.prompts."
+                    )
+                    fresh = full[len(emitted_utterance) :]
+                    if fresh:
+                        emitted_utterance = full
+
+                if not signals_sent and emitted_utterance:
+                    # `emitted_utterance` is the gate, not merely a value we
+                    # happen to have: an empty utterance, or one that sanitises
+                    # away to nothing, means this agent has nothing to say and
+                    # must not be offered the floor. Silence is a legitimate
+                    # outcome; an agent granted the floor and then saying
+                    # nothing never is.
                     found = {m.group(1): m.group(2) for m in _FIELD_DONE.finditer(buffer)}
                     if all(f in found for f in SIGNAL_FIELDS):
                         signals_sent = True
@@ -278,22 +381,30 @@ class StreamingClaudeBrain:
                             on_event(event)
                         yield event
 
-                match = _UTTERANCE_OPEN.search(buffer)
-                if match:
-                    # sanitise() before chunking: markup must never reach TTS,
-                    # and a stray tag would also corrupt sentence boundaries.
-                    full = sanitise(_unescape(match.group(1)))
-                    fresh = full[len(emitted_utterance) :]
-                    if fresh:
-                        emitted_utterance = full
-                        for sentence in chunker.push(fresh):
-                            index += 1
-                            event = SentenceReady(
-                                agent=persona.id, text=sentence, index=index, elapsed_ms=ms()
-                            )
-                            if on_event:
-                                on_event(event)
-                            yield event
+                if fresh:
+                    async for event in sentences(fresh):
+                        yield event
+
+        # The stream is over: nothing further can arrive to retroactively
+        # rewrite an unclosed tag, bracket, parenthetical or leading label,
+        # so whatever `stable_prefix()` was withholding is resolved by
+        # definition and safe to release in full now — this is the mirror
+        # image of `chunker.flush()` below, one layer up, and skipping it
+        # would silently swallow a turn's last few words any time it ended
+        # mid-construct. That would trade the corruption bug for a dropped-
+        # audio bug, which is not a trade this fix is allowed to make.
+        match = _UTTERANCE_OPEN.search(buffer)
+        if match:
+            full = sanitise(_unescape(match.group(1)))
+            assert full.startswith(emitted_utterance), (
+                "final sanitise() did not extend the streamed prefix — see "
+                "stable_prefix()'s docstring in panel_core.prompts."
+            )
+            fresh = full[len(emitted_utterance) :]
+            if fresh:
+                emitted_utterance = full
+                async for event in sentences(fresh):
+                    yield event
 
         tail = chunker.flush()
         if tail:

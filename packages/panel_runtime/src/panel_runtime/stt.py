@@ -22,6 +22,21 @@ turned into `HumanSpeechStarted`/`HumanSpeechEnded`.
 Agent speech never enters this path. Ever. That is the feedback loop that ends
 the show — agent turns enter conversation state as text, because we generated
 them and already know them verbatim.
+
+**`additional_vocab` on this endpoint is unverified.** The documented
+`content`/`sounds_like` schema (confirmed at
+https://docs.speechmatics.com/api-ref/realtime-transcription-websocket, and
+corroborated by LiveKit's `speechmatics/linden-1` plugin docs at
+https://docs.livekit.io/agents/models/stt/speechmatics/, which describes the
+same `content` + optional `sounds_like` shape for this model) is for the
+standard `/v2` endpoint and LiveKit's own inference wrapper. Neither
+Speechmatics' own preview-mode docs
+(https://docs.speechmatics.com/private/preview-mode) nor the realtime API
+reference mention the raw `/v2/agent` WebSocket protocol at all, so whether
+*this* endpoint accepts the key — or what its `Error` looks like if it
+doesn't — is not established. `STTConfig` therefore treats a rejected
+`additional_vocab` as recoverable rather than fatal: see `_VocabRejected` and
+`_AgentSTTSession.run`.
 """
 
 from __future__ import annotations
@@ -32,11 +47,11 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Self
 
 import websockets
-from panel_core import HUMAN, TranscriptUpdated, TurnYielded
+from panel_core import HUMAN, PanelCast, TranscriptUpdated, TurnYielded
 
 log = logging.getLogger(__name__)
 
@@ -71,6 +86,11 @@ class STTConfig:
     speaker_diarization_config: dict[str, Any] | None = None
     enable_partials: bool = True
     punctuation_overrides: dict[str, Any] | None = None
+    # Pronunciation hints derived from the cast (see `from_cast` /
+    # `vocab_from_cast`), not hardcoded here — pronunciation is a fact about
+    # a persona, not about a transcription session (CLAUDE.md: personas are
+    # data). A tuple, not a list, so the frozen dataclass stays hashable.
+    additional_vocab: tuple[dict[str, Any], ...] = ()
     sample_rate: int = STT_SAMPLE_RATE
     chunk_size: int = 1024
     connect_timeout_s: float = 5.0
@@ -88,6 +108,8 @@ class STTConfig:
             "enable_partials": self.enable_partials,
             "diarization": self.diarization,
         }
+        if self.additional_vocab:
+            config["additional_vocab"] = list(self.additional_vocab)
         if self.domain is not None:
             config["domain"] = self.domain
         if self.output_locale is not None:
@@ -108,6 +130,54 @@ class STTConfig:
             },
             "transcription_config": self.to_transcription_config(),
         }
+
+    @classmethod
+    def from_cast(cls, cast: PanelCast, **overrides: Any) -> STTConfig:
+        """Build a deployment config with vocabulary derived from the cast.
+
+        Every other knob (sample rate, timeouts, model, ...) is still
+        deployment configuration and comes from `overrides` or this
+        dataclass's own defaults — only `additional_vocab` is derived,
+        because a persona's pronunciation is a fact about the persona, not
+        about the transcription session (CLAUDE.md: personas are data).
+
+        Args:
+            cast: The panel's cast, read for each persona's `sounds_like`.
+            **overrides: Any other `STTConfig` field to set explicitly.
+
+        Returns:
+            A new `STTConfig` with `additional_vocab` populated from `cast`
+            unless `additional_vocab` was itself passed in `overrides`.
+        """
+        overrides.setdefault("additional_vocab", vocab_from_cast(cast))
+        return cls(**overrides)
+
+
+def vocab_from_cast(cast: PanelCast) -> tuple[dict[str, Any], ...]:
+    """Build `additional_vocab` entries from persona pronunciation data.
+
+    Reads `sounds_like` off each `Persona` rather than hardcoding names
+    here, so a persona's pronunciation stays data (`personas/*.yaml`)
+    instead of code. A persona with no `sounds_like` hints contributes no
+    entry — vocabulary lists add session-start latency, so this only ever
+    biases the personas that actually need it (currently just Melia; see
+    `personas/melia.yaml`).
+
+    Args:
+        cast: The panel's cast.
+
+    Returns:
+        One `additional_vocab` entry per persona that declares
+        `sounds_like`, each shaped `{"content": ..., "sounds_like": [...]}`
+        per the documented `/v2` schema (see the `additional_vocab`
+        verification note in this module's docstring for why that schema
+        is not yet confirmed for the preview `/v2/agent` endpoint).
+    """
+    return tuple(
+        {"content": persona.canonical_name, "sounds_like": list(persona.sounds_like)}
+        for persona in cast.personas.values()
+        if persona.sounds_like
+    )
 
 
 class PushAudioSource:
@@ -174,6 +244,23 @@ class PushAudioSource:
         return chunk
 
 
+class _VocabRejected(RuntimeError):
+    """`StartRecognition` was rejected while `additional_vocab` was set.
+
+    Raised instead of a bare `RuntimeError` so `run()` can retry once with
+    the vocabulary key dropped, rather than treating the rejection as an
+    ordinary transient fault and retrying the identical (and presumably
+    still-rejected) config forever. Whether `additional_vocab` is actually
+    supported on the preview `/v2/agent` endpoint is unverified — see the
+    module docstring — and that endpoint's `Error` message has no documented
+    field naming the offending config key, so this treats *any* rejection
+    seen while the key is present as possibly caused by it. That is a
+    deliberately broad, safe-by-construction guess: the cost of a wrong
+    guess is one wasted reconnect attempt, and the cost of not guessing is
+    the show running with no transcription at all.
+    """
+
+
 class _AgentSTTSession:
     """One mic, one socket, reconnected for as long as the show is running."""
 
@@ -195,6 +282,10 @@ class _AgentSTTSession:
         self._name = name
         self._running = True
         self._started = False
+        # Dropped for the rest of the show on the first rejection — see
+        # `_VocabRejected`. A fact about this session's history, not the
+        # deployment config, so it lives here rather than on `STTConfig`.
+        self._vocab_enabled = bool(config.additional_vocab)
 
     async def run(self) -> None:
         backoff = self._config.reconnect_initial_s
@@ -202,6 +293,18 @@ class _AgentSTTSession:
             self._started = False
             try:
                 await self._session()
+            except _VocabRejected as exc:
+                log.warning(
+                    "stt[%s]: StartRecognition rejected additional_vocab "
+                    "(%s) — disabling vocabulary bias and reconnecting "
+                    "immediately so transcription still starts. Persona "
+                    "name recognition may be degraded for the rest of the "
+                    "show.",
+                    self._name,
+                    exc,
+                )
+                self._vocab_enabled = False
+                continue  # config change, not a transient fault — no backoff
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — a dead socket must not end the show
@@ -218,12 +321,20 @@ class _AgentSTTSession:
             await asyncio.sleep(backoff)
 
     async def _session(self) -> None:
+        # `additional_vocab` only: every other knob (chunk size, timeouts,
+        # sample rate, ...) is unaffected by a prior rejection and keeps
+        # coming from `self._config` directly.
+        start_config = (
+            self._config
+            if self._vocab_enabled
+            else replace(self._config, additional_vocab=())
+        )
         async with websockets.connect(
             self._config.url,
             additional_headers={"Authorization": f"Bearer {self._api_key}"},
             open_timeout=self._config.connect_timeout_s,
         ) as ws:
-            await ws.send(json.dumps(self._config.to_start_recognition()))
+            await ws.send(json.dumps(start_config.to_start_recognition()))
             await self._await_started(ws)
             self._started = True
             log.info("stt[%s]: recognition started", self._name)
@@ -262,6 +373,8 @@ class _AgentSTTSession:
             if kind == "RecognitionStarted":
                 return
             if kind == "Error":
+                if self._vocab_enabled:
+                    raise _VocabRejected(message)
                 raise RuntimeError(f"StartRecognition rejected: {message}")
             log.debug("stt[%s]: %s before RecognitionStarted", self._name, kind)
 

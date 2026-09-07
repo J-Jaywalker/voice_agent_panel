@@ -1,7 +1,7 @@
 # Agent 1 — The Expert / Historian.
 # Gives the panel its factual backbone.
 id: dex
-name: Dexter-K6
+name: Dexter
 job_title: Senior AI Infrastructure & Security Engineer
 employer: Irrational Industries   # fictional
 background: >-
@@ -36,3 +36,9 @@ relationships:
   melia: "Asks the right questions. Sometimes the wrong ones twice."
 
 forbidden_topics: []
+
+# No `aliases`/`sounds_like` populated: "Dexter" is a common English name
+# already well represented in STT vocabularies, unlike "Melia" (see
+# melia.yaml), which an ASR language model normalises to the more familiar
+# "Amelia". Add entries here if a rehearsal or show surfaces a real
+# misrecognition — same mechanism, just no observed failure yet.
