@@ -86,14 +86,24 @@ _UTTERANCE_OPEN = re.compile(r'"utterance"\s*:\s*"((?:[^"\\]|\\.)*)')
 
 @dataclass(frozen=True, slots=True)
 class BrainConfig:
-    # S0.7 bake-off (docs/spike-phase0.md): haiku-4.5 is both the cheapest and
-    # the fastest of the three — 2582ms total vs 4110-4129ms for sonnet-5 and
-    # 6207-6218ms for opus-5 — because the cost here is generation time, not
-    # reasoning, and no model/effort setting changes that. Haiku rejects the
-    # `effort` param outright (400), so it is unconfigurable rather than merely
-    # fast: `effort` is omitted from the request whenever the model is a haiku.
-    model: str = "claude-haiku-4-5-20251001"
-    effort: str = "medium"
+    # Opus 5 at `low`, decided 7 Sept 2026 (FEASIBILITY 10.3), and chosen
+    # against the S0.7 bake-off rather than because of it: that measured
+    # haiku-4.5 fastest at 2582ms total, sonnet-5 at 4110-4129ms and opus-5 at
+    # 6207-6218ms, since the cost here is generation time rather than
+    # reasoning. What buys the difference back is a capability neither of the
+    # others has — Opus supports mid-conversation `role: "system"` messages
+    # that do not invalidate the prompt cache, which is the only way
+    # `InjectDirective` and the operator console's "wrap up" control can ever
+    # work (FEASIBILITY 6). `low` is the mitigation for the latency, and the
+    # bake-off did not measure that combination: re-measure it before relying
+    # on the figure. Speculation and sentence-level streaming are what make
+    # the remaining gap survivable.
+    #
+    # Haiku rejects `effort` outright (400), so it is unconfigurable rather
+    # than merely fast: `effort` is omitted whenever the model is a haiku,
+    # which keeps the bake-off re-runnable from this same config.
+    model: str = "claude-opus-5"
+    effort: str = "low"
     max_tokens: int = 1200
     # A proposal that arrives after the floor has been decided is worthless, so
     # it is better to abandon it than to let it hold up the panel.

@@ -220,8 +220,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="panel-sim")
     parser.add_argument("--personas", type=Path, default=Path("personas"))
     parser.add_argument("--live", action="store_true", help="use a real model, not stub brains")
-    parser.add_argument("--model", default="claude-haiku-4-5-20251001")
-    parser.add_argument("--effort", default="medium", choices=["low", "medium", "high"])
+    # Matches `BrainConfig`'s default so the sim rehearses the model that will
+    # be on stage — see the reasoning there. Both are overridable, which is
+    # what keeps the S0.7 bake-off re-runnable.
+    parser.add_argument("--model", default="claude-opus-5")
+    parser.add_argument("--effort", default="low", choices=["low", "medium", "high"])
     parser.add_argument("--log", type=Path, default=None, help="append an event log for replay")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()

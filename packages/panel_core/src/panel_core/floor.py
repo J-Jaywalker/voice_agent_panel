@@ -50,6 +50,7 @@ from .events import (
     TurnYielded,
 )
 from .personas import PanelCast
+from .prompts import sanitise
 from .scoring import FloorConfig, floor_priority, is_backchannel, may_interrupt
 from .state import AgentState, Invitation, InvitationSource, PanelState, Proposal, Utterance
 
@@ -558,7 +559,8 @@ class FloorController:
                 and state.intro_queue is None
                 and _INTRODUCTION_RE.search(text)
             ):
-                state = self._start_introductions(state, t=event.t)
+                state, intro_cmds = self._start_introductions(state, t=event.t)
+                commands.extend(intro_cmds)
             else:
                 state, detect_cmds = self._apply_detection(state, text, t=event.t)
                 commands.extend(detect_cmds)
@@ -570,16 +572,24 @@ class FloorController:
         # The debounce throttles *partials* only. A final segment must always
         # ask, or a turn that lands inside the debounce window gets no
         # candidates at all and the panel falls silent.
-        due = event.t - state.last_proposal_request_t >= self.config.speculation_interval_s
-        if event.is_final or due:
-            targets = state.idle_agents()
-            if targets:
-                state = replace(state, last_proposal_request_t=event.t)
-                commands.append(
-                    RequestProposals(
-                        agents=targets, reason="final" if event.is_final else "speculation"
+        #
+        # None of this applies while an introduction round is live. Every
+        # line in that round is `Persona.introduction` — fixed at authoring
+        # time, never generated — so a speculative candidate would be work
+        # nobody ever reads: exactly the model round trip (4-6s per agent)
+        # that produced a silent agent on stage and that fixed text exists to
+        # remove. See `_start_introductions` and `_grant_introduction`.
+        if state.intro_queue is None:
+            due = event.t - state.last_proposal_request_t >= self.config.speculation_interval_s
+            if event.is_final or due:
+                targets = state.idle_agents()
+                if targets:
+                    state = replace(state, last_proposal_request_t=event.t)
+                    commands.append(
+                        RequestProposals(
+                            agents=targets, reason="final" if event.is_final else "speculation"
+                        )
                     )
-                )
 
         return state, commands
 
@@ -598,6 +608,22 @@ class FloorController:
         state = replace(state, floor_holder=None, human_speaking=False)
 
         invitation = state.invitation
+        if invitation is not None and invitation.source is InvitationSource.INTRODUCTION:
+            # The introduction round grants itself: `_start_introductions`
+            # and `_agent_ended` (via `_advance_introductions`) hand out each
+            # fixed line directly, the instant the previous one ends, with no
+            # arbitration in between because there is nothing left to score —
+            # a fixed line has no signals. A genuine `TurnYielded` can still
+            # land mid-round (Speechmatics' `EndOfTurn` and this runtime's TTS
+            # pipeline are two different clocks, so it can arrive before the
+            # currently-granted agent's `AgentSpeechStarted` has come back
+            # around the event queue) and reducing it as an ordinary end of
+            # turn would either re-grant a turn already in flight or send the
+            # round back to Ricky mid-introduction. Absorbing it here is a
+            # no-op, not a lost decision — nothing about this event was ever
+            # needed to advance a round that paces itself.
+            return state, []
+
         if invitation is None or not invitation.is_live():
             # Ricky made a remark, not an invitation — or he addressed two
             # agents at once and we refused to guess between them. Agents may
@@ -612,14 +638,7 @@ class FloorController:
                 self._paint(state),
             ]
 
-        if (
-            invitation.source is not InvitationSource.INTRODUCTION
-            and state.consecutive_agent_turns >= self.config.max_consecutive_agent_turns
-        ):
-            # The introduction round is exempt: it is self-limiting by
-            # construction (bounded by the cast size) and must not be cut
-            # short by the same safety valve that stops a machine-to-machine
-            # relay.
+        if state.consecutive_agent_turns >= self.config.max_consecutive_agent_turns:
             return state, [CueModerator(reason=CueReason.AGENT_TURN_LIMIT), self._paint(state)]
 
         winner, reason = self._arbitrate(state, invitation=invitation, now=event.t)
@@ -742,18 +761,19 @@ class FloorController:
         state = state.cleared_proposals()
 
         if state.intro_queue is not None and event.agent in state.intro_queue:
+            # Pop the agent who just finished and hand the round straight to
+            # `_advance_introductions`, which either grants the next fixed
+            # line directly or, if nobody is left, latches the round shut.
+            # There is no `RequestProposals` here any more: the old version
+            # of this branch asked the model for the *next* agent's line on
+            # every turn, which is the 4-6s round trip fixed text exists to
+            # remove, and it is also the reason the round used to be able to
+            # stall — nothing else was left to re-drive arbitration once a
+            # proposal never arrived.
             remaining = tuple(a for a in state.intro_queue if a != event.agent)
-            if remaining:
-                state = replace(state, intro_queue=remaining, last_proposal_request_t=event.t)
-                commands.append(RequestProposals(agents=remaining, reason="introduction_round"))
-                commands.append(self._paint(state))
-                return state, commands
-
-            # Everyone has introduced themselves. Latch it shut — permanently,
-            # by design — and hand back to the moderator.
-            state = replace(state, intro_queue=None, intro_done=True, invitation=None)
-            commands.append(CueModerator(reason=CueReason.INTRODUCTIONS_COMPLETE))
-            commands.append(self._paint(state))
+            state = replace(state, intro_queue=remaining)
+            state, advance_cmds = self._advance_introductions(state, now=event.t)
+            commands.extend(advance_cmds)
             return state, commands
 
         invitation = state.invitation
@@ -941,21 +961,16 @@ class FloorController:
         return state, [self._paint(state)]
 
     def _eligible(self, state: PanelState, invitation: Invitation | None) -> dict[str, Proposal]:
-        # During an introduction round, only agents still owed a turn count —
-        # otherwise the strongest scorer could win a second time before the
-        # weaker ones have spoken at all.
-        intro_pending = (
-            state.intro_queue
-            if invitation is not None and invitation.source is InvitationSource.INTRODUCTION
-            else None
-        )
+        # Never called with an introduction invitation: `_turn_yielded` routes
+        # that round to `_advance_introductions` before arbitration is ever
+        # reached, because a fixed line has no proposal to be eligible with in
+        # the first place. See `_grant_introduction`.
         return {
             a: p
             for a, p in state.proposals.items()
             if not state.agents[a].muted
             and state.agents[a].state is not AgentState.SPEAKING
             and (invitation is None or invitation.admits(a))
-            and (intro_pending is None or a in intro_pending)
         }
 
     def _score(self, state: PanelState, agent_id: str, proposal: Proposal, *, now: float) -> float:
@@ -975,6 +990,10 @@ class FloorController:
         Returns the winner and, when there is none, *why* — "nobody proposed"
         and "the one agent Ricky named had nothing to say" are different
         problems, and a rehearsal that cannot tell them apart cannot be tuned.
+
+        Never called with an introduction invitation — `_turn_yielded` routes
+        that round to `_advance_introductions` instead, since scoring exists
+        to choose between competing proposals and a fixed line never has one.
         """
         candidates = self._eligible(state, invitation)
         if not candidates:
@@ -1010,11 +1029,6 @@ class FloorController:
             reverse=True,
         )
         best_score, best_agent = scored[0]
-
-        if invitation.source is InvitationSource.INTRODUCTION:
-            # Scoring only orders who goes next. Nobody loses to silence, and
-            # nobody hands off — every agent speaks for itself.
-            return best_agent, None
 
         if best_score < self.config.min_floor_priority:
             return None, CueReason.BELOW_FLOOR
@@ -1224,18 +1238,30 @@ class FloorController:
             return AddressRole.VOCATIVE, "vocative_trailing"
         return None
 
-    def _start_introductions(self, state: PanelState, *, t: float) -> PanelState:
-        """Invite the whole panel to introduce itself, one turn each.
+    def _start_introductions(
+        self, state: PanelState, *, t: float
+    ) -> tuple[PanelState, list[Command]]:
+        """Invite the whole panel to introduce itself, one fixed turn each.
 
-        Unlike an ordinary open invitation, this guarantees every agent a
-        turn — the orchestration layer (floor-priority scoring, via
-        `_arbitrate`) only decides the order, never whether someone gets
-        skipped. Callers must already have checked `intro_done`: this is the
-        one-shot round, and there is no event that resets `intro_done` once
-        it latches.
+        Every agent's line is `Persona.introduction` — fixed at authoring
+        time, never generated — so there are no candidate proposals for
+        scoring to choose between, and this guarantees every agent a turn
+        directly rather than by scoring the strongest case each time: order
+        is `tuple(state.agents.keys())`, which is the cast's own order
+        (`PanelCast.from_dir`'s alphabetical directory listing, carried
+        through unchanged by `PanelState.for_agents`), fixed and identical on
+        every run. A fixed opening that ran in a different order each
+        rehearsal would only be half of what "fixed" was for. Deliberately
+        not derived from any prior turn's content either: `Persona.
+        introduction` never references another panellist by name, precisely
+        so this ordering decision is free to be simple.
+
+        Callers must already have checked `intro_done`: this is the one-shot
+        round, and there is no event that resets `intro_done` once it
+        latches.
         """
         agents = tuple(state.agents.keys())
-        return replace(
+        state = replace(
             state,
             invitation=Invitation(
                 agent=None,
@@ -1248,6 +1274,86 @@ class FloorController:
             intro_queue=agents,
             address_conflict=(),
         )
+        return self._advance_introductions(state, now=t)
+
+    def _advance_introductions(
+        self, state: PanelState, *, now: float
+    ) -> tuple[PanelState, list[Command]]:
+        """Grant the next fixed introduction turn, or close the round out.
+
+        This *is* the introduction round's entire arbitration. There is
+        nothing to score because there is nothing to generate — every line is
+        `Persona.introduction` — so progressing the round is a direct,
+        synchronous grant rather than a request that waits on a model
+        response and a later proposal to re-open arbitration. That round trip
+        is exactly what left an agent holding the floor over dead air on
+        stage-adjacent testing. Called once when the round starts
+        (`_start_introductions`) and again every time one agent's turn ends
+        (`_agent_ended`), so from Ricky's "introduce yourselves" to the last
+        agent's last word, nothing here ever waits on anything.
+        """
+        winner = self._next_introduction(state)
+        if winner is None:
+            if state.intro_queue:
+                # Every agent still owed a turn is muted. The round cannot
+                # finish itself — an unmute, or Ricky abandoning and
+                # re-triggering it, is what resumes it — so it is left
+                # standing rather than quietly marked done. `expires_at`
+                # exempts this source from the TTL for exactly this reason.
+                return state, [CueModerator(reason=CueReason.NO_PROPOSALS), self._paint(state)]
+            # Everyone has introduced themselves. Latch it shut — permanently,
+            # by design — and hand back to the moderator.
+            state = replace(state, intro_queue=None, intro_done=True, invitation=None)
+            return state, [
+                CueModerator(reason=CueReason.INTRODUCTIONS_COMPLETE),
+                self._paint(state),
+            ]
+        return self._grant_introduction(state, winner, now=now)
+
+    def _next_introduction(self, state: PanelState) -> str | None:
+        """The next agent still owed an introduction, skipping anyone muted.
+
+        Order is `intro_queue`'s own order, fixed once at
+        `_start_introductions` and never re-derived. A muted agent is
+        skipped, not granted: `OperatorAction.MUTE_AGENT` is an absolute veto
+        everywhere else in this file (`_proposal` drops a muted agent's
+        candidate before it is ever stored, and `_eligible` excludes muted
+        agents from every other kind of arbitration), and the introduction
+        round granting fixed text directly, with no proposal to drop, must
+        not become the one path that quietly overrides it.
+        """
+        for agent_id in state.intro_queue or ():
+            if not state.agents[agent_id].muted:
+                return agent_id
+        return None
+
+    def _grant_introduction(
+        self, state: PanelState, agent_id: str, *, now: float
+    ) -> tuple[PanelState, list[Command]]:
+        """Grant one turn in the introduction round.
+
+        The only `StartSpeech` in this whole file that is not built from a
+        `Proposal`: there is nothing in `state.proposals` for this agent, and
+        there was never meant to be — introductions never ask the model in
+        the first place (see `_advance_introductions`). The utterance comes
+        straight from `Persona.introduction`, run through `sanitise()` the
+        same as any other text on its way to audio (CLAUDE.md: fixed text
+        does not get to bypass that rule just because nobody generated it
+        live).
+        """
+        persona = self.cast[agent_id]
+        state = replace(
+            state,
+            turn_id=state.turn_id + 1,
+            consecutive_agent_turns=state.consecutive_agent_turns + 1,
+            invitation=state.invitation.spent(t=now) if state.invitation else None,
+            address_conflict=(),
+        )
+        return state, [
+            StartSpeech(
+                agent=agent_id, utterance=sanitise(persona.introduction), turn_id=state.turn_id
+            )
+        ]
 
     def _grant(
         self, state: PanelState, agent_id: str, *, now: float, forced: bool = False

@@ -39,6 +39,7 @@ import asyncio
 import contextlib
 import json
 import queue
+import re
 import time
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -130,6 +131,21 @@ class Candidate:
             if sentence is None:
                 return
             yield sentence
+
+    @classmethod
+    def fixed(cls, agent: str, sentences: list[str]) -> "Candidate":
+        """Wrap an utterance that is already fully known — an introduction's
+        fixed text (`FloorController._grant_introduction`) — as a `Candidate`,
+        so `speak()` treats it exactly like a streamed one: same TTS calls,
+        same mixer, same completion event. There is nothing left to arrive,
+        so every sentence is enqueued up front and the candidate is closed
+        immediately rather than waiting on a brain that was never asked.
+        """
+        candidate = cls(agent)
+        for sentence in sentences:
+            candidate._queue.put_nowait(sentence)
+        candidate.close()
+        return candidate
 
 
 class PanelRuntime:
@@ -256,9 +272,14 @@ class PanelRuntime:
         `_turn_yielded`, which fires solely on `TurnYielded`, and this
         runtime's only source of that event is Speechmatics' `EndOfTurn`
         (`stt.py`). With Ricky silent after handing off multiple turns (e.g.
-        the introduction round, or any open invitation worth more than one
-        turn), nothing would otherwise re-trigger arbitration and the panel
-        would stall with a live invitation and idle proposals forever.
+        an open invitation worth more than one turn), nothing would otherwise
+        re-trigger arbitration and the panel would stall with a live
+        invitation and idle proposals forever. The introduction round used to
+        be the motivating example here, but it no longer goes through this
+        path at all — it never asks for proposals in the first place, and
+        `_turn_yielded` treats a `TurnYielded` arriving mid-round as a no-op
+        rather than something to arbitrate (see `panel_core.floor.
+        _turn_yielded` and `_advance_introductions`).
 
         `panel_sim` has the same requirement and synthesises `TurnYielded`
         once after gathering a batch of proposals (see its `_gather`). Here
@@ -513,6 +534,25 @@ class PanelRuntime:
     def _start_speaking(self, command: StartSpeech) -> None:
         persona = self.cast[command.agent]
         candidate = self._candidates.get(command.agent)
+        if candidate is None and command.utterance:
+            # A fixed line, not a generated one. Today the introduction round
+            # is the only source of these (`FloorController._grant_introduction`),
+            # but the test is general: an ordinary grant's `Proposal.utterance`
+            # is always `""` in this runtime (the real words live in a
+            # `Candidate`, filled in by `_stream_one` as the model streams),
+            # so a *non-empty* `command.utterance` with no candidate means the
+            # words are already fully known and there was never anything to
+            # stream from a model in the first place. `_grant_introduction`
+            # has already run it through `sanitise()` — fixed text does not
+            # get to bypass that rule just because nobody generated it live
+            # (CLAUDE.md) — so it is safe to speak as-is. The sentence split
+            # is only for pacing symmetry with a streamed turn: a whole
+            # introduction is already fully known, so there is no generation
+            # latency this is trying to save.
+            sentences = [s for s in re.split(r"(?<=[.!?])\s+", command.utterance) if s]
+            if sentences:
+                candidate = Candidate.fixed(command.agent, sentences)
+                self._candidates[command.agent] = candidate
         if candidate is None:
             # Either nothing was ever requested for this agent, or the stream
             # that was requested finished without producing a speakable word

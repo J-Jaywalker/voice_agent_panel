@@ -23,6 +23,25 @@ class Persona(BaseModel):
     background: str
     stance: str = Field(description="This agent's position on AI adoption.")
 
+    # --- fixed opening ---
+    # Word-for-word, spoken every time, never generated. The introduction
+    # round used to ask the model for this live and it once came back
+    # completely empty on stage-adjacent testing — an agent granted the
+    # floor with nothing under it. Fixed text removes the failure class
+    # outright rather than tuning around it, and it is what FEASIBILITY.md
+    # 4.5 wants the opening to become anyway (pre-rendered to audio) — see
+    # `FloorController._grant_introduction`, which is the only thing that
+    # ever reads this field. Two or three sentences, written to be read
+    # aloud, and — because a fixed round's speaking order cannot safely be
+    # assumed by its own content (see `FloorController._start_introductions`
+    # for why the order is fixed but the text still does not lean on it) —
+    # written to stand on its own rather than responding to another
+    # panellist's introduction.
+    introduction: str = Field(
+        min_length=1,
+        description="Fixed, verbatim text for the introduction round. Never sent to a model.",
+    )
+
     # --- voice ---
     voice_id: str
     communication_style: str

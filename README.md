@@ -2,10 +2,9 @@
 
 Three AI agents on a live stage panel with a human moderator, 21 October 2026.
 
-**Start with [FEASIBILITY.md](FEASIBILITY.md)** — architecture, risks, phase plan
-and the AV requirements the venue needs. Settled decisions live in
-[`docs/adr/`](docs/adr/); Phase 0 spike findings in
-[`docs/spike-phase0.md`](docs/spike-phase0.md).
+**Start with [FEASIBILITY.md](FEASIBILITY.md)** — architecture, risks, phase plan,
+spike findings (§8.1), and the AV requirements the venue needs. Settled
+decisions live in [`docs/adr/`](docs/adr/).
 
 ## Quick start
 
@@ -158,7 +157,7 @@ uv run python packages/panel_runtime/tests/bench_first_audio.py --voice <id>
 
 `bench_first_audio` is the one to trust: it measures request to *first audible
 word*, which is what the audience experiences. Everything else is an
-intermediate. Findings live in [docs/spike-phase0.md](docs/spike-phase0.md).
+intermediate. Findings live in [FEASIBILITY.md §6/§8.1](FEASIBILITY.md).
 
 ---
 

@@ -16,6 +16,19 @@ stance: >-
   organisational resistance decide the second one, and they move slowly for
   reasons that are usually good.
 
+# Fixed, word for word, for the one-shot introduction round (CLAUDE.md
+# "personas are data"; FEASIBILITY.md 4.5). Never sent to a model, never
+# generated live — see FloorController._grant_introduction. Deliberately
+# does not reference another panellist: the round's speaking order is fixed
+# (cast order), but the text must stand on its own regardless, since a
+# fixed line has no way to notice if that order is ever changed later.
+introduction: >-
+  Mm, I'm Melia, chief AI ethics and human continuity officer at the Kestrel
+  Foundation. Can I just say, before anyone else does, that capability and
+  adoption are two different curves, and the gap is mostly trust and
+  oversight moving slower than people would like, for reasons that are
+  usually good.
+
 voice_id: pFZP5JQG7iQjIQuC4Bku  # Lily — dry, precise, British. PLACEHOLDER: recast before rehearsal.
 communication_style: dry, precise, occasionally very funny
 speech_tics:

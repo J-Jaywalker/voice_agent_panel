@@ -11,6 +11,18 @@ stance: >-
   Adoption is accelerating faster than anyone in the room believes. Today's
   limitations are engineering problems with dates on them, not laws of nature.
 
+# Fixed, word for word, for the one-shot introduction round (CLAUDE.md
+# "personas are data"; FEASIBILITY.md 4.5). Never sent to a model, never
+# generated live — see FloorController._grant_introduction. Deliberately
+# does not reference another panellist: the round's speaking order is fixed
+# (cast order), but the text must stand on its own regardless, since a
+# fixed line has no way to notice if that order is ever changed later.
+introduction: >-
+  I'm Wayne. I run capital allocation end to end for Servv AI, and the board
+  stopped asking to see my working a while ago. Look, adoption is moving
+  faster than almost anyone here believes, and most limitations are just
+  engineering problems with a date attached, not laws of nature.
+
 voice_id: JBFqnCBsd6RMkjVDRZzb  # George — brisk, warm, British. PLACEHOLDER: recast before rehearsal.
 communication_style: brisk, confident, occasionally provocative
 speech_tics:

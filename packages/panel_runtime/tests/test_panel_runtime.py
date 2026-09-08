@@ -1,21 +1,29 @@
 """Runtime-level acceptance tests for the intro round and the proposal stream.
 
-`packages/panel_core/tests/test_floor.py` proves the reducer is correct, but
-every one of those tests hand-feeds a `TurnYielded` after each agent's
-proposal — modelling a runtime that re-opens arbitration on its own. Nothing
-in `panel_runtime` actually did that: only Speechmatics' `EndOfTurn` produced
-`TurnYielded` (`stt.py`), so a live run stalled after the first agent's
-introduction with the floor never re-arbitrated. See `PanelRuntime._maybe_
-rearbitrate` and the matching guard in `panel_core.floor._turn_yielded`.
+The introduction round no longer calls a model at all: every agent's line is
+`Persona.introduction`, fixed at authoring time, and `FloorController.
+_grant_introduction` hands it out directly the instant the phrase is detected
+and again every time one agent finishes (`_advance_introductions`) — see
+`packages/panel_core/tests/test_floor.py` for the reducer-level proof of that.
+`StubBrain` below is therefore dead for the two introduction tests in this
+file; it is kept only because `PanelRuntime` still needs a `.brain` attribute
+to construct, and it remains exactly what the other tests in this file (the
+streaming/sanitisation ones, further down) exercise.
 
-Those tests drive `PanelRuntime` exactly as `run()` would — through
-`self.events`, `_drain_events` and `_execute` — with a stub brain standing in
-for the network call, and no STT/VAD/TTS/audio device involved. They are the
-acceptance criterion for the whole round completing unattended.
+What these two tests still prove at the runtime level is that `PanelRuntime`
+carries a fixed line all the way to a spoken (well, printed — `use_tts=False`)
+turn and back to `AgentSpeechEnded`, with no `RequestProposals` and no brain
+call anywhere in between, entirely through `self.events`, `_drain_events` and
+`_execute` — nothing stubbed out at that layer. Because the introduction round
+no longer waits on anything, the round now runs in genuine wall-clock time (no
+`--no-tts` sleeps to skip): roughly 15-20 real seconds per agent, so a few
+times that for the whole round — see `_run_until_intro_done`'s timeout.
 
 `test_no_hand_raised_for_an_empty_utterance` sits one layer lower, on
 `StreamingClaudeBrain.stream` against a fake client, because that is where the
-"granted the floor and then said nothing" failure was actually decided.
+"granted the floor and then said nothing" failure was actually decided for a
+*generated* turn. It is unrelated to the introduction round, which sidesteps
+that whole failure class by never generating anything in the first place.
 """
 
 from __future__ import annotations
@@ -74,7 +82,13 @@ def runtime(monkeypatch) -> PanelRuntime:
     return rt
 
 
-async def _run_until_intro_done(runtime: PanelRuntime, *, timeout: float = 15.0) -> None:
+async def _run_until_intro_done(runtime: PanelRuntime, *, timeout: float = 90.0) -> None:
+    # 90s of headroom for roughly 50s of real, unstubbed speaking time across
+    # the three personas (`--no-tts` paces at ~2.8 words/sec — see `speak()`
+    # in panel.py) plus margin for a loaded CI box. This file's whole point is
+    # that nothing here is stubbed at the `PanelRuntime` layer any more, so a
+    # short timeout tuned for a fake brain's near-instant reply is no longer
+    # the right instinct — it would just make the test flaky, not fast.
     drain_task = asyncio.create_task(runtime._drain_events())
     try:
         async with asyncio.timeout(timeout):
