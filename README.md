@@ -200,7 +200,7 @@ a recorded rehearsal replays identically through modified floor logic.
 If you need I/O, it goes in `panel_runtime`, not here.
 
 **2. Personas are data, not prose.** The floor controller reads
-`interrupt_tendency`, `max_turn_seconds` and `topics_of_authority` at runtime.
+`interrupt_tendency` and `topics_of_authority` at runtime.
 Editing a persona should never mean editing a prompt string — `prompts.py`
 renders the YAML.
 

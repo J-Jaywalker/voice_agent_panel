@@ -44,7 +44,6 @@ topics_of_authority:
   - latency
   - speech recognition
 
-max_turn_seconds: 30
 verbosity: low
 
 relationships:

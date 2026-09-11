@@ -511,7 +511,8 @@ agent got the floor**, and **the content came out specific rather than generic**
 
 Target length is a prompt instruction (`GUARDRAILS`), not orchestrator-enforced,
 so an agent that feels long here will feel long on stage — tighten the prompt
-or the beat, not a config value. `max_turn_seconds` is only the hard backstop.
+or the beat, not a config value. There is no hard backstop: agents may hold
+the floor for a minute or more, and the moderator handles the rest live.
 
 ---
 

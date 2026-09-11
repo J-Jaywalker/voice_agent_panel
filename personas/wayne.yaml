@@ -41,7 +41,6 @@ topics_of_authority:
   - autonomy
   - scaling
 
-max_turn_seconds: 26
 verbosity: low
 
 relationships:

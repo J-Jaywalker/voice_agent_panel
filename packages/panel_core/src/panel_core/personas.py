@@ -59,10 +59,8 @@ class Persona(BaseModel):
 
     # --- length discipline ---
     # The most common failure mode of an LLM panel is a 45-second monologue.
-    # Brevity is a prompt instruction (GUARDRAILS in prompts.py); this is only
-    # the hard backstop, enforced by the orchestrator regardless of what the
-    # model does.
-    max_turn_seconds: float = 30.0
+    # Brevity is a prompt instruction (GUARDRAILS in prompts.py) — turn length
+    # has no orchestrator-enforced ceiling; the moderator handles the rest live.
     verbosity: str = "low"
 
     # --- relationships ---

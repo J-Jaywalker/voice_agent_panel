@@ -166,7 +166,6 @@ Event = (
 class StopReason(str, Enum):
     HUMAN_INTERRUPT = "human_interrupt"
     AGENT_INTERRUPT = "agent_interrupt"
-    TURN_LIMIT = "turn_limit"
     OPERATOR = "operator"
     KILL = "kill"
 

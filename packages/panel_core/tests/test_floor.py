@@ -476,31 +476,6 @@ def test_mild_disagreement_does_not_interrupt(fc, state):
     assert not [c for c in cmds if isinstance(c, StopSpeech)]
 
 
-# --------------------------------------------------------------- turn length
-
-
-def test_hard_stop_on_turn_limit(fc, state):
-    """The 45-second monologue is the classic LLM-panel failure.
-
-    Brevity is a prompt instruction (GUARDRAILS in prompts.py); this is only
-    the hard backstop, enforced regardless of what the model does.
-    """
-    state, _ = run(
-        fc,
-        state,
-        invite(0.0),
-        AgentProposal(t=0.0, agent="wayne", utterance="Look —", signals=strong()),
-        TurnYielded(t=1.0),
-        AgentSpeechStarted(t=1.0, agent="wayne"),
-    )
-    persona = fc.cast["wayne"]
-
-    state, cmds = fc.reduce(state, Tick(t=1.0 + persona.max_turn_seconds + 0.1))
-    stops = [c for c in cmds if isinstance(c, StopSpeech)]
-    assert stops and stops[0].reason is StopReason.TURN_LIMIT
-    assert state.speaking is None
-
-
 # ------------------------------------------------------------- safety valves
 
 
@@ -803,39 +778,6 @@ def test_introduction_round_ignores_the_consecutive_turn_safety_valve(fc, state)
     state, order = _run_introduction_round(fc, state)
     assert {agent for agent, _ in order} == set(fc.cast.ids())
     assert state.intro_done is True
-
-
-def test_a_turn_limit_cutoff_still_advances_the_introduction_round(fc, state):
-    """Regression: a rambling first introduction hitting the hard turn limit
-    must not strand the round. `AgentSpeechEnded(completed=False)` for a
-    turn-limit stop must still pop the queue and grant the next agent
-    directly — only an agent interrupt (where a challenger already holds the
-    floor) should skip that."""
-    state, cmds = fc.reduce(state, _introduce(0.0))
-    first = cmds[0].agent
-    utterance = cmds[0].utterance
-    state, _ = fc.reduce(state, AgentSpeechStarted(t=0.2, agent=first))
-
-    # The floor hard-stops the agent for running long — mirrors `_tick`'s
-    # TURN_LIMIT branch: `speaking` is cleared before the StopSpeech is even
-    # issued, same shape as the runtime's real turn-limit path.
-    state, cmds = fc.reduce(state, Tick(t=0.2 + fc.cast[first].max_turn_seconds + 0.1))
-    assert [c for c in cmds if isinstance(c, StopSpeech)]
-    assert state.speaking is None
-
-    state, cmds = fc.reduce(
-        state,
-        AgentSpeechEnded(
-            t=0.2 + fc.cast[first].max_turn_seconds + 0.2,
-            agent=first,
-            completed=False,
-            utterance=utterance[:10],
-        ),
-    )
-    assert first not in (state.intro_queue or ()), "must still advance, not stall"
-    next_starts = [c for c in cmds if isinstance(c, StartSpeech)]
-    assert next_starts and next_starts[0].agent != first, "the next agent is granted directly"
-    assert not [c for c in cmds if isinstance(c, RequestProposals)]
 
 
 def test_ricky_interrupting_the_round_allows_a_clean_retry(fc, state):

@@ -91,9 +91,9 @@ class BrainConfig:
     # Opus was picked purely for mid-conversation `role: "system"` messages
     # surviving prompt cache — the only way `InjectDirective` (mid-turn
     # "wrap up") could ever work. That feature is cut: turn length is a
-    # prompt instruction (GUARDRAILS in prompts.py) plus the hard
-    # `max_turn_seconds` backstop in panel_core, and the moderator handles
-    # the rest live. With no consumer left for mid-conversation system
+    # prompt instruction (GUARDRAILS in prompts.py) with no orchestrator
+    # ceiling, and the moderator handles the rest live. With no consumer
+    # left for mid-conversation system
     # messages, there is no reason to pay Opus's latency. S0.7 measured
     # sonnet-5 at 4110-4129ms total vs. opus-5 at 6207-6218ms — re-measure
     # before relying on the figure, since it did not test at `low`. `low` is

@@ -83,7 +83,7 @@ Duck-first-classify-after (S0.2), not the originally proposed flat 300–500ms o
 
 **4.1 Fictional employers** — done. "Irrational Industries", "Servv.AI", "The Kestrel Foundation".
 
-**4.2 Extended persona schema** — built, grew. `max_turn_seconds`/`verbosity` — the hard stop is enforced by the orchestrator, target length by prompt (`GUARDRAILS`). `relationships` is what makes disagreement read as colleagues, not models. See `personas/*.yaml`.
+**4.2 Extended persona schema** — built, grew. `verbosity` — target length by prompt (`GUARDRAILS`), no orchestrator-enforced ceiling; agents may hold the floor for a minute or more, moderator handles the rest live. `relationships` is what makes disagreement read as colleagues, not models. See `personas/*.yaml`.
 
 **4.3 Pre-render the opening** — not done. Self-intro is fixed content; pre-rendering removes it from failure surface, gives graceful cold-start. Currently built as floor mechanic `InvitationSource.INTRODUCTION` in `floor.py`.
 
@@ -106,7 +106,7 @@ Matches what's built: `packages/panel_core`, `panel_runtime`, `panel_sim` (paths
 | Agent responses | Claude Sonnet 5, `effort: "low"` — reverted 11 Sept from the 7 Sept Opus 5 decision once mid-turn directives were cut (see below): Opus's only justification was mid-conversation `role: "system"` messages, which Sonnet 5 doesn't support and nothing now needs. S0.7 measured sonnet-5 at 4110-4129ms total vs. opus-5 at 6207-6218ms. Default in `BrainConfig`/`panel-sim`. |
 | Floor signals | `PROPOSAL_SCHEMA` puts six signal fields before `utterance`; S0.7 confirmed signals complete while utterance still streaming. |
 | Prompt caching | System prompt (persona + guardrails) cached `ephemeral`; only per-turn partial uncached. Makes asking full cast on every partial affordable. |
-| Mid-turn directives | **Cut, 11 Sept.** Was going to need Opus for mid-conversation `role: "system"` messages, but `InjectDirective`'s regenerate-and-splice mechanics were never built and added little over the alternative: turn length is a prompt instruction (`GUARDRAILS`) plus the hard `max_turn_seconds` stop in `panel_core`, and the moderator handles the rest live. |
+| Mid-turn directives | **Cut, 11 Sept.** Was going to need Opus for mid-conversation `role: "system"` messages, but `InjectDirective`'s regenerate-and-splice mechanics were never built and added little over the alternative: turn length is a prompt instruction (`GUARDRAILS`) with no orchestrator-enforced ceiling, and the moderator handles the rest live. |
 | TTS | Streaming, cancellation, sub-300ms TTFB required. **ElevenLabs**, over `multi-stream-input`. Both gates passed (cancellation: 0.089ms to flag, 0 chunks after; TTFB: 198ms median/284ms worst, pooled) against a placeholder stock voice. Re-measure after casting. |
 | Output sanitisation | Built, mandatory (`sanitise()`). `stable_prefix()` withholds anything still-open in a streaming utterance — sanitising a half-arrived construct can produce non-prefix text. `panel_core.prompts`. |
 

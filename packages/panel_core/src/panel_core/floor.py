@@ -801,22 +801,6 @@ class FloorController:
             # leftover, whatever its clock says.
             return self._expire_invitation(state, now=event.t)
 
-        agent = state.agents[state.speaking]
-        persona = self.cast[state.speaking]
-        if agent.speaking_since is None:
-            return state, []
-
-        elapsed = event.t - agent.speaking_since
-
-        if elapsed >= persona.max_turn_seconds:
-            state = state.with_agent(state.speaking, state=AgentState.IDLE, speaking_since=None)
-            stopped = state.speaking
-            state = replace(state, speaking=None, floor_holder=None)
-            return state, [
-                StopSpeech(agent=stopped, reason=StopReason.TURN_LIMIT),  # type: ignore[arg-type]
-                self._paint(state),
-            ]
-
         return state, []
 
     def _operator(

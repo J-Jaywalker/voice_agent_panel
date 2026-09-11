@@ -24,7 +24,7 @@ uv run ruff check .
 | `packages/panel_sim` | Text-mode persona harness, no audio |
 | `personas/*.yaml` | Cast data. Source of truth for prompts. |
 
-Not built: operator console, video wall. Mid-turn steering was cut (11 Sept) — turn length is a prompt instruction plus a hard `max_turn_seconds` stop, moderator handles the rest live. Phase status: FEASIBILITY.md §8.
+Not built: operator console, video wall. Mid-turn steering was cut (11 Sept) — turn length is a prompt instruction, no orchestrator-enforced ceiling; moderator handles the rest live. Phase status: FEASIBILITY.md §8.
 
 ## Settled — do not re-litigate
 
