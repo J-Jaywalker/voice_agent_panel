@@ -72,6 +72,35 @@ uv run panel-sim --live --model claude-sonnet-5 --effort low
 uv run panel-sim --log recordings/run1.jsonl   # record for replay
 ```
 
+| Flag | Default | What it changes |
+|---|---|---|
+| `--live` | off | Real model behind the personas instead of `StubBrain`. Needs `ANTHROPIC_API_KEY`. |
+| `--model` | `claude-opus-5` | Matches `BrainConfig`, so the sim rehearses the model that will be on stage. |
+| `--effort` | `low` | `low` / `medium` / `high`. Ignored without `--live`. |
+| `--personas` | `personas` | Point at a directory of alternative `*.yaml` — try a re-written cast without touching the committed one. |
+| `--log` | none | Append a JSONL event log for replay through modified floor logic. |
+| `--seed` | `0` | Stub-brain reply selection. Without `--live`, the same seed and the same typing gives the same panel every time. |
+
+Flags compose, and the combinations worth knowing:
+
+```bash
+# Deterministic floor behaviour — no credentials, no model variance.
+# The seed makes a misfire reproducible, so it can go in a bug report.
+uv run panel-sim --seed 7 --log recordings/repro.jsonl
+
+# Cheaper, faster rehearsal loop for persona-writing.
+uv run panel-sim --live --model claude-sonnet-5
+
+# Rehearse an alternative cast against the real model.
+uv run panel-sim --live --personas personas-draft
+```
+
+`--model` and `--effort` are what keep the S0.7 bake-off re-runnable — the
+default is a decision (see `BrainConfig` in
+[`brains.py`](packages/panel_runtime/src/panel_runtime/brains.py), FEASIBILITY
+§10 #3), not a constant. Note that Haiku rejects `effort` outright with a 400,
+so `--model claude-haiku-4-5-20251001` ignores whatever `--effort` you pass.
+
 Type as Ricky and watch the floor controller arbitrate:
 
 ```
