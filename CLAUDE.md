@@ -2,8 +2,6 @@
 
 AI voice panel, 3 agents + human moderator, live on stage. 21 Oct 2026.
 
-Read first: `FEASIBILITY.md` (status, risks, phases), `docs/adr/` (decisions).
-
 ## Commands
 
 ```bash
