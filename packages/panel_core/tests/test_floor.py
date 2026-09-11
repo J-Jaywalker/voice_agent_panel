@@ -757,7 +757,7 @@ def test_introduction_phrase_immediately_grants_the_first_agent(fc, state):
     state, cmds = fc.reduce(state, _introduce(0.0))
     starts = [c for c in cmds if isinstance(c, StartSpeech)]
     assert len(starts) == 1
-    first = tuple(fc.cast.ids())[0]
+    first = next(iter(fc.cast.ids()))
     assert starts[0].agent == first
     assert starts[0].utterance == fc.cast[first].introduction
     assert not [c for c in cmds if isinstance(c, RequestProposals)], (
@@ -805,7 +805,7 @@ def test_introduction_round_ignores_the_consecutive_turn_safety_valve(fc, state)
     config = FloorConfig(max_consecutive_agent_turns=2)
     fc = FloorController(fc.cast, config)
     state, order = _run_introduction_round(fc, state)
-    assert set(agent for agent, _ in order) == set(fc.cast.ids())
+    assert {agent for agent, _ in order} == set(fc.cast.ids())
     assert state.intro_done is True
 
 

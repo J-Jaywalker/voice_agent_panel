@@ -133,7 +133,7 @@ class Candidate:
             yield sentence
 
     @classmethod
-    def fixed(cls, agent: str, sentences: list[str]) -> "Candidate":
+    def fixed(cls, agent: str, sentences: list[str]) -> Candidate:
         """Wrap an utterance that is already fully known — an introduction's
         fixed text (`FloorController._grant_introduction`) — as a `Candidate`,
         so `speak()` treats it exactly like a streamed one: same TTS calls,
@@ -533,26 +533,69 @@ class PanelRuntime:
 
     def _start_speaking(self, command: StartSpeech) -> None:
         persona = self.cast[command.agent]
-        candidate = self._candidates.get(command.agent)
-        if candidate is None and command.utterance:
-            # A fixed line, not a generated one. Today the introduction round
-            # is the only source of these (`FloorController._grant_introduction`),
-            # but the test is general: an ordinary grant's `Proposal.utterance`
-            # is always `""` in this runtime (the real words live in a
-            # `Candidate`, filled in by `_stream_one` as the model streams),
-            # so a *non-empty* `command.utterance` with no candidate means the
-            # words are already fully known and there was never anything to
-            # stream from a model in the first place. `_grant_introduction`
-            # has already run it through `sanitise()` — fixed text does not
-            # get to bypass that rule just because nobody generated it live
-            # (CLAUDE.md) — so it is safe to speak as-is. The sentence split
-            # is only for pacing symmetry with a streamed turn: a whole
-            # introduction is already fully known, so there is no generation
-            # latency this is trying to save.
+        candidate: Candidate | None = None
+        if command.utterance:
+            # A fixed line, not a generated one, and it wins unconditionally.
+            # An ordinary grant's `Proposal.utterance` is always `""` in this
+            # runtime (the real words live in a `Candidate`, filled in by
+            # `_stream_one` as the model streams), so a *non-empty*
+            # `command.utterance` means the words are already fully known and
+            # there was never anything to stream from a model. Today the
+            # introduction round is the only source of these
+            # (`FloorController._grant_introduction`).
+            #
+            # This must not defer to a cached candidate, and that is the bug
+            # this branch was written wrong for: it used to require
+            # `self._candidates.get(...) is None`, which held only in theory.
+            # Ricky's opening sentence arrives as a long run of *partial*
+            # transcripts, each one re-firing speculation every 0.8s
+            # (`scoring.speculation_interval_s`), while the introduction latch
+            # in `panel_core.floor` fires only on the *final* transcript. So by
+            # the time the round starts, `_request_proposals` has already parked
+            # a speculative candidate for every agent, the fixed-text branch was
+            # skipped, and each agent read out the model's improvised line
+            # instead of the hand-authored `Persona.introduction` — the one
+            # piece of the show that was deliberately taken away from the model
+            # so it could not come back empty on stage. Any candidate sitting
+            # here is speculation about a moment that has passed; it is
+            # discarded, not preferred.
+            #
+            # `_grant_introduction` has already run the text through
+            # `sanitise()` — fixed text does not get to bypass that rule just
+            # because nobody generated it live (CLAUDE.md) — so it is spoken
+            # as-is and must not be sanitised a second time. The sentence split
+            # is only for pacing symmetry with a streamed turn: the whole line
+            # is already known, so there is no generation latency to save.
             sentences = [s for s in re.split(r"(?<=[.!?])\s+", command.utterance) if s]
             if sentences:
+                # Tear down this agent's stale speculation before installing
+                # the fixed candidate, so nothing is left running that could
+                # write into a queue nobody reads, or evict what we install.
+                # The eviction race is real: `_stream_one`'s `finally` does
+                # `del self._candidates[agent]` for a generation that produced
+                # no speakable text. Two things close it, in this order. First,
+                # `_start_speaking` is synchronous and never awaits, so a
+                # cancelled task cannot reach its `finally` until we have
+                # returned to the event loop — by which point the fixed
+                # candidate is already in place. Second, that `finally` is
+                # guarded by an identity check against its *own* candidate, so
+                # once ours is the one in the dict a late teardown no longer
+                # matches and leaves it alone. Cancelling first is therefore
+                # safe rather than load-bearing, but it keeps the teardown
+                # shape identical to `_request_proposals`. The cancellation
+                # also runs `_stream_one`'s `CancelledError` path, which closes
+                # the *old* candidate — correct: nothing is consuming it, and
+                # an unclosed queue is what wedges the floor.
+                stale = self._proposal_tasks.pop(command.agent, None)
+                if stale is not None and not stale.done():
+                    stale.cancel()
+                self._proposal_turn.pop(command.agent, None)
                 candidate = Candidate.fixed(command.agent, sentences)
                 self._candidates[command.agent] = candidate
+        else:
+            # The ordinary streamed grant: the words are still arriving, so the
+            # candidate `_request_proposals` parked is the whole point.
+            candidate = self._candidates.get(command.agent)
         if candidate is None:
             # Either nothing was ever requested for this agent, or the stream
             # that was requested finished without producing a speakable word

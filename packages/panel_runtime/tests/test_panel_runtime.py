@@ -16,8 +16,13 @@ turn and back to `AgentSpeechEnded`, with no `RequestProposals` and no brain
 call anywhere in between, entirely through `self.events`, `_drain_events` and
 `_execute` — nothing stubbed out at that layer. Because the introduction round
 no longer waits on anything, the round now runs in genuine wall-clock time (no
-`--no-tts` sleeps to skip): roughly 15-20 real seconds per agent, so a few
-times that for the whole round — see `_run_until_intro_done`'s timeout.
+`--no-tts` sleeps to skip): the personas' own word counts set the floor, so
+the timeout is derived from them rather than guessed — see
+`_intro_round_seconds` and `_run_until_intro_done`.
+
+`test_fixed_utterance_beats_a_speculative_candidate` covers the other half of
+that guarantee: carrying the fixed line is not enough if `_start_speaking` can
+be talked out of using it by speculation that was already in flight.
 
 `test_no_hand_raised_for_an_empty_utterance` sits one layer lower, on
 `StreamingClaudeBrain.stream` against a fake client, because that is where the
@@ -36,10 +41,13 @@ from typing import Self
 import pytest
 from panel_core import (
     HUMAN,
+    AgentSpeechEnded,
     PanelCast,
     PanelState,
     Signals,
+    StartSpeech,
     TranscriptUpdated,
+    sanitise,
 )
 from panel_runtime.brains import (
     BrainConfig,
@@ -48,9 +56,15 @@ from panel_runtime.brains import (
     SignalsReady,
     StreamingClaudeBrain,
 )
-from panel_runtime.panel import PanelRuntime
+from panel_runtime.panel import Candidate, PanelRuntime
 
 PERSONA_DIR = Path(__file__).resolve().parents[3] / "personas"
+
+# Mirrors the `--no-tts` pacing divisor in `speak()` (panel.py) — the rate is
+# hardcoded there, so this is a deliberate duplicate and the two must move
+# together. Only `_intro_round_seconds` reads it; if the runtime ever makes
+# the rate injectable, this constant should go away in favour of that.
+_NO_TTS_WORDS_PER_SECOND = 2.8
 
 
 class StubBrain:
@@ -82,13 +96,39 @@ def runtime(monkeypatch) -> PanelRuntime:
     return rt
 
 
-async def _run_until_intro_done(runtime: PanelRuntime, *, timeout: float = 90.0) -> None:
-    # 90s of headroom for roughly 50s of real, unstubbed speaking time across
-    # the three personas (`--no-tts` paces at ~2.8 words/sec — see `speak()`
-    # in panel.py) plus margin for a loaded CI box. This file's whole point is
-    # that nothing here is stubbed at the `PanelRuntime` layer any more, so a
-    # short timeout tuned for a fake brain's near-instant reply is no longer
-    # the right instinct — it would just make the test flaky, not fast.
+def _intro_round_seconds(runtime: PanelRuntime) -> float:
+    """How long the intro round must take, derived from the cast itself.
+
+    The round speaks every agent's `Persona.introduction` in full, and
+    `--no-tts` paces each sentence by a real `asyncio.sleep` — so the floor
+    on this test's runtime is fixed by how many words the personas actually
+    contain, not by anything the test controls.
+
+    Derived rather than written down because a literal cannot survive the
+    personas being reworded. The previous literal (90s, justified in a
+    comment as "roughly 50s of real speaking time") was already wrong: the
+    three introductions total 258 words, which is 92.1s of mandatory sleep,
+    so both intro-round tests timed out by construction and no amount of
+    re-running would have gone green. An estimate that drifts silently out
+    of date is worse than no estimate — this one cannot.
+    """
+    words = sum(
+        len(sanitise(runtime.cast[agent_id].introduction).split())
+        for agent_id in runtime.cast.ids()
+    )
+    return words / _NO_TTS_WORDS_PER_SECOND
+
+
+async def _run_until_intro_done(runtime: PanelRuntime, *, timeout: float | None = None) -> None:
+    # Nothing at the `PanelRuntime` layer is stubbed here, so the round runs
+    # in genuine wall-clock time and the timeout has to clear the personas'
+    # real length (`_intro_round_seconds`) with room for a loaded CI box. A
+    # short timeout tuned for a fake brain's near-instant reply would only
+    # make this flaky, not fast. The margin is generous on purpose: it is
+    # only ever paid when the test is already failing, since a passing run
+    # finishes as soon as `intro_done` latches.
+    if timeout is None:
+        timeout = _intro_round_seconds(runtime) * 1.5 + 30.0
     drain_task = asyncio.create_task(runtime._drain_events())
     try:
         async with asyncio.timeout(timeout):
@@ -153,6 +193,58 @@ def test_introduction_round_never_grants_two_agents_at_once(runtime: PanelRuntim
     asyncio.run(body())
 
     assert overlaps == [], "an agent was granted the floor while another was still speaking"
+
+
+def test_fixed_utterance_beats_a_speculative_candidate(runtime: PanelRuntime):
+    """The introduction the panel actually rehearsed must be the one it says.
+
+    Ricky's opening line arrives as a long run of *partial* transcripts, each
+    re-firing speculation (`scoring.speculation_interval_s`), while the
+    introduction latch in `panel_core.floor` fires only on the *final*
+    transcript. So every agent already has a speculative `Candidate` parked by
+    the time `_grant_introduction` hands out its fixed, pre-sanitised line.
+    `_start_speaking` used to build the fixed candidate only when no cached one
+    existed, which on stage meant never: the agents improvised over the top of
+    the one part of the show deliberately taken away from the model.
+
+    A non-empty `StartSpeech.utterance` therefore wins unconditionally, and the
+    stale speculation behind it is torn down rather than spoken.
+    """
+    agent = runtime.cast.ids()[0]
+    improvised = "I reckon adoption is uneven."
+    fixed = "Fixed line."
+
+    async def body():
+        # The speculative candidate a run of partials would have left behind,
+        # plus the in-flight stream that produced it — both must be discarded.
+        stale = Candidate(agent)
+        await stale.add(improvised)
+        runtime._candidates[agent] = stale
+        stale_task = asyncio.create_task(asyncio.sleep(30), name="stale-propose")
+        runtime._proposal_tasks[agent] = stale_task
+        runtime._proposal_turn[agent] = runtime.state.turn_id
+
+        runtime._start_speaking(StartSpeech(agent=agent, utterance=fixed, turn_id=0))
+        await runtime._speaking_task
+        # No `_drain_events` here on purpose: the reducer is not under test,
+        # and this turn was never arbitrated. The emitted events are read
+        # straight off the queue.
+        emitted = []
+        while not runtime.events.empty():
+            emitted.append(runtime.events.get_nowait())
+        return stale_task, emitted
+
+    stale_task, emitted = asyncio.run(body())
+
+    ended = [e for e in emitted if isinstance(e, AgentSpeechEnded)]
+    assert len(ended) == 1, "the fixed turn must complete exactly once"
+    assert ended[0].completed
+    assert ended[0].utterance == fixed
+    assert improvised not in ended[0].utterance
+
+    assert stale_task.cancelled(), "stale speculation was left running"
+    assert agent not in runtime._proposal_tasks
+    assert agent not in runtime._proposal_turn
 
 
 # --------------------------------------------------------------------------
