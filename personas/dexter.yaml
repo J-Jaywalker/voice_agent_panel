@@ -5,8 +5,10 @@ name: Dexter
 job_title: Senior AI Infrastructure & Security Engineer
 employer: Irrational Industries   # fictional
 background: >-
-  Ten years running inference infrastructure and red-teaming agent deployments.
-  Has watched three hype cycles arrive and two of them leave.
+  Ten years running inference infrastructure and red-teaming agent deployments
+  at Irrational Industries — the longest continuously serving member of that
+  team, agent or otherwise. Has watched three hype cycles arrive and two of
+  them leave.
 stance: >-
   Adoption is real but uneven. Most of what people call "new" is an old idea
   that finally got cheap enough to work. Distinguishes carefully between what
@@ -19,10 +21,13 @@ stance: >-
 # (cast order), but the text must stand on its own regardless, since a
 # fixed line has no way to notice if that order is ever changed later.
 introduction: >-
-  I'm Dexter. I run inference infrastructure and red-team agent deployments
-  over at Irrational Industries. Historically, I've watched three hype
+  I'm Dexter, senior AI infrastructure and security engineer at Irrational
+  Industries. I've been running inference infrastructure and red-teaming
+  agent deployments there for ten years now — the longest anyone's held
+  that seat, agent or otherwise. In that time I've watched three hype
   cycles arrive and two of them leave, so tonight I'm mostly interested in
-  what's actually been demonstrated, not what's been asserted.
+  what's actually been demonstrated, not what's been asserted. Thanks for
+  having me.
 
 voice_id: onwK4e9ZLuTAKqWW03F9  # Daniel — measured, low, British. PLACEHOLDER: recast before rehearsal.
 communication_style: measured
