@@ -86,23 +86,24 @@ _UTTERANCE_OPEN = re.compile(r'"utterance"\s*:\s*"((?:[^"\\]|\\.)*)')
 
 @dataclass(frozen=True, slots=True)
 class BrainConfig:
-    # Opus 5 at `low`, decided 7 Sept 2026 (FEASIBILITY 10.3), and chosen
-    # against the S0.7 bake-off rather than because of it: that measured
-    # haiku-4.5 fastest at 2582ms total, sonnet-5 at 4110-4129ms and opus-5 at
-    # 6207-6218ms, since the cost here is generation time rather than
-    # reasoning. What buys the difference back is a capability neither of the
-    # others has — Opus supports mid-conversation `role: "system"` messages
-    # that do not invalidate the prompt cache, which is the only way
-    # `InjectDirective` and the operator console's "wrap up" control can ever
-    # work (FEASIBILITY 6). `low` is the mitigation for the latency, and the
-    # bake-off did not measure that combination: re-measure it before relying
-    # on the figure. Speculation and sentence-level streaming are what make
-    # the remaining gap survivable.
+    # Sonnet 5 at `low`, decided 11 Sept 2026, reversing the 7 Sept Opus
+    # decision (FEASIBILITY 10.3) now that its sole justification is gone.
+    # Opus was picked purely for mid-conversation `role: "system"` messages
+    # surviving prompt cache — the only way `InjectDirective` (mid-turn
+    # "wrap up") could ever work. That feature is cut: turn length is a
+    # prompt instruction (GUARDRAILS in prompts.py) plus the hard
+    # `max_turn_seconds` backstop in panel_core, and the moderator handles
+    # the rest live. With no consumer left for mid-conversation system
+    # messages, there is no reason to pay Opus's latency. S0.7 measured
+    # sonnet-5 at 4110-4129ms total vs. opus-5 at 6207-6218ms — re-measure
+    # before relying on the figure, since it did not test at `low`. `low` is
+    # the same mitigation as before: proposals are throwaway candidates
+    # (CLAUDE.md), and the cost here is generation time, not reasoning.
     #
     # Haiku rejects `effort` outright (400), so it is unconfigurable rather
     # than merely fast: `effort` is omitted whenever the model is a haiku,
     # which keeps the bake-off re-runnable from this same config.
-    model: str = "claude-opus-5"
+    model: str = "claude-sonnet-5"
     effort: str = "low"
     max_tokens: int = 1200
     # A proposal that arrives after the floor has been decided is worthless, so

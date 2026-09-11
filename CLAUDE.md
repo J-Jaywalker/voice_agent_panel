@@ -24,7 +24,7 @@ uv run ruff check .
 | `packages/panel_sim` | Text-mode persona harness, no audio |
 | `personas/*.yaml` | Cast data. Source of truth for prompts. |
 
-Not built: operator console, video wall, mid-turn steering (`InjectDirective` is a no-op). Phase status: FEASIBILITY.md §8.
+Not built: operator console, video wall. Mid-turn steering was cut (11 Sept) — turn length is a prompt instruction plus a hard `max_turn_seconds` stop, moderator handles the rest live. Phase status: FEASIBILITY.md §8.
 
 ## Settled — do not re-litigate
 
@@ -33,7 +33,7 @@ Not built: operator console, video wall, mid-turn steering (`InjectDirective` is
 | LiveKit as library, not framework | No `AgentSession`. ADR 0001. |
 | STT: Agent STT (Speechmatics preview API), raw `websockets`, one client per mic | Not `speechmatics-voice`/`speechmatics-rt`/LiveKit STT plugin. No local end-of-turn tuning — native `EndOfTurn`. |
 | TTS: ElevenLabs, hand-rolled over raw `websockets` | Not a LiveKit plugin — cancellation latency must be our code's property. |
-| Model: Claude Opus 5, `effort: "low"` | Chosen for mid-turn `role: "system"` messages surviving prompt cache, not speed. |
+| Model: Claude Sonnet 5, `effort: "low"` | Chosen for speed. (Opus 5 was used briefly for mid-turn `role: "system"` support; reverted when mid-turn steering was cut.) |
 | Speechmatics Flow is deprecated | Never propose it. |
 | Floor arbitration in `panel_core` | Deterministic, no LLM, <50ms. |
 | Video wall is Phase 1 | Not decoration. |

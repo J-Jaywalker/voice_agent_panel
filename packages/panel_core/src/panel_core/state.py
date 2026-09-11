@@ -108,7 +108,6 @@ class AgentRuntime:
     state: AgentState = AgentState.IDLE
     last_spoke_at: float | None = None
     speaking_since: float | None = None
-    wrap_up_sent: bool = False
     muted: bool = False
 
 

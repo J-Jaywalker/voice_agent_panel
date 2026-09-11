@@ -50,7 +50,6 @@ topics_of_authority:
   - human factors
   - organisational change
 
-target_turn_seconds: 18
 max_turn_seconds: 30
 verbosity: low
 

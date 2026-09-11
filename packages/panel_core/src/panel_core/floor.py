@@ -36,7 +36,6 @@ from .events import (
     HandsRaised,
     HumanSpeechEnded,
     HumanSpeechStarted,
-    InjectDirective,
     OperatorAction,
     OperatorCommand,
     RequestProposals,
@@ -53,8 +52,6 @@ from .personas import PanelCast
 from .prompts import sanitise
 from .scoring import FloorConfig, floor_priority, is_backchannel, may_interrupt
 from .state import AgentState, Invitation, InvitationSource, PanelState, Proposal, Utterance
-
-WRAP_UP = "You are running long. Land your point in one more sentence."
 
 
 class CueReason(str, Enum):
@@ -495,9 +492,7 @@ class FloorController:
                     duck_ms=self.config.human_duck_ms,
                 )
             )
-            state = state.with_agent(
-                agent, state=AgentState.IDLE, speaking_since=None, wrap_up_sent=False
-            )
+            state = state.with_agent(agent, state=AgentState.IDLE, speaking_since=None)
         state = replace(
             state,
             speaking=None,
@@ -693,9 +688,7 @@ class FloorController:
                         overlap_ms=self.config.interrupt_overlap_ms,
                     )
                 ]
-                state = state.with_agent(
-                    state.speaking, state=AgentState.IDLE, speaking_since=None, wrap_up_sent=False
-                )
+                state = state.with_agent(state.speaking, state=AgentState.IDLE, speaking_since=None)
                 state = replace(state, speaking=None)
                 granted_state, grant_cmds = self._grant(state, event.agent, now=event.t)
                 return granted_state, commands + grant_cmds
@@ -709,7 +702,6 @@ class FloorController:
             event.agent,
             state=AgentState.SPEAKING,
             speaking_since=event.t,
-            wrap_up_sent=False,
         )
         state = replace(state, speaking=event.agent, floor_holder=event.agent)
         return state, [self._paint(state)]
@@ -722,7 +714,6 @@ class FloorController:
             state=AgentState.IDLE,
             speaking_since=None,
             last_spoke_at=event.t,
-            wrap_up_sent=False,
         )
         if state.speaking == event.agent:
             state = replace(state, speaking=None, floor_holder=None)
@@ -818,19 +809,13 @@ class FloorController:
         elapsed = event.t - agent.speaking_since
 
         if elapsed >= persona.max_turn_seconds:
-            state = state.with_agent(
-                state.speaking, state=AgentState.IDLE, speaking_since=None, wrap_up_sent=False
-            )
+            state = state.with_agent(state.speaking, state=AgentState.IDLE, speaking_since=None)
             stopped = state.speaking
             state = replace(state, speaking=None, floor_holder=None)
             return state, [
                 StopSpeech(agent=stopped, reason=StopReason.TURN_LIMIT),  # type: ignore[arg-type]
                 self._paint(state),
             ]
-
-        if elapsed >= persona.target_turn_seconds and not agent.wrap_up_sent:
-            state = state.with_agent(state.speaking, wrap_up_sent=True)
-            return state, [InjectDirective(agent=state.speaking, text=WRAP_UP)]  # type: ignore[arg-type]
 
         return state, []
 

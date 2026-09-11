@@ -60,7 +60,6 @@ from panel_core import (
     HandsRaised,
     HumanSpeechEnded,
     HumanSpeechStarted,
-    InjectDirective,
     PanelCast,
     PanelState,
     RequestProposals,
@@ -349,12 +348,6 @@ class PanelRuntime:
 
             case ResumeSpeech():
                 self.mixer.resume(command.agent, command.ramp_ms)
-
-            case InjectDirective():
-                # Mid-turn steering needs a regenerate-and-splice that Phase 0
-                # does not have. Surfaced so it is visibly unimplemented rather
-                # than silently dropped.
-                console.print(f"  [yellow]↯ {command.agent}: {command.text}[/] [dim](noop)[/]")
 
             case HandsRaised():
                 hands = "  ".join(

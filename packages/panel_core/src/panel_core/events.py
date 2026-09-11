@@ -227,14 +227,6 @@ class RequestProposals:
 
 
 @dataclass(frozen=True, slots=True)
-class InjectDirective:
-    """Mid-turn steer to a speaking agent, e.g. 'wrap up in one sentence'."""
-
-    agent: str
-    text: str
-
-
-@dataclass(frozen=True, slots=True)
 class HandsRaised:
     """Agents want the floor but have no invitation to take it.
 
@@ -271,7 +263,6 @@ Command = (
     | DuckSpeech
     | ResumeSpeech
     | RequestProposals
-    | InjectDirective
     | HandsRaised
     | CueModerator
     | StateChanged

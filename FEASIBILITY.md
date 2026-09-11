@@ -66,7 +66,7 @@ Cost is generation (~200 tokens @ ~40 tok/s), not reasoning. Streaming removes 1
 
 Each agent proposes on every partial during the human's turn, not just at EOU — generation is usually underway or done by the time the floor needs an answer.
 
-Not re-measured: Opus 5 at `effort: "low"` (§10 #3) wasn't a direct S0.7 row — Opus alone at `low` was slowest one-shot (6207ms). Streaming should cut it proportionally.
+Not re-measured: Sonnet 5 at `effort: "low"` (§10 #3) wasn't a direct S0.7 row — Sonnet alone at `low` was 4110-4129ms one-shot. Streaming should cut it proportionally.
 
 ### 3.6 Controlled overlap on interrupts
 
@@ -83,7 +83,7 @@ Duck-first-classify-after (S0.2), not the originally proposed flat 300–500ms o
 
 **4.1 Fictional employers** — done. "Irrational Industries", "Servv.AI", "The Kestrel Foundation".
 
-**4.2 Extended persona schema** — built, grew. `target_turn_seconds`/`max_turn_seconds`/`verbosity` enforced by orchestrator, not prompt. `relationships` is what makes disagreement read as colleagues, not models. See `personas/*.yaml`.
+**4.2 Extended persona schema** — built, grew. `max_turn_seconds`/`verbosity` — the hard stop is enforced by the orchestrator, target length by prompt (`GUARDRAILS`). `relationships` is what makes disagreement read as colleagues, not models. See `personas/*.yaml`.
 
 **4.3 Pre-render the opening** — not done. Self-intro is fixed content; pre-rendering removes it from failure surface, gives graceful cold-start. Currently built as floor mechanic `InvitationSource.INTRODUCTION` in `floor.py`.
 
@@ -103,10 +103,10 @@ Matches what's built: `packages/panel_core`, `panel_runtime`, `panel_sim` (paths
 
 | Layer | Decision |
 |---|---|
-| Agent responses | Claude Opus 5, `effort: "low"` — decided 7 Sept against the S0.7 latency numbers, for capability: mid-conversation `role: "system"` messages survive prompt cache. Default in `BrainConfig`/`panel-sim`. |
+| Agent responses | Claude Sonnet 5, `effort: "low"` — reverted 11 Sept from the 7 Sept Opus 5 decision once mid-turn directives were cut (see below): Opus's only justification was mid-conversation `role: "system"` messages, which Sonnet 5 doesn't support and nothing now needs. S0.7 measured sonnet-5 at 4110-4129ms total vs. opus-5 at 6207-6218ms. Default in `BrainConfig`/`panel-sim`. |
 | Floor signals | `PROPOSAL_SCHEMA` puts six signal fields before `utterance`; S0.7 confirmed signals complete while utterance still streaming. |
 | Prompt caching | System prompt (persona + guardrails) cached `ephemeral`; only per-turn partial uncached. Makes asking full cast on every partial affordable. |
-| Mid-turn directives | Decided for Opus 5, 7 Sept, same reason. **Not built** — `InjectDirective` is a no-op (`panel.py`). Capability exists; regenerate-and-splice mechanics don't. |
+| Mid-turn directives | **Cut, 11 Sept.** Was going to need Opus for mid-conversation `role: "system"` messages, but `InjectDirective`'s regenerate-and-splice mechanics were never built and added little over the alternative: turn length is a prompt instruction (`GUARDRAILS`) plus the hard `max_turn_seconds` stop in `panel_core`, and the moderator handles the rest live. |
 | TTS | Streaming, cancellation, sub-300ms TTFB required. **ElevenLabs**, over `multi-stream-input`. Both gates passed (cancellation: 0.089ms to flag, 0 chunks after; TTFB: 198ms median/284ms worst, pooled) against a placeholder stock voice. Re-measure after casting. |
 | Output sanitisation | Built, mandatory (`sanitise()`). `stable_prefix()` withholds anything still-open in a streaming utterance — sanitising a half-arrived construct can produce non-prefix text. `panel_core.prompts`. |
 
@@ -124,7 +124,7 @@ Matches what's built: `packages/panel_core`, `panel_runtime`, `panel_sim` (paths
 | Unacceptable agent output | Operator kill switch mutes all agent output <50ms. Physical button/key. |
 | Total system failure | Ricky runs rehearsed solo segment — must actually be rehearsed. |
 
-**Operator console requirements** (needed from Phase 1 to rehearse — none built): kill-all, mute individual agent, force agent to speak now, advance beat, inject "wrap up", live state + scores, latency/health indicators.
+**Operator console requirements** (needed from Phase 1 to rehearse — none built): kill-all, mute individual agent, force agent to speak now, advance beat, live state + scores, latency/health indicators.
 
 ---
 
@@ -150,7 +150,7 @@ Calendar: 1 Sept → 21 Oct (~7 weeks). One week in, 4 weeks to freeze.
 | S0.4 | TTS cancellation | Passed, placeholder voice. |
 | S0.5 | Two STT channels | Built as 2 independent connections, not multi-channel. Two simultaneous live mics unverified. |
 | S0.6 | Native end-of-turn | No local tuning knob — Agent STT's own `EndOfTurn`. Venue task, not code task. |
-| S0.7 | Model bake-off | Forced sentence-streaming design. Model landed on Opus 5 against this bake-off's own numbers (§10 #3). |
+| S0.7 | Model bake-off | Forced sentence-streaming design. Model landed on Opus 5 against this bake-off's own numbers 7 Sept, then reverted to Sonnet 5 11 Sept once the reason for that override (mid-turn directives) was cut (§10 #3). |
 
 **Feature freeze: 7 Oct.** After that: tuning and rehearsal only.
 
@@ -171,7 +171,7 @@ Calendar: 1 Sept → 21 Oct (~7 weeks). One week in, 4 weeks to freeze.
 |---|---|---|---|
 | 1 | ~~Audio transport/integration tier — resolved 3 Sept, ADR 0001~~ | Eng | done |
 | 2 | ~~TTS — resolved 7 Sept: ElevenLabs~~ (S0.4 passed vs placeholder voice — redo once cast) | Eng | re-rehearse |
-| 3 | ~~Agent model/effort — resolved 7 Sept: Opus 5, `effort: "low"`~~. Against S0.7 (Opus slowest: 6207–6218ms vs Haiku 2582ms) — chosen because Opus alone supports mid-conversation `role: "system"` messages surviving prompt cache, the only way `InjectDirective`/operator "wrap up" can work. `low` mitigates latency; untested combination. | Eng | re-measure before hardening |
+| 3 | ~~Agent model/effort — resolved 11 Sept: Sonnet 5, `effort: "low"`~~. Opus 5 was chosen 7 Sept against S0.7's own numbers (Opus slowest: 6207-6218ms vs Haiku 2582ms) purely because it supports mid-conversation `role: "system"` messages, the only way `InjectDirective`/operator "wrap up" could work. Mid-turn directives were cut 11 Sept (prompt instruction + hard turn-limit stop instead), removing that justification; reverted to Sonnet 5 (4110-4129ms) for the latency win. `low` mitigates latency; untested combination. | Eng | re-measure before hardening |
 | 4 | ~~Personas/names/employers — done~~: Dexter, Wayne, Melia, fictional employers, schema built (§4.2) | Content | done |
 | 5 | Beat sheet + approved knowledge | Content + Ricky | 14 Sept — not started |
 | 6 | ~~One moderator or two — resolved 7 Sept: one~~ | Creative | done |

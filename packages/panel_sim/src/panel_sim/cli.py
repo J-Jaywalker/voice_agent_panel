@@ -32,7 +32,6 @@ from panel_core import (
     FloorController,
     HandsRaised,
     HumanSpeechStarted,
-    InjectDirective,
     OperatorAction,
     OperatorCommand,
     PanelCast,
@@ -105,9 +104,6 @@ class Simulation:
                     f"  [red]⏹ {name} cut off[/] [dim]({command.reason.value}, "
                     f"overlap {command.overlap_ms}ms)[/]"
                 )
-
-            case InjectDirective():
-                console.print(f"  [yellow]↯ {self.cast[command.agent].name}: wrap up[/]")
 
             case HandsRaised():
                 hands = "  ".join(
@@ -223,7 +219,7 @@ def main() -> None:
     # Matches `BrainConfig`'s default so the sim rehearses the model that will
     # be on stage — see the reasoning there. Both are overridable, which is
     # what keeps the S0.7 bake-off re-runnable.
-    parser.add_argument("--model", default="claude-opus-5")
+    parser.add_argument("--model", default="claude-sonnet-5")
     parser.add_argument("--effort", default="low", choices=["low", "medium", "high"])
     parser.add_argument("--log", type=Path, default=None, help="append an event log for replay")
     parser.add_argument("--seed", type=int, default=0)

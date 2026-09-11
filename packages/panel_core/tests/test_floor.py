@@ -21,7 +21,6 @@ from panel_core import (
     HandsRaised,
     HumanSpeechEnded,
     HumanSpeechStarted,
-    InjectDirective,
     OperatorAction,
     OperatorCommand,
     PanelCast,
@@ -480,8 +479,12 @@ def test_mild_disagreement_does_not_interrupt(fc, state):
 # --------------------------------------------------------------- turn length
 
 
-def test_wrap_up_directive_then_hard_stop(fc, state):
-    """The 45-second monologue is the classic LLM-panel failure."""
+def test_hard_stop_on_turn_limit(fc, state):
+    """The 45-second monologue is the classic LLM-panel failure.
+
+    Brevity is a prompt instruction (GUARDRAILS in prompts.py); this is only
+    the hard backstop, enforced regardless of what the model does.
+    """
     state, _ = run(
         fc,
         state,
@@ -491,13 +494,6 @@ def test_wrap_up_directive_then_hard_stop(fc, state):
         AgentSpeechStarted(t=1.0, agent="wayne"),
     )
     persona = fc.cast["wayne"]
-
-    state, cmds = fc.reduce(state, Tick(t=1.0 + persona.target_turn_seconds + 0.1))
-    assert [c for c in cmds if isinstance(c, InjectDirective)]
-
-    # Only sent once.
-    state, cmds = fc.reduce(state, Tick(t=1.0 + persona.target_turn_seconds + 1.0))
-    assert not [c for c in cmds if isinstance(c, InjectDirective)]
 
     state, cmds = fc.reduce(state, Tick(t=1.0 + persona.max_turn_seconds + 0.1))
     stops = [c for c in cmds if isinstance(c, StopSpeech)]

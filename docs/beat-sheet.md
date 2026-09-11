@@ -509,8 +509,9 @@ agent got the floor**, and **the content came out specific rather than generic**
   revision of this document: an anecdote that keeps landing well is worth
   promoting into a spine, and a spine that never gets used is worth cutting.
 
-Length is enforced by the orchestrator, not by prompting, so an agent that feels
-long here will feel long on stage — adjust `target_turn_seconds`.
+Target length is a prompt instruction (`GUARDRAILS`), not orchestrator-enforced,
+so an agent that feels long here will feel long on stage — tighten the prompt
+or the beat, not a config value. `max_turn_seconds` is only the hard backstop.
 
 ---
 
