@@ -13,11 +13,11 @@ Feasible in the window. Engineering ahead of risk. Risk is now non-code:
 
 | Risk | Status | Note |
 |---|---|---|
-| Venue AV | Requirements sent week 1. No response. | Highest-value unknown. Not blocked on us, schedule is. §9. |
+| Venue AV | Confirmed by the venue 16 Sept. | §9. Closed — sanity-check on load-in, not a tracked risk. |
 | Rehearsal infra | Not started. Operator console + video wall = Phase 1, no code. | §7 failure handling has nothing to rehearse with. |
-| Content | Structural fix built (§4.1–4.2). Beat sheet + approved knowledge blank. | Legal/commercial exposure closed. Script not written. |
+| Content | Structural fix built (§4.1–4.2). Beat sheet and approved knowledge both signed off 16 Sept (`docs/beat-sheet.md`), late against the 14 Sept due date — spines subject to change on revision. Wiring the beat sheet's spines into persona YAML/prompts is still an open decision (see the doc's "Wiring" section). | Legal/commercial exposure closed. Script not written. |
 
-No owner actively moving on operator console, video wall, or beat sheet. §8 can't reach Phase 4 without the first, or mean anything on stage without the third.
+No owner actively moving on operator console or video wall. §8 can't reach Phase 4 without the first, or mean anything on stage without the second.
 
 ---
 
@@ -137,7 +137,7 @@ Calendar: 1 Sept → 21 Oct (~7 weeks). One week in, 4 weeks to freeze.
 | 0 — Spike | Done. 7 deliverables (below). Closed ADR 0001 fork, forced sentence-streaming (§3.5) and duck-first backchannel (§3.6). |
 | 1 — Core panel | Built: 3 agents, personas, floor control, human priority, invitations, address/role parsing, TTS, event logging, `panel_sim`. Not built: video wall, operator console. |
 | 2 — Organic interaction | Built: interrupt thresholds, A2A addressing/handoff, expertise weighting, speculative generation, overlap/ducking, backchannel discrimination. |
-| 3 — Content & guardrails | Not started. Beat sheet + approved knowledge owed end of week 3 (14 Sept). |
+| 3 — Content & guardrails | Beat sheet and approved knowledge both signed off 16 Sept (`docs/beat-sheet.md`), late against the 14 Sept target. Wiring decision (spines into persona YAML/prompts) still open. |
 | 4 — Hardening & rehearsal | Not started. 2 protected weeks after 7 Oct freeze. Depends on operator console (§7) and AV split (§9). |
 
 ### 8.1 Spike results
@@ -156,12 +156,18 @@ Calendar: 1 Sept → 21 Oct (~7 weeks). One week in, 4 weeks to freeze.
 
 ---
 
-## 9. Venue AV requirements — sent, awaiting Boost
+## 9. Venue AV requirements — confirmed
 
-1. Pre-PA mic split — Ricky's mic only, no PA/agent audio in the mix. Hardest to retrofit, must lock first.
+Sent to Boost week 1; confirmed by the venue 16 Sept. All four met:
+
+1. Pre-PA mic split — Ricky's mic only, no PA/agent audio in the mix. Hardest to retrofit, was the one that had to lock first.
 2. Ricky on close mic (headset/lav), not lectern/ambient.
 3. Line input for agent audio, own fader, own kill.
 4. Connector types, levels (mic vs line), can we bring our own interface.
+
+Closed. Still worth a sanity check on load-in — §3.1 (echo isolation) and §7
+(operator kill switch routing) both depend on this — but no longer tracked as
+an open risk.
 
 ---
 
@@ -173,7 +179,7 @@ Calendar: 1 Sept → 21 Oct (~7 weeks). One week in, 4 weeks to freeze.
 | 2 | ~~TTS — resolved 7 Sept: ElevenLabs~~ (S0.4 passed vs placeholder voice — redo once cast) | Eng | re-rehearse |
 | 3 | ~~Agent model/effort — resolved 11 Sept: Sonnet 5, `effort: "low"`~~. Opus 5 was chosen 7 Sept against S0.7's own numbers (Opus slowest: 6207-6218ms vs Haiku 2582ms) purely because it supports mid-conversation `role: "system"` messages, the only way `InjectDirective`/operator "wrap up" could work. Mid-turn directives were cut 11 Sept (prompt instruction + hard turn-limit stop instead), removing that justification; reverted to Sonnet 5 (4110-4129ms) for the latency win. `low` mitigates latency; untested combination. | Eng | re-measure before hardening |
 | 4 | ~~Personas/names/employers — done~~: Dexter, Wayne, Melia, fictional employers, schema built (§4.2) | Content | done |
-| 5 | Beat sheet + approved knowledge | Content + Ricky | 14 Sept — not started |
+| 5 | ~~Beat sheet + approved knowledge — both signed off 16 Sept (late against 14 Sept)~~; wiring spines into persona YAML/prompts (3 options in `docs/beat-sheet.md` "Wiring") still open | Content + Ricky | wiring decision still owed |
 | 6 | ~~One moderator or two — resolved 7 Sept: one~~ | Creative | done |
 | 7 | Video wall visual design | Design | end of week 3 — no code |
 | 8 | Who operates console on the night | — | before rehearsal — console doesn't exist |

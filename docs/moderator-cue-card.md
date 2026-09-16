@@ -100,7 +100,7 @@ on anybody's dashboard."*
 |---|---|
 | Nothing happened | You made a statement. Re-cue with a name and a question. |
 | Wrong agent answered | *"Can Melia take that one?"* |
-| Won't stop talking | Just talk. Or *"Wayne, wrap up."* |
+| Won't stop talking | Don't reach for this before ~60s in — there's no enforced cap, let it run. Past that, just talk. Or *"Wayne, wrap up."* |
 | Heading for a product claim | *"Dexter, hold on."* — then take it yourself. |
 | Beat died | Skip to the next cue. Only Beats 3 and 6 are linked. |
 | An agent is down | Two is still a panel. Dexter covers 4 and 5, Wayne 1, 2 and 6, Melia 3. |

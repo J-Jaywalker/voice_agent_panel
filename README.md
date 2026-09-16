@@ -75,7 +75,7 @@ uv run panel-sim --log recordings/run1.jsonl   # record for replay
 | Flag | Default | What it changes |
 |---|---|---|
 | `--live` | off | Real model behind the personas instead of `StubBrain`. Needs `ANTHROPIC_API_KEY`. |
-| `--model` | `claude-opus-5` | Matches `BrainConfig`, so the sim rehearses the model that will be on stage. |
+| `--model` | `claude-sonnet-5` | Matches `BrainConfig`, so the sim rehearses the model that will be on stage. |
 | `--effort` | `low` | `low` / `medium` / `high`. Ignored without `--live`. |
 | `--personas` | `personas` | Point at a directory of alternative `*.yaml` — try a re-written cast without touching the committed one. |
 | `--log` | none | Append a JSONL event log for replay through modified floor logic. |

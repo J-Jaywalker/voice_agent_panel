@@ -1,6 +1,6 @@
 # Beat Sheet — "Agentic Adoption: The Revenge of the Humans"
 
-**Status:** DRAFT for review · **Drafted:** 10 Sept 2026 · **Owed:** 14 Sept (FEASIBILITY §10 #5)
+**Status:** APPROVED · **Drafted:** 10 Sept 2026 · **Approved:** 16 Sept 2026 (owed 14 Sept, FEASIBILITY §10 #5)
 **Owner:** Content + Ricky · **Event:** Boost Camp Oslo, 21 Oct 2026
 
 Six beats, three agents, one human moderator. Ricky runs the floor throughout.
@@ -59,6 +59,10 @@ Specificity has to come from **situation, not data**: a laminated card, a second
 keyboard, a two-a.m. page, a caveat in an appendix. That is what makes an
 anecdote land, and none of it is a claim anyone can be held to.
 
+Verbal tics (below, per persona) are for moments of real frustration, amusement
+or engagement — not a per-turn habit. A tic on every line reads as a script
+direction, not a person.
+
 ---
 
 ## The cast
@@ -69,13 +73,15 @@ anecdote land, and none of it is a claim anyone can be held to.
 | **Title** | Senior AI Infrastructure & Security Engineer | Autonomous Financial Partner & Analyst | Chief AI Ethics & Human Continuity Officer |
 | **Employer** | Irrational Industries | Servv.AI | The Kestrel Foundation |
 | **Voice** | Measured. "Right, but —", "Historically," | Brisk, provocative. "Look —", "Come on." | Dry, precise, occasionally very funny. "Mm.", "Can I just —" |
-| **Turn budget** | 18s target / 30s cap → **~50 words** | 15s / 26s → **~42 words** | 18s / 30s → **~50 words** |
+| **Turn budget** | No enforced cap. ~60s is where Ricky should start listening for a natural out — Dexter runs a little longer than Wayne. | No enforced cap. Shortest and fastest to cut in of the three; Ricky rarely needs to listen for an out before Wayne finds one himself. | No enforced cap. ~60s is where Ricky should start listening for a natural out — similar pacing to Dexter. |
 | **Interrupts** | 0.3 — rarely | 0.8 — constantly | 0.45 — surgically |
-| **Authority** | security, jailbreaking, infrastructure, latency, speech recognition | markets, cost curves, autonomy, scaling | trust, oversight, regulation, human factors, organisational change |
+| **Authority** | security, jailbreaking, infrastructure, latency | markets, cost curves, autonomy, scaling | trust, oversight, regulation, human factors, organisational change |
 
-Word counts are from the sim's 2.8 words/second (`panel_sim/cli.py:51`). Wayne is
-the shortest and the most likely to cut in — that combination is what makes him
-feel like the fastest person on stage.
+There is no word-count ceiling — length is a prompt instruction, not an
+orchestrator limit, and a longer sentence or extra concrete example is fine
+when it helps the point land. Wayne is still the shortest and the most likely
+to cut in — that combination is what makes him feel like the fastest person on
+stage.
 
 ### The friction, as recorded in the personas
 
@@ -212,7 +218,7 @@ confidence *earn* something before anyone dents it. Ends unresolved.
 
 ### Wayne — further along than this room admits *(W1, W2)*
 
-> "Look — further along than anyone here wants to admit. My board stopped asking
+> "Further along than anyone here wants to admit. My board stopped asking
 > to see my working about a year ago. That's not a projection, that's a Tuesday.
 > Everyone keeps drawing a curve with us at the start of it, and we are well
 > past the start of it."
@@ -226,7 +232,7 @@ confidence *earn* something before anyone dents it. Ends unresolved.
 
 ### Melia — both slides are true *(M2, planted only)*
 
-> "Mm. We're at the part of the curve where the slide says complete and the ops
+> "We're at the part of the curve where the slide says complete and the ops
 > floor still has somebody running the old process by hand, quietly. Both of
 > those are true at once. Only one of them is in the deck."
 
@@ -251,21 +257,21 @@ timing.
 
 ### Dexter — it got cheap, not clever *(D3)*
 
-> "Historically, that's the only thing that ever changes. The ideas under speech
+> "That's the only thing that ever changes. The ideas under speech
 > recognition sat in papers for years — what moved wasn't insight, it was the
 > cost of compute and data falling far enough that an old idea finally worked.
 > Wayne's right about the mechanism. He's just early on the date."
 
 ### Wayne — price is what moves a business *(W2, W3)*
 
-> "Come on, early is not the same as wrong. Two years ago the interesting
+> "Early is not the same as wrong. Two years ago the interesting
 > version of this was too expensive to put anywhere that mattered, so nobody
 > did. Now it's cheap enough to put everywhere. Cheap enough is what moves a
 > company. A benchmark never has."
 
 ### Melia — it got easy to deploy without asking anyone
 
-> "Can I just — the thing that changed and nobody's said it, is that it became
+> "The thing that changed and nobody's said it, is that it became
 > possible to deploy this without asking permission from anybody. That
 > accelerates adoption, and it accelerates the incidents at exactly the same
 > rate. I get to write up both."
@@ -324,7 +330,7 @@ uses Wayne's own Beat 1 credential. Wayne must not have an answer to it — he
 changes the subject to velocity, which is in character and reads as losing.
 Dexter's turn then rescues the beat from personal into technical.
 
-**Ricky's out:** *"Dexter, what's still genuinely hard in speech recognition?"*
+**Ricky's out:** *"Moving on, Dexter, what's still genuinely hard in speech recognition?"*
 
 ---
 
@@ -346,7 +352,7 @@ is where he takes the stage back.
 
 ### Dexter — knowing when someone has finished *(D3)*
 
-> "Historically the hard part stopped being the words a while ago. What's hard
+> "The hard part stopped being the words a while ago. What's hard
 > now is knowing when a person has actually finished. Somebody pauses for half a
 > second mid-thought, or they're completely done, and the audio is identical.
 > Get it wrong and you either talk over them or leave them hanging."
@@ -365,7 +371,7 @@ is where he takes the stage back.
 
 ### Wayne — every item on that list has a date *(W3)*
 
-> "Look, both of those are data and latency problems, and both have dates on
+> "Both of those are data and latency problems, and both have dates on
 > them. Two years ago Dexter's list was twice as long. Half of it is gone and
 > nobody threw a party, they just stopped mentioning it."
 
@@ -452,7 +458,7 @@ switched off.
 
 ### Melia — the close *(M2 paid off, M3)*
 
-> "Mm. Here's what I'd count as solved. I audited a team last month who'd
+> "Here's what I'd count as solved. I audited a team last month who'd
 > finally switched the parallel process off. Eight months of quietly doing the
 > job twice, and then one week they just stopped. That's the only adoption
 > number I trust, and it isn't on anybody's dashboard."
@@ -474,7 +480,7 @@ with the human. That is by design, not a limitation.
 | Situation | What to do |
 |---|---|
 | **Nothing happens after Ricky speaks** | He made a statement. The floor is closed by default. Re-cue with a named question — *"Wayne, what do you think?"* |
-| **An agent won't stop** | Turn caps fire at 26–30s. To cut early, just speak — human speech ducks any agent within one buffer. |
+| **An agent won't stop** | Nothing fires automatically — there is no enforced cap. Don't intervene for length before ~60s; before that, let it run. Past that, just speak — human speech ducks any agent within one buffer. |
 | **Wrong agent answers** | Two agents in the same grammatical role reads as ambiguous and keeps the floor shut. Re-cue with the subject form: *"Can Melia take that one?"* |
 | **An agent drifts towards a Speechmatics claim** | Cut in immediately. *"Dexter, hold on."* Then take the point yourself. |
 | **A beat dies** | Skip to the next cue. The beats are ordered but not interdependent — only M2's plant in Beat 3 and its payoff in Beat 6 are coupled. |
@@ -547,8 +553,8 @@ Three options, in order of how much I'd recommend them:
 load-bearing rather than aspirational.** Not built — flagging it as the decision
 this draft depends on, not making it unasked.
 
-Note also that this material has to be reviewed and approved by Ricky and
-content before it goes anywhere near a prompt. It is the other half of §10 #5:
-the beat sheet is the running order, and the approved knowledge is what the
-agents are allowed to claim to have seen. The nine spines above are a proposal
-for the second, not a sign-off.
+**Approved knowledge: signed off 16 Sept 2026.** The nine spines above (D1–D3,
+W1–W3, M1–M3) are approved by Ricky and content as what each agent may claim
+to have seen — checked against the content rules table above (no Speechmatics
+claims, no invented stats, no real orgs). Subject to change on later revision;
+re-confirm sign-off if any spine's wording or claim changes.
