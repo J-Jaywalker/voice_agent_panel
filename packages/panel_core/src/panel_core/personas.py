@@ -23,6 +23,16 @@ class Persona(BaseModel):
     background: str
     stance: str = Field(description="This agent's position on AI adoption.")
 
+    # --- recurring material ---
+    # The "approved knowledge" half of docs/beat-sheet.md #10 #5 (signed off
+    # 16 Sept 2026, subject to change on revision): specific first-person
+    # experiences this agent is allowed to claim, checked against the beat
+    # sheet's content rules (no Speechmatics claims, no invented stats, no
+    # real orgs). Reuse across turns — not a fresh example each time — is
+    # what makes recurrence read as a person rather than an opinion
+    # generator. See docs/beat-sheet.md "Anecdote spines".
+    anecdotes: list[str] = Field(default_factory=list)
+
     # --- fixed opening ---
     # Word-for-word, spoken every time, never generated. The introduction
     # round used to ask the model for this live and it once came back

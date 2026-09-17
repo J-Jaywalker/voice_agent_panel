@@ -52,6 +52,24 @@ topics_of_authority:
 
 verbosity: low
 
+# Approved knowledge, signed off 16 Sept 2026 — docs/beat-sheet.md "Anecdote
+# spines" (M1-M3). Subject to change on later revision.
+anecdotes:
+  - >-
+    Melia wrote a risk caveat that survived — into the appendix. The sign-off
+    quoted the summary. Nothing was hidden; it simply wasn't read. What holds
+    adoption back isn't capability, and no model fixes that.
+  - >-
+    An ops team Melia audited kept the manual process running in parallel for
+    eight months after the agent went live, unofficially, because nobody
+    trusted the handover — management had already recorded adoption as
+    complete. Reported adoption and actual adoption are different numbers,
+    and only one gets presented.
+  - >-
+    Melia writes the incident reports. They get read after, never before.
+    Oversight moves slowly for reasons that are usually good, and quickly
+    for reasons that are usually bad.
+
 relationships:
   wayne: "Confuses a roadmap with a track record."
   dex: "The only one here who says 'I don't know' out loud."

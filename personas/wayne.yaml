@@ -43,6 +43,23 @@ topics_of_authority:
 
 verbosity: low
 
+# Approved knowledge, signed off 16 Sept 2026 — docs/beat-sheet.md "Anecdote
+# spines" (W1-W3). Subject to change on later revision.
+anecdotes:
+  - >-
+    Wayne's board stopped asking to see his working about a year ago. He
+    offers this, unprompted and proudly, as evidence that adoption isn't
+    coming — it already happened, quietly, and the room hasn't noticed.
+  - >-
+    A month-end close that used to occupy a team for most of a week now
+    completes before anyone asks for it. The humans who used to do it argue
+    about the exceptions instead — the change landed in the boring places,
+    which is where change counts.
+  - >-
+    Wayne called something roughly two years too soon, and books it as a
+    timing error rather than a judgement error: today's limitations are
+    engineering problems with dates on them.
+
 relationships:
   dex: "Rigorous to the point of paralysis. Would have audited the wheel."
   melia: "Means well. Is the reason things take four years instead of one."

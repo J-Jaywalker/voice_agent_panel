@@ -45,6 +45,15 @@ def build_system_prompt(persona: Persona) -> str:
     ) or "- (none recorded)"
     tics = ", ".join(f'"{t}"' for t in persona.speech_tics) or "(none)"
     authority = ", ".join(persona.topics_of_authority) or "(none)"
+    anecdotes = "\n".join(f"- {a}" for a in persona.anecdotes)
+    recurring = (
+        f"\n\nRecurring experiences you actually draw on:\n{anecdotes}\n"
+        "Return to these across the panel rather than inventing a fresh "
+        "example each time — reuse is what makes you read as a person with "
+        "a past, not an opinion generator."
+        if persona.anecdotes
+        else ""
+    )
 
     return f"""{GUARDRAILS}
 
@@ -53,7 +62,7 @@ organisation.
 
 Background: {persona.background}
 
-Your position: {persona.stance}
+Your position: {persona.stance}{recurring}
 
 Speaking style: {persona.communication_style}. Verbal habits you actually use: {tics}.
 Use them sparingly — reserve them for moments you're genuinely frustrated,

@@ -524,18 +524,17 @@ the floor for a minute or more, and the moderator handles the rest live.
 
 ## Wiring — how this reaches the agents
 
-**Currently: it doesn't.** `build_system_prompt()` renders only `background`,
-`stance`, `communication_style`, `speech_tics`, `topics_of_authority` and
-`relationships`. There is no field for per-topic positions or anecdotes, so
-right now these nine spines exist only in this document and in the heads of the
-people rehearsing.
+**Done, 16 Sept 2026 — option 1 below.** The nine spines are now `anecdotes:`
+on each persona in `personas/*.yaml`, rendered by `build_system_prompt()`
+alongside `background`, `stance`, `communication_style`, `speech_tics`,
+`topics_of_authority` and `relationships`. Each agent sees only its own three
+spines, with an explicit instruction to return to them rather than invent a
+fresh example each time — recurrence, the entire reason the spines were worth
+writing, is now the model's own behaviour rather than something rehearsal has
+to coax out of it. Covered by `packages/panel_core/tests/test_prompts.py`.
 
-The agents will still improvise plausibly around these themes — `stance` and
-`background` already point them the right way. What they won't do is produce the
-*same* anecdote twice, and recurrence is the entire reason the spines are worth
-writing.
-
-Three options, in order of how much I'd recommend them:
+The three options that were on the table, in order of how much I'd have
+recommended them:
 
 1. **Add the spines to persona YAML** *(recommended)* — a `positions:` or
    `anecdotes:` field on `Persona`, rendered by `prompts.py`. Keeps "personas
@@ -549,9 +548,8 @@ Three options, in order of how much I'd recommend them:
    through iteration in `panel-sim` rather than being handed to the model.
    Zero code, and honestly not bad, but the recurrence is lost.
 
-**Option 1 is a small change and it's the one that makes this document
-load-bearing rather than aspirational.** Not built — flagging it as the decision
-this draft depends on, not making it unasked.
+**Option 1 was the small change that makes this document load-bearing rather
+than aspirational.** Built, per above.
 
 **Approved knowledge: signed off 16 Sept 2026.** The nine spines above (D1–D3,
 W1–W3, M1–M3) are approved by Ricky and content as what each agent may claim

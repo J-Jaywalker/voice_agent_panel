@@ -23,7 +23,47 @@ they exist to guarantee.
 from __future__ import annotations
 
 import pytest
-from panel_core.prompts import sanitise, stable_prefix
+from panel_core.prompts import build_system_prompt, sanitise, stable_prefix
+from panel_core.personas import Persona
+
+# --------------------------------------------------------------------------
+# Approved knowledge — anecdotes rendered into the system prompt
+# --------------------------------------------------------------------------
+
+
+def _persona(**overrides) -> Persona:
+    defaults = dict(
+        id="dex",
+        name="Dexter",
+        job_title="x",
+        employer="x",
+        background="x",
+        stance="x",
+        introduction="x",
+        voice_id="x",
+        communication_style="x",
+    )
+    defaults.update(overrides)
+    return Persona(**defaults)
+
+
+def test_anecdotes_default_to_empty_and_add_nothing_to_the_prompt() -> None:
+    """A persona with no `anecdotes:` in its YAML (schema default) gets no
+    "Recurring experiences" block — nothing new for the model to key off."""
+    persona = _persona()
+    assert persona.anecdotes == []
+    assert "Recurring experiences" not in build_system_prompt(persona)
+
+
+def test_anecdotes_render_into_the_system_prompt_and_instruct_reuse() -> None:
+    """Approved knowledge (docs/beat-sheet.md "Anecdote spines", signed off
+    16 Sept 2026) has to actually reach the model, and the point of writing
+    it as a small, fixed set is recurrence — so the prompt must tell the
+    model to reuse it rather than treat it as one example among many."""
+    persona = _persona(anecdotes=["The eval that passed."])
+    prompt = build_system_prompt(persona)
+    assert "The eval that passed." in prompt
+    assert "rather than inventing a fresh example each time" in prompt
 
 # --------------------------------------------------------------------------
 # Individual withholding rules

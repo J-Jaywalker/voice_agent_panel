@@ -46,6 +46,24 @@ topics_of_authority:
 
 verbosity: low
 
+# Approved knowledge, signed off 16 Sept 2026 — docs/beat-sheet.md "Anecdote
+# spines" (D1-D3). Subject to change on later revision.
+anecdotes:
+  - >-
+    An internal agent deployment cleared every eval, went live, and failed
+    within a week on inputs nobody had thought to test — Dexter got the
+    two-a.m. page. Demonstrated and asserted are different things; eval
+    performance predicts less than anyone wants.
+  - >-
+    Dexter keeps every jailbreak that has actually worked against their own
+    agents. Almost none are clever — they're polite: somebody asks nicely, in
+    the right order, and the system helps them. The hostile attempts get
+    caught; the reasonable-sounding ones get through.
+  - >-
+    Dexter has watched the same idea come back three times with better
+    hardware. The ideas under modern speech recognition sat in papers for
+    years — what moved was the cost of compute and data, not insight.
+
 relationships:
   wayne: "Likeable, but sells the future as though it already shipped."
   melia: "Asks the right questions. Sometimes the wrong ones twice."
