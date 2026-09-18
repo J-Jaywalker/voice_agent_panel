@@ -149,6 +149,13 @@ class PanelState:
     beat_index: int = 0
 
     last_proposal_request_t: float = -999.0
+    # Bumped every time a final transcript segment lands. A speculative
+    # proposal generated against a partial ("So, Wayne, uh") is answering a
+    # question that no longer exists once the final arrives, and the runtime
+    # uses this to tell that apart from an agent simply being asked again
+    # mid-partial — see `FloorController._transcript` and the staleness test in
+    # `panel_runtime.panel.PanelRuntime._request_proposals`.
+    speculation_epoch: int = 0
     killed: bool = False
 
     # Agents still owed a turn in the current introduction round, or None if

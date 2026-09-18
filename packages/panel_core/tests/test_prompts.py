@@ -22,9 +22,18 @@ they exist to guarantee.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
-from panel_core.prompts import build_system_prompt, sanitise, stable_prefix
 from panel_core.personas import Persona
+from panel_core.prompts import (
+    GUARDRAILS,
+    build_system_prompt,
+    build_turn_prompt,
+    sanitise,
+    stable_prefix,
+)
+from panel_core.state import PanelState
 
 # --------------------------------------------------------------------------
 # Approved knowledge — anecdotes rendered into the system prompt
@@ -32,17 +41,17 @@ from panel_core.personas import Persona
 
 
 def _persona(**overrides) -> Persona:
-    defaults = dict(
-        id="dex",
-        name="Dexter",
-        job_title="x",
-        employer="x",
-        background="x",
-        stance="x",
-        introduction="x",
-        voice_id="x",
-        communication_style="x",
-    )
+    defaults = {
+        "id": "dex",
+        "name": "Dexter",
+        "job_title": "x",
+        "employer": "x",
+        "background": "x",
+        "stance": "x",
+        "introduction": "x",
+        "voice_id": "x",
+        "communication_style": "x",
+    }
     defaults.update(overrides)
     return Persona(**defaults)
 
@@ -64,6 +73,71 @@ def test_anecdotes_render_into_the_system_prompt_and_instruct_reuse() -> None:
     prompt = build_system_prompt(persona)
     assert "The eval that passed." in prompt
     assert "rather than inventing a fresh example each time" in prompt
+
+
+# --------------------------------------------------------------------------
+# Guardrails the restructured beat sheet depends on (17 Sept 2026)
+# --------------------------------------------------------------------------
+
+
+def test_guardrails_forbid_naming_providers_and_repeating_jailbreaks() -> None:
+    """Two rules added for the 17 Sept beat sheet revision, both of which
+    exist because a beat now invites the failure directly rather than merely
+    permitting it, and neither of which can be left to Ricky's reflexes on
+    the night (docs/beat-sheet.md, Beat 3 and Beat 4):
+
+    - **Beat 3** asks the agents what speech recognition can do now. Capability
+      talk pulls hard towards naming a provider and comparing it, and the
+      general "no claims about any real company" rule reads as being about
+      customers and statistics rather than about vendors.
+    - **Beat 4** ("Revenge of the Humans") asks all three to describe jailbreaks
+      that worked on them. The room is four hundred customers; the anecdote is
+      the material, the method is not, and an agent walking an audience through
+      a working technique is the worst thing this panel could broadcast.
+
+    Asserted on `GUARDRAILS` rather than on a rendered prompt because it is
+    global — it must hold for every persona, including one added later with
+    no anecdotes at all.
+    """
+    assert "Do not name" in GUARDRAILS
+    assert "providers" in GUARDRAILS
+    assert "never how it was done" in GUARDRAILS
+    # And it must reach the model for a persona carrying no other material.
+    prompt = build_system_prompt(_persona())
+    assert "never how it was done" in prompt
+
+
+# --------------------------------------------------------------------------
+# The speculative pass — asked while Ricky is still talking
+# --------------------------------------------------------------------------
+
+
+def _mid_sentence(partial: str) -> PanelState:
+    """Ricky part-way through a sentence: a live partial, no invitation yet."""
+    return replace(PanelState.for_agents(("dex", "wayne")), partial=partial)
+
+
+def test_a_mid_sentence_partial_is_not_described_as_a_closed_floor() -> None:
+    """Invitations are read off finals only, so during speculation there is
+    never a live invitation — and the old wording told the agent it "will
+    almost certainly not be speaking" and to score itself low. Asked that
+    while Ricky was three words into naming it, an agent wrote "Take your
+    time, Ricky — we'll be here." and a direct address then aired it, because
+    a named invitation bypasses the score floor. The speculative pass has to
+    be told what it actually is."""
+    prompt = build_turn_prompt(_mid_sentence("So, Wayne, uh, where are we"), _persona())
+    assert "still mid-sentence" in prompt
+    assert "never offer to wait" in prompt
+    assert "NOT opened the floor" not in prompt
+
+
+def test_a_settled_statement_still_gets_the_closed_floor_wording() -> None:
+    """With no partial in flight, Ricky has finished and said nothing that
+    opens the floor — the branch `brains.py` documents measuring against."""
+    prompt = build_turn_prompt(PanelState.for_agents(("dex", "wayne")), _persona())
+    assert "NOT opened the floor" in prompt
+    assert "still mid-sentence" not in prompt
+
 
 # --------------------------------------------------------------------------
 # Individual withholding rules

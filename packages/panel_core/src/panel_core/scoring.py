@@ -84,6 +84,24 @@ class FloorConfig:
 
     # --- speculation ---
     speculation_interval_s: float = 0.8
+    # Don't ask the panel to answer a scrap. Finals arrive on acoustics, not on
+    # sentence boundaries, so a turn routinely opens with "So, Wayne, uh," — and
+    # an agent asked to propose against three words writes a holding line ("Take
+    # your time, Ricky") rather than an answer, which a named invitation then
+    # airs unconditionally because it bypasses `min_floor_priority`. Partials
+    # only: a *final* must always ask, however short, because a two-word direct
+    # question ("Wayne, thoughts?") is a real thing Ricky says and by then
+    # detection has run.
+    speculation_min_words: int = 5
+    # How far before a direct question an answer to it may have been written.
+    # Speculative generation is the whole reason the post-turn gap is short, so
+    # a proposal started against a partial of the question must still count —
+    # those run 1-3s ahead of the final. A proposal older than this was written
+    # against a different moment (the previous turn, or Ricky's preamble before
+    # he had asked anything) and must not be aired in answer to a question it
+    # never heard. Only applies to *named* invitations: an open invitation is
+    # already protected by the score floor, which filler loses to.
+    named_proposal_lookback_s: float = 6.0
 
     # --- safety valve ---
     # After this many agent turns in a row, hand back to the moderator so the

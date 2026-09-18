@@ -222,7 +222,10 @@ def test_fixed_utterance_beats_a_speculative_candidate(runtime: PanelRuntime):
         runtime._candidates[agent] = stale
         stale_task = asyncio.create_task(asyncio.sleep(30), name="stale-propose")
         runtime._proposal_tasks[agent] = stale_task
-        runtime._proposal_turn[agent] = runtime.state.turn_id
+        runtime._proposal_stamp[agent] = (
+            runtime.state.turn_id,
+            runtime.state.speculation_epoch,
+        )
 
         runtime._start_speaking(StartSpeech(agent=agent, utterance=fixed, turn_id=0))
         await runtime._speaking_task
@@ -244,7 +247,7 @@ def test_fixed_utterance_beats_a_speculative_candidate(runtime: PanelRuntime):
 
     assert stale_task.cancelled(), "stale speculation was left running"
     assert agent not in runtime._proposal_tasks
-    assert agent not in runtime._proposal_turn
+    assert agent not in runtime._proposal_stamp
 
 
 # --------------------------------------------------------------------------

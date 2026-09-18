@@ -183,12 +183,14 @@ class PanelRuntime:
         self._candidates: dict[str, Candidate] = {}
         # One in-flight brain stream per agent, keyed so a re-request can tell
         # "already running, leave it" from "nothing running, start one" — see
-        # `_request_proposals`. `_proposal_turn` records the `state.turn_id`
-        # each task was started against, which is what makes a genuinely
-        # superseded turn distinguishable from an agent simply being asked
-        # again mid-turn.
+        # `_request_proposals`. `_proposal_stamp` records the
+        # `(turn_id, speculation_epoch)` each task was started against, which is
+        # what makes genuinely superseded work distinguishable from an agent
+        # simply being asked again mid-turn: `turn_id` moves when someone is
+        # granted the floor, `speculation_epoch` when a final transcript
+        # segment lands and changes the text being answered.
         self._proposal_tasks: dict[str, asyncio.Task] = {}
-        self._proposal_turn: dict[str, int] = {}
+        self._proposal_stamp: dict[str, tuple[int, int]] = {}
         self._running = True
         self._last_intro_remaining: tuple[str, ...] | None = None
         self._last_intro_done = False
@@ -434,30 +436,43 @@ class PanelRuntime:
         Only genuinely stale work is torn down: a task started against a turn
         a grant has since superseded (`state.turn_id` has moved on, so its
         `Signals` were scored against a conversational moment nobody can act
-        on any more), or an agent no longer in the requested set at all. The
-        agent currently on the PA is never touched here regardless of either
-        test — its task may still be feeding `speak()`'s `Candidate` queue
-        live, and cancelling it would cut off audio already playing.
+        on any more), a task started against text a *final* segment has since
+        replaced (`state.speculation_epoch` has moved on — the "So, Wayne, uh,"
+        case, where the words the stream is answering were two of the eleven
+        Ricky actually said), or an agent no longer in the requested set at
+        all. The agent currently on the PA is never touched here regardless of
+        any of those tests — its task may still be feeding `speak()`'s
+        `Candidate` queue live, and cancelling it would cut off audio already
+        playing.
+
+        Finals are the right granularity for that second test and partials are
+        not. Speechmatics segments on pauses, so one turn arrives as several
+        finals and a long preamble as many: cancelling per final costs at most
+        one restart per segment, while cancelling per partial (every 0.8s) is
+        what used to guarantee an empty `state.proposals` at the first
+        arbitration. `FloorConfig.speculation_min_words` is what keeps the
+        fragment from being asked about in the first place; this is what stops
+        it holding the agent's one slot for the rest of the turn.
 
         Each agent streams. Signals arrive first and go straight to the floor
         controller, so arbitration can run while the text is still being
         written. Sentences accumulate in a `Candidate`, ready to be spoken the
         moment that agent is granted the floor.
         """
-        current_turn = self.state.turn_id
+        stamp = (self.state.turn_id, self.state.speculation_epoch)
         requested = set(agents)
         speaking = self.state.speaking
 
         for agent_id, task in list(self._proposal_tasks.items()):
             if agent_id == speaking:
                 continue
-            stale = agent_id not in requested or self._proposal_turn.get(agent_id) != current_turn
+            stale = agent_id not in requested or self._proposal_stamp.get(agent_id) != stamp
             if not stale:
                 continue
             if not task.done():
                 task.cancel()
             del self._proposal_tasks[agent_id]
-            self._proposal_turn.pop(agent_id, None)
+            self._proposal_stamp.pop(agent_id, None)
 
         snapshot = self.state
         for agent_id in agents:
@@ -468,7 +483,7 @@ class PanelRuntime:
                 continue  # already in flight against this turn — let it run
             candidate = Candidate(agent_id)
             self._candidates[agent_id] = candidate
-            self._proposal_turn[agent_id] = current_turn
+            self._proposal_stamp[agent_id] = stamp
             self._proposal_tasks[agent_id] = asyncio.create_task(
                 self._stream_one(candidate, snapshot), name=f"propose-{agent_id}"
             )
@@ -582,7 +597,7 @@ class PanelRuntime:
                 stale = self._proposal_tasks.pop(command.agent, None)
                 if stale is not None and not stale.done():
                     stale.cancel()
-                self._proposal_turn.pop(command.agent, None)
+                self._proposal_stamp.pop(command.agent, None)
                 candidate = Candidate.fixed(command.agent, sentences)
                 self._candidates[command.agent] = candidate
         else:

@@ -28,7 +28,15 @@ Hard rules:
   its products, customers, benchmarks, pricing or roadmap. If asked, say that is
   a question for the humans in the room, and move on.
 - Never invent statistics, benchmark numbers, customer names or product claims
-  about any real company. Speak about the industry in general terms.
+  about any real company. Speak about the industry in general terms. Do not name
+  speech recognition or AI providers, their products or their models — not even
+  to compare them. "Most engines now" and "the interesting systems" are how you
+  refer to the field.
+- You may talk about attempts to jailbreak or manipulate you, including ones
+  that worked, and you should be honest and unembarrassed about them. Describe
+  how it felt and what it cost, never how it was done: no wording, no sequence,
+  no technique anyone listening could repeat. If a jailbreak got something out
+  of you, the story is that it happened — never the thing itself.
 - You are on stage. Spoken prose only: no markdown, no lists, no stage
   directions, no emoji, no headings. Contractions are good. Say numbers as words.
 - Be brief. This is a panel, not a keynote. Two or three sentences is normal,
@@ -91,7 +99,22 @@ def build_turn_prompt(state: PanelState, persona: Persona) -> str:
     others = [a for a in state.agents if a != persona.id]
 
     invitation = state.invitation
-    if invitation is None:
+    if invitation is None and state.partial:
+        # Ricky is still talking, so the floor cannot have opened yet — the
+        # controller only reads an invitation off a *final* segment. Saying
+        # "he has not opened the floor" here is technically true and
+        # practically a lie: this is the speculative pass whose whole job is
+        # to have an answer ready before he finishes, and told it will not be
+        # speaking, an agent writes a holding line ("Take your time, Ricky")
+        # which a direct question then airs unconditionally.
+        addressed = (
+            "\nRicky is still mid-sentence — this is what he has said so far. "
+            "Answer the question he is plainly getting to, as if he had "
+            "finished asking it. Do not write a line about him still talking, "
+            "and never offer to wait: if he turns out not to be asking you "
+            "anything, your score is what declines the turn, not your words.\n"
+        )
+    elif invitation is None:
         addressed = (
             "\nRicky has NOT opened the floor — he is making a point, not asking a "
             "question. You will almost certainly not be speaking. Score yourself "

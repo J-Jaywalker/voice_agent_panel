@@ -236,6 +236,77 @@ def test_a_named_agent_answers_alone(fc, state):
     assert [c for c in cmds if isinstance(c, CueModerator)]
 
 
+def test_a_named_agent_may_not_answer_with_a_line_written_before_the_question(fc, state):
+    """The failure this guard exists for, from a live run.
+
+    Ricky said "So, Wayne, uh, where are we actually on the adoption curve?".
+    Speculation fired on the opening fragment, so Wayne's brain was asked before
+    anything had been asked of it and wrote "Take your time, Ricky — we'll be
+    here." A named invitation bypasses the score floor, so that went on the PA
+    in answer to a direct question. Silence plus a cue is recoverable; this is
+    not. The same guard covers the slower version: a proposal left over from a
+    previous turn that ended without a grant, so nothing cleared it.
+    """
+    state, _ = run(
+        fc,
+        state,
+        AgentProposal(t=0.0, agent="wayne", utterance="Take your time, Ricky.", signals=strong()),
+        invite(20.0, "So Wayne, where are we on the adoption curve?"),
+    )
+    assert state.invitation.agent == "wayne"
+
+    state, cmds = fc.reduce(state, TurnYielded(t=20.5))
+    assert not [c for c in cmds if isinstance(c, StartSpeech)]
+    assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [
+        CueReason.INVITED_AGENT_SILENT
+    ]
+    assert state.invitation.is_live(), "the invitation survives so a fresh answer can take it"
+
+
+def test_a_named_agent_answers_with_a_line_written_during_the_question(fc, state):
+    """...and the latency win speculation exists for is preserved.
+
+    A proposal started against the partials of the question itself lands a
+    second or two *before* the final that opens the floor. Refusing those would
+    put a 2-3s model round trip after every direct address, which is the whole
+    thing `speculation_interval_s` is for.
+    """
+    state, _ = run(
+        fc,
+        state,
+        AgentProposal(t=18.5, agent="wayne", utterance="About a third of it.", signals=weak()),
+        invite(20.0, "So Wayne, where are we on the adoption curve?"),
+    )
+    _, cmds = fc.reduce(state, TurnYielded(t=20.5))
+    assert [c.agent for c in cmds if isinstance(c, StartSpeech)] == ["wayne"]
+
+
+def test_a_silent_arbitration_asks_the_panel_again(fc, state):
+    """Nobody had anything — so ask, now that the turn is complete.
+
+    Recovery used to depend on a stream that happened to still be in flight.
+    When the only generation for the turn had already finished — against a
+    partial, or before Ricky had asked anything — nothing re-drove arbitration
+    and a live invitation sat on the floor until its 25s TTL.
+    """
+    state, _ = fc.reduce(state, invite(20.0, "So Wayne, where are we on the curve?"))
+    state, cmds = fc.reduce(state, TurnYielded(t=21.0))
+    assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [
+        CueReason.INVITED_AGENT_SILENT
+    ]
+    requests = [c for c in cmds if isinstance(c, RequestProposals)]
+    assert [c.reason for c in requests] == ["post_turn"]
+    assert "wayne" in requests[0].agents
+
+
+def test_repeated_silent_arbitrations_do_not_spam_the_brains(fc, state):
+    """A refused proposal re-opens arbitration; the debounce bounds the churn."""
+    state, _ = fc.reduce(state, invite(20.0, "So Wayne, where are we on the curve?"))
+    state, _ = fc.reduce(state, TurnYielded(t=21.0))
+    _, cmds = fc.reduce(state, TurnYielded(t=21.1))
+    assert not [c for c in cmds if isinstance(c, RequestProposals)]
+
+
 def test_an_unnamed_question_opens_the_floor_to_the_panel(fc, state):
     state, _ = fc.reduce(state, invite(0.0, "What do you all think?"))
     assert state.invitation is not None
@@ -548,22 +619,86 @@ def test_muted_agent_never_wins_the_floor(fc, state):
 
 def test_partials_trigger_debounced_proposal_requests(fc, state):
     state, cmds = fc.reduce(
-        state, TranscriptUpdated(t=10.0, speaker=HUMAN, text="So what", is_final=False)
+        state, TranscriptUpdated(t=10.0, speaker=HUMAN, text="So what do you think", is_final=False)
     )
     assert [c for c in cmds if isinstance(c, RequestProposals)]
 
     # Too soon — debounced.
     state, cmds = fc.reduce(
-        state, TranscriptUpdated(t=10.1, speaker=HUMAN, text="So what do", is_final=False)
+        state,
+        TranscriptUpdated(t=10.1, speaker=HUMAN, text="So what do you think about",
+                          is_final=False),
     )
     assert not [c for c in cmds if isinstance(c, RequestProposals)]
 
     state, cmds = fc.reduce(
         state,
         TranscriptUpdated(t=10.0 + fc.config.speculation_interval_s + 0.01, speaker=HUMAN,
-                          text="So what do you think", is_final=False),
+                          text="So what do you think about oversight", is_final=False),
     )
     assert [c for c in cmds if isinstance(c, RequestProposals)]
+
+
+def test_a_partial_too_short_to_answer_is_not_worth_asking_about(fc, state):
+    """Finals land on pauses, so every turn opens with a fragment.
+
+    "So, Wayne, uh" is not a question, and an agent asked to propose against it
+    writes a holding line — which a direct question then airs unconditionally,
+    because a named invitation bypasses the score floor. The cheapest fix is to
+    not ask. The debounce alone does not cover this: it is the *first* partial
+    of a turn, so nothing has been requested for seconds and it is always due.
+    """
+    state, cmds = fc.reduce(
+        state, TranscriptUpdated(t=10.0, speaker=HUMAN, text="So, Wayne, uh", is_final=False)
+    )
+    assert not [c for c in cmds if isinstance(c, RequestProposals)]
+
+    # Enough of the sentence to be answerable, and the debounce has not been
+    # reset by the fragment, so this asks immediately rather than 0.8s later.
+    state, cmds = fc.reduce(
+        state,
+        TranscriptUpdated(t=10.2, speaker=HUMAN, text="So, Wayne, uh, where are we",
+                          is_final=False),
+    )
+    assert [c for c in cmds if isinstance(c, RequestProposals)]
+
+
+def test_a_short_final_always_asks_however_few_words(fc, state):
+    """The word gate is for partials only.
+
+    "Wayne, thoughts?" is a real thing Ricky says, and by the time it is final
+    the invitation exists — gating it would leave the named agent permanently
+    silent on the shortest direct questions.
+    """
+    _, cmds = fc.reduce(
+        state, TranscriptUpdated(t=10.0, speaker=HUMAN, text="Wayne, thoughts?", is_final=True)
+    )
+    assert [c for c in cmds if isinstance(c, RequestProposals)]
+
+
+def test_finals_bump_the_speculation_epoch_and_partials_do_not(fc, state):
+    """The runtime's staleness signal: one bump per final, none per partial.
+
+    Per-final is what lets a stream started against "So, Wayne, uh," be torn
+    down and restarted against the completed question. Per-partial would cancel
+    every 0.8s and nothing would ever finish.
+    """
+    state, _ = fc.reduce(
+        state, TranscriptUpdated(t=10.0, speaker=HUMAN, text="So, Wayne, uh", is_final=False)
+    )
+    assert state.speculation_epoch == 0
+
+    state, _ = fc.reduce(
+        state, TranscriptUpdated(t=10.5, speaker=HUMAN, text="So, Wayne, uh,", is_final=True)
+    )
+    assert state.speculation_epoch == 1
+
+    # A turn arriving as several finals bumps once per segment.
+    state, _ = fc.reduce(
+        state,
+        TranscriptUpdated(t=12.0, speaker=HUMAN, text="where are we on the curve?", is_final=True),
+    )
+    assert state.speculation_epoch == 2
 
 
 def test_final_transcript_always_requests_proposals(fc, state):
