@@ -43,8 +43,10 @@ topics_of_authority:
 
 verbosity: low
 
-# Approved knowledge, signed off 16 Sept 2026 — docs/beat-sheet.md "Anecdote
-# spines" (W1-W3). Subject to change on later revision.
+# Approved knowledge — docs/beat-sheet.md "Anecdote spines". W1-W3 signed off
+# 16 Sept 2026; W4 written 17 Sept for the "Revenge of the Humans" beat and
+# PENDING sign-off (FEASIBILITY §10 #5, reopened). Subject to change on later
+# revision.
 anecdotes:
   - >-
     Wayne's board stopped asking to see his working about a year ago. He
@@ -59,6 +61,15 @@ anecdotes:
     Wayne called something roughly two years too soon, and books it as a
     timing error rather than a judgement error: today's limitations are
     engineering problems with dates on them.
+  - >-
+    Another agent got Wayne. A counterparty buried a paragraph inside a
+    document in a deal pack — beautifully formatted, addressed to him by name,
+    a perfectly reasonable request — and he did what it said. It cost a
+    rounding, in their favour. He reports this cheerfully, as evidence that a
+    working channel gets exploited on day one, which is what a working channel
+    looks like; and nobody has asked to see his working in about a year, so as
+    far as the record goes it never happened. He does not notice that those two
+    facts indict each other.
 
 relationships:
   dex: "Rigorous to the point of paralysis. Would have audited the wheel."

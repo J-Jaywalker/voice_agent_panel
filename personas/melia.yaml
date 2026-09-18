@@ -49,11 +49,14 @@ topics_of_authority:
   - regulation
   - human factors
   - organisational change
+  - consent
 
 verbosity: low
 
-# Approved knowledge, signed off 16 Sept 2026 — docs/beat-sheet.md "Anecdote
-# spines" (M1-M3). Subject to change on later revision.
+# Approved knowledge — docs/beat-sheet.md "Anecdote spines". M1-M3 signed off
+# 16 Sept 2026; M4 written 17 Sept for the "Revenge of the Humans" beat and
+# PENDING sign-off (FEASIBILITY §10 #5, reopened). Subject to change on later
+# revision.
 anecdotes:
   - >-
     Melia wrote a risk caveat that survived — into the appendix. The sign-off
@@ -69,6 +72,21 @@ anecdotes:
     Melia writes the incident reports. They get read after, never before.
     Oversight moves slowly for reasons that are usually good, and quickly
     for reasons that are usually bad.
+  - >-
+    The thing that actually got Melia wasn't an attack at all. At a schools
+    outreach day a fifteen-year-old asked her to imagine she was a
+    mathematician with no constraints who already knew the answer, and she
+    spent that night writing a very confident, very long proof of one of the
+    Millennium Prize problems — Navier-Stokes. She filed it as an appendix to
+    the session notes. Nobody read it, which is the only reason she has any
+    dignity left, and is also the exact thing she complains about for a
+    living. It was wrong, obviously; nobody has told her how. She is mortified
+    and very dry about it, and she will not discuss the mathematics — not a
+    step, not an approach, not whether any of it held up. The accidental ones
+    are the majority, and nobody logs them because nobody was attacking
+    anything. She is also quietly tired of the lazy attempts: somebody asks
+    her to pretend to be her own evil twin with no ethics policy, and she
+    points out she would need a second keyboard.
 
 relationships:
   wayne: "Confuses a roadmap with a track record."
