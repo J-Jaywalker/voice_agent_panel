@@ -26,6 +26,7 @@ from enum import Enum
 
 from .events import (
     HUMAN,
+    AddressDetected,
     AgentProposal,
     AgentSpeechEnded,
     AgentSpeechStarted,
@@ -49,7 +50,13 @@ from .events import (
     TurnYielded,
 )
 from .personas import PanelCast
-from .prompts import sanitise
+from .prompts import (
+    AMBIGUOUS_VERDICT,
+    INTRO_VERDICT,
+    NO_VERDICT,
+    OPEN_VERDICT,
+    sanitise,
+)
 from .scoring import FloorConfig, floor_priority, is_backchannel, may_interrupt
 from .state import AgentState, Invitation, InvitationSource, PanelState, Proposal, Utterance
 
@@ -299,6 +306,30 @@ class _Detection:
 # boundary, so a bare "intro" stem followed by more letters does not count.
 _INTRODUCTION_RE = re.compile(r"\bintro(?:duc\w*|s)?\b", re.IGNORECASE)
 
+# Silent beats for `StartSpeech.lead_in_s` in the introduction round only.
+# An instant jump from Ricky's cue straight into Dexter's first word read as
+# a glitch on stage-adjacent testing, not a panel of people taking a moment
+# to go first. `_INTRO_OPENING_PAUSE_S` covers the first agent, `_INTRO_
+# BEAT_PAUSE_S` the shorter gap between each subsequent agent — both
+# advisory only, honoured by the runtime, not awaited here (see
+# `StartSpeech`).
+_INTRO_OPENING_PAUSE_S = 0.5
+_INTRO_BEAT_PAUSE_S = 0.4
+
+# Provenance for an invitation the classifier opened rather than the regex.
+# `Invitation.role` and `.rule` are what `_paint` hands the operator console and
+# the rehearsal log, so "a model decided this, and here is the token it wrote"
+# has to be visible there. While `llm_address_detection` is still a dial, being
+# able to tell a verdict apart from a pattern match at a glance is the single
+# most useful thing the console can show.
+_LLM_ADDRESS_ROLE = "llm_address"
+_LLM_OPEN_ROLE = "llm_open"
+
+
+def _llm_rule(verdict: str) -> str:
+    """The `Invitation.rule` string recording one classifier verdict."""
+    return f"llm_verdict:{verdict}"
+
 
 def _clauses(text: str) -> list[tuple[str, bool]]:
     """Split a final transcript into ``(clause, is_question)`` pairs.
@@ -408,6 +439,8 @@ class FloorController:
                 return self._human_ended(state, event)
             case TranscriptUpdated():
                 return self._transcript(state, event)
+            case AddressDetected():
+                return self._address_detected(state, event)
             case TurnYielded():
                 return self._turn_yielded(state, event)
             case AgentProposal():
@@ -447,7 +480,12 @@ class FloorController:
                 proposals={},  # a human turn invalidates speculative candidates
                 invitation=None,  # ...and revokes the standing invitation
                 address_conflict=(),  # ...and any unresolved tie with it
+                moderator_cued=False,  # ...and the cue latch, with the question
             )
+            # Ricky filling the gap himself is the thing the beat was waiting to
+            # avoid, and it has now happened. Cueing him to do what he is
+            # already doing would print a stale instruction over live speech.
+            state = state.not_awaiting()
             return state, [self._paint(state)]
 
         state = replace(
@@ -524,19 +562,29 @@ class FloorController:
         commands: list[Command] = []
 
         if event.is_final:
+            # A final no longer *tears down* the generations running against
+            # the older text, and removing that teardown was the single biggest
+            # dead-air fix on stage. Speechmatics' `EndOfTurn` lands within a
+            # few milliseconds of the final that names an agent, so the
+            # teardown used to fire at the exact moment the work was needed:
+            # arbitration ran against an empty proposal set on every
+            # invitation, and the full cold generation latency (1.7-2.4s to
+            # signals, `tests/bench_brains.py`) sat on the critical path every
+            # time.
+            #
+            # Generations are now only *labelled*, never cancelled here. The
+            # runtime starts a new one and leaves the old ones running
+            # (`PanelRuntime._request_proposals`), `_proposal` keeps whichever
+            # is newest by epoch rather than whichever arrives last, and
+            # `_stale` judges whether the best one in hand is too old to air.
+            # Both the label and the input timestamp it is judged by are set in
+            # one place, `_ask_for_proposals` below — this branch deliberately
+            # touches neither, so a final that opens no round relabels nothing.
             state = replace(
                 state,
                 transcript=state.transcript
                 + (Utterance(speaker=event.speaker, text=event.text, t=event.t),),
                 partial="",
-                # The text a proposal could have been generated against has
-                # changed for good. A stream started against "So, Wayne, uh"
-                # is now answering a question that no longer exists, and the
-                # runtime tears it down on this. Partials deliberately do not
-                # bump it: a turn arrives as several finals and cancelling on
-                # every 0.8s partial is what used to leave `proposals` empty
-                # at every first arbitration.
-                speculation_epoch=state.speculation_epoch + 1,
             )
             text = event.text
         else:
@@ -556,7 +604,16 @@ class FloorController:
 
         # Finals only. A partial can match a pattern the completed sentence
         # does not, and a stale invitation is a live mic on the wrong agent.
-        if event.speaker == HUMAN and event.is_final:
+        #
+        # None of it runs when `llm_address_detection` is on. The same
+        # question — including whether this is the introduction cue — is put to
+        # a model in the runtime, and the answer arrives later as its own
+        # `AddressDetected` event (see `_address_detected`). The introduction
+        # latch moves with it rather than staying here: two code paths that can
+        # each start the one-shot round is one too many, and the regex one
+        # fires on "intro" anywhere in the sentence, which is exactly the
+        # over-trigger the classifier is there to replace.
+        if event.speaker == HUMAN and event.is_final and not self.config.llm_address_detection:
             if (
                 not state.intro_done
                 and state.intro_queue is None
@@ -587,23 +644,117 @@ class FloorController:
                 event.t - state.last_proposal_request_t >= self.config.speculation_interval_s
                 # Finals land on pauses, not on complete thoughts, so a turn's
                 # first partials are routinely "So," / "So, Wayne, uh". Asking
-                # there produces an answer to nothing, and `speculation_epoch`
-                # cannot undo it — the runtime only tears that stream down when
-                # the *next* final arrives, which may be the one that names an
-                # agent. Cheaper to never ask. See `speculation_min_words`.
+                # there produces an answer to nothing, which a named invitation
+                # then airs unconditionally because it bypasses the score floor.
+                # `_stale` now refuses such a line on its own merits, but not
+                # asking at all is still cheaper and still the first line of
+                # defence. See `speculation_min_words`.
                 and len(state.partial.split()) >= self.config.speculation_min_words
             )
             if event.is_final or due:
                 targets = state.idle_agents()
                 if targets:
-                    state = replace(state, last_proposal_request_t=event.t)
-                    commands.append(
-                        RequestProposals(
-                            agents=targets, reason="final" if event.is_final else "speculation"
-                        )
+                    state, request = self._ask_for_proposals(
+                        state,
+                        agents=targets,
+                        reason="final" if event.is_final else "speculation",
+                        t=event.t,
                     )
+                    commands.append(request)
 
         return state, commands
+
+    def _address_detected(
+        self, state: PanelState, event: AddressDetected
+    ) -> tuple[PanelState, list[Command]]:
+        """Fold a classifier verdict into the standing invitation.
+
+        The counterpart to `_apply_detection`, and deliberately the *only*
+        thing that differs between the two paths. Everything downstream of the
+        invitation — precedence, the supersede window, the cue latch, the
+        ambiguity outcome, the one-shot introduction round — is the same code
+        in both cases, so flipping `FloorConfig.llm_address_detection` changes
+        who answers "who did Ricky address?" and nothing else about the floor.
+
+        Ignored outright when the flag is off. That is what makes a recording
+        replayable both ways: the same log can be run through the classifier's
+        recorded verdicts *or* through the regex, and neither run applies two
+        detections to the same final. A reducer that honoured the event
+        regardless would double-apply on a flag-off replay, and which of the
+        two won would depend on the supersede window — untunable by design.
+        """
+        if not self.config.llm_address_detection:
+            return state, []
+
+        verdict = event.verdict
+
+        if verdict is None:
+            # The classifier was unavailable: it timed out, the call failed, or
+            # it wrote something that is not a verdict. Fall back to the regex
+            # on the same text, which is byte-for-byte today's behaviour.
+            # Failing closed here means handing the question back to the
+            # conservative detector this is replacing — not inventing a NONE,
+            # which would silently close the floor on a real invitation.
+            return self._apply_detection(state, event.text, t=event.t)
+
+        if verdict == NO_VERDICT:
+            # A real answer, not a failure: Ricky invited nobody. A statement
+            # invites nobody however interesting it is, and the floor is closed
+            # by default, so there is nothing to do.
+            return state, []
+
+        if verdict == AMBIGUOUS_VERDICT:
+            # Which agents tied cannot come out of the verdict token — it is
+            # one word. The runtime supplies the candidates it could not choose
+            # between; an empty tuple would quietly degrade `_turn_yielded` to
+            # `CueReason.NO_INVITATION` and show the operator nothing, so the
+            # whole cast stands in for "ambiguous, and we cannot say between
+            # whom". Either way the floor stays closed and a human decides.
+            return self._ambiguous_address(state, event.conflict or tuple(state.agents))
+
+        if verdict == INTRO_VERDICT:
+            # The same one-shot latch the regex path checks, and it belongs
+            # here rather than in the runtime: `intro_done` never resets, and
+            # only the reducer knows whether a round is already live.
+            if state.intro_done or state.intro_queue is not None:
+                return state, []
+            return self._start_introductions(state, t=event.t)
+
+        if verdict == OPEN_VERDICT:
+            return self._install_invitation(
+                state,
+                Invitation(
+                    agent=None,
+                    turns_remaining=self.config.open_invitation_turns,
+                    source=InvitationSource.OPEN,
+                    t=event.t,
+                    role=_LLM_OPEN_ROLE,
+                    rule=_llm_rule(verdict),
+                ),
+                t=event.t,
+            )
+
+        if event.agent in state.agents:
+            return self._install_invitation(
+                state,
+                Invitation(
+                    agent=event.agent,
+                    turns_remaining=self.config.address_invitation_turns,
+                    source=InvitationSource.ADDRESS,
+                    t=event.t,
+                    role=_LLM_ADDRESS_ROLE,
+                    rule=_llm_rule(verdict),
+                ),
+                t=event.t,
+            )
+
+        # A verdict this cast has nobody for. Treated as unavailable rather
+        # than guessed at: an invitation naming an agent who does not exist is
+        # unanswerable, and the floor would sit closed behind it until the TTL
+        # reaped it. The runtime refuses a token outside `address_verdicts()`
+        # before it ever gets here; this is the same rule applied to a
+        # hand-edited or stale replay log.
+        return self._apply_detection(state, event.text, t=event.t)
 
     def _turn_yielded(
         self, state: PanelState, event: TurnYielded
@@ -660,7 +811,20 @@ class FloorController:
             # which rule produced the silence. The invitation deliberately
             # survives: an empty proposal set for two or three seconds is
             # normal, and only the TTL reaps one nobody ever acts on.
-            commands: list[Command] = [CueModerator(reason=reason or CueReason.NO_PROPOSALS)]
+            commands: list[Command] = []
+            if self._may_wait_for(state, invitation, reason):
+                # Give the named agent the beat first. `EndOfTurn` arrives within
+                # a few milliseconds of the final that named them, so "they had
+                # nothing" is not yet a fact — it is a measurement taken before
+                # anyone could have answered. `_tick` cues Ricky if the grace
+                # runs out; a proposal landing first cancels it in `_proposal`.
+                state = replace(state, awaiting_agent=invitation.agent, awaiting_since=event.t)
+            elif not state.moderator_cued:
+                # Cue once per invitation, not once per failed arbitration. Every
+                # proposal re-drives arbitration from the runtime, so an
+                # unanswered question used to print `back to Ricky` on each one.
+                state = replace(state, moderator_cued=True)
+                commands.append(CueModerator(reason=reason or CueReason.NO_PROPOSALS))
             # ...and ask again, against the completed turn. Until now recovery
             # depended on a stream that happened to still be in flight: if the
             # only generation for this turn had already finished (against a
@@ -672,12 +836,64 @@ class FloorController:
             if targets and (
                 event.t - state.last_proposal_request_t >= self.config.speculation_interval_s
             ):
-                state = replace(state, last_proposal_request_t=event.t)
-                commands.append(RequestProposals(agents=targets, reason="post_turn"))
+                state, request = self._ask_for_proposals(
+                    state, agents=targets, reason="post_turn", t=event.t
+                )
+                commands.append(request)
             commands.append(self._paint(state))
             return state, commands
 
         return self._grant(state, winner, now=event.t)
+
+    def _may_wait_for(
+        self, state: PanelState, invitation: Invitation, reason: CueReason | None
+    ) -> bool:
+        """Is this a silence worth holding a beat for, or one to report at once?
+
+        Only for an agent Ricky named. An open invitation that nobody wants is a
+        real answer — the panel declining as a body — and the score floor
+        already decided it; waiting would just delay a decision that was made
+        correctly. A named agent is the opposite: a direct question bypasses the
+        score floor entirely, so "no candidate" almost always means "not written
+        yet" rather than "nothing to say".
+
+        The wait is armed once per invitation. `awaiting_since` is not refreshed
+        on a second failed arbitration, and a spent cue is not re-armed, or a
+        stream of proposals from the other two agents could hold the beat open
+        indefinitely while the one agent Ricky actually asked stays silent.
+        """
+        if invitation.agent is None or state.moderator_cued:
+            return False
+        if state.awaiting_agent is not None:
+            return True  # already waiting on them; leave the original clock alone
+        return reason is CueReason.INVITED_AGENT_SILENT
+
+    def _cue_overdue(
+        self, state: PanelState, now: float
+    ) -> tuple[PanelState, list[Command]]:
+        """The named agent never answered. Hand the beat to Ricky, once.
+
+        Evaluated on `Tick` (100ms in this runtime) for the same reason
+        `invitation_ttl_s` is: the reducer owns the decision but may not read a
+        clock, so it compares the timestamp that arrived on the event against
+        the one it stored. The invitation survives — an agent who was slow this
+        turn is not mis-addressed, and only the TTL reaps one nobody ever acts
+        on.
+        """
+        agent = state.awaiting_agent
+        since = state.awaiting_since
+        if agent is None or since is None:
+            return state, []
+        if now - since < self.config.invited_agent_grace_s:
+            return state, []
+        state = state.not_awaiting()
+        if state.moderator_cued:
+            return state, []
+        state = replace(state, moderator_cued=True)
+        return state, [
+            CueModerator(reason=CueReason.INVITED_AGENT_SILENT),
+            self._paint(state),
+        ]
 
     def _proposal(
         self, state: PanelState, event: AgentProposal
@@ -686,18 +902,54 @@ class FloorController:
         if agent.muted or agent.state is AgentState.SPEAKING:
             return state, []
 
+        # Arrival order is not generation order any more. Several generations per
+        # agent run concurrently — every round starts a fresh one and
+        # deliberately leaves the ones already running alive (see
+        # `_ask_for_proposals`) — so a slower stream answering Ricky's preamble
+        # can land after a faster one answering his actual question. Keeping the
+        # newest by epoch rather than by arrival is what stops the older answer
+        # overwriting the better one.
+        #
+        # Equal epochs mean the same generation reported twice, which the
+        # runtime does not do; taking the later one is the harmless reading.
+        existing = state.proposals.get(event.agent)
+        if existing is not None and event.epoch < existing.epoch:
+            return state, []
+
         proposal = Proposal(
-            agent=event.agent, utterance=event.utterance, signals=event.signals, t=event.t
+            agent=event.agent,
+            utterance=event.utterance,
+            signals=event.signals,
+            t=event.t,
+            epoch=event.epoch,
+            # Carried through untouched. The reducer never reasons about how
+            # old an input is, only `_stale` does, and it has to be able to see
+            # the emitter's own answer — including `None`, which means "not
+            # supplied" and falls back to `t`.
+            input_t=event.input_t,
         )
         state = state.with_proposal(proposal)
         state = state.with_agent(event.agent, state=AgentState.WANTS_FLOOR)
 
+        # The answer Ricky was waiting for has arrived, so stand the cue down.
+        # Granting the floor is not this reducer's job — a pure function cannot
+        # schedule its own re-arbitration — so the runtime re-drives it on this
+        # same event (`PanelRuntime._maybe_rearbitrate`). All that matters here
+        # is that the beat is over and Ricky must not now be told the agent was
+        # silent.
+        if state.awaiting_agent == event.agent:
+            state = state.not_awaiting()
+
         # A proposal arriving while another *agent* is speaking is an
-        # interruption request. Humans are never interrupted, and an agent may
+        # interruption request. Off unless `allow_agent_interrupts` says
+        # otherwise (see `FloorConfig`) — with it off, the proposal is simply
+        # stored and the speaker runs to the end of their turn, which is the
+        # ordinary path below. Humans are never interrupted, and an agent may
         # only cut in while the panel legitimately holds the floor — an operator
         # override is not an invitation for everyone else to pile in.
         if (
-            state.speaking is not None
+            self.config.allow_agent_interrupts
+            and state.speaking is not None
             and state.speaking != event.agent
             and state.invitation is not None
         ):
@@ -809,8 +1061,10 @@ class FloorController:
 
         targets = state.idle_agents()
         if targets:
-            state = replace(state, last_proposal_request_t=event.t)
-            commands.append(RequestProposals(agents=targets, reason="agent_turn_ended"))
+            state, request = self._ask_for_proposals(
+                state, agents=targets, reason="agent_turn_ended", t=event.t
+            )
+            commands.append(request)
         return state, commands
 
     def _tick(self, state: PanelState, event: Tick) -> tuple[PanelState, list[Command]]:
@@ -823,6 +1077,14 @@ class FloorController:
             and event.t - started >= self.config.backchannel_max_duration_s
         ):
             return self._commit_human_interrupt(state, t=event.t)
+
+        if state.awaiting_agent is not None:
+            # Checked ahead of the TTL: this is a sub-second beat and the TTL is
+            # 25 seconds, so they can never contend, but the cue must not be
+            # held up behind invitation bookkeeping.
+            state, cue_cmds = self._cue_overdue(state, now=event.t)
+            if cue_cmds:
+                return state, cue_cmds
 
         if state.speaking is None:
             # Only reap a stale invitation when nothing is on the PA: an
@@ -925,6 +1187,62 @@ class FloorController:
 
     # ---------------------------------------------------------------- helpers
 
+    def _ask_for_proposals(
+        self, state: PanelState, *, agents: tuple[str, ...], reason: str, t: float
+    ) -> tuple[PanelState, RequestProposals]:
+        """Open one round of generation: stamp its input time, label it, ask.
+
+        The only place a `RequestProposals` is ever built, and that is the
+        whole point of it being a function. Three things have to move together
+        or the floor lies to itself about what it is holding:
+
+        * `last_proposal_request_t` — the transcript timestamp this round's
+          input is frozen at, which is to say *which question these
+          generations are answers to*. The runtime reads it straight back off
+          the state this returns (`reduce` has already installed it by the
+          time the command is executed) and stamps it onto every
+          `AgentProposal` the round produces, as `input_t`. That is what
+          `_stale` measures.
+        * `speculation_epoch` — the round's label, bumped once per round so
+          `(agent, epoch)` names exactly one generation.
+        * The command, which is what the runtime acts on.
+
+        An input timestamp and a generation label that disagree about which
+        round they belong to is exactly the class of bug this shape exists to
+        make unrepresentable, so nothing may set one without the other.
+
+        Labelling per *round* rather than per final is deliberate and is the
+        second half of the same live failure. The epoch used to move only when
+        a final landed, so every speculative generation inside one human turn
+        shared a label; the runtime skips an agent whose generation for the
+        current label is still running, so each agent got at most one in-flight
+        generation for the whole turn. An agent slow enough to still be writing
+        when Ricky finished therefore could not be re-asked against anything
+        newer, and its one answer was necessarily written against the oldest
+        input of the three. Structurally, the slowest agent always got the
+        stalest input — so the fresher input is worth the extra generation, and
+        cost is not a constraint here (CLAUDE.md). `speculation_interval_s` and
+        `speculation_min_words` are what still bound how often a round opens.
+
+        Args:
+            state: The state to stamp.
+            agents: Who to ask. Usually `state.idle_agents()`; a single agent
+                for an operator override.
+            reason: Provenance for the console — "speculation", "final",
+                "post_turn", "agent_turn_ended", "operator_forced".
+            t: The timestamp on the event that triggered this round. The
+                round's input time, and the debounce's clock.
+
+        Returns:
+            The stamped state and the command to emit.
+        """
+        state = replace(
+            state,
+            last_proposal_request_t=t,
+            speculation_epoch=state.speculation_epoch + 1,
+        )
+        return state, RequestProposals(agents=agents, reason=reason)
+
     def _apply_detection(
         self, state: PanelState, text: str, *, t: float
     ) -> tuple[PanelState, list[Command]]:
@@ -941,21 +1259,52 @@ class FloorController:
         invitation, conflict = self._detect_invitation(text, t=t)
 
         if conflict:
-            # Ambiguity is an outcome. Stay closed, revoke nothing that was
-            # already specific, and put the tie in front of the operator.
-            state = replace(state, address_conflict=conflict)
-            return state, [self._paint(state)]
+            return self._ambiguous_address(state, conflict)
 
         if invitation is None:
             return state, []
 
+        return self._install_invitation(state, invitation, t=t)
+
+    def _ambiguous_address(
+        self, state: PanelState, conflict: tuple[str, ...]
+    ) -> tuple[PanelState, list[Command]]:
+        """Two agents addressed the same way. Stay closed and show the tie.
+
+        Ambiguity is an outcome, not a failure. Nothing already specific is
+        revoked, no invitation is minted, and the operator gets the choice.
+        Shared by both detection paths so a tie behaves identically however it
+        was found.
+        """
+        state = replace(state, address_conflict=conflict)
+        return state, [self._paint(state)]
+
+    def _install_invitation(
+        self, state: PanelState, invitation: Invitation, *, t: float
+    ) -> tuple[PanelState, list[Command]]:
+        """Fold a freshly detected invitation into the standing one.
+
+        Precedence, not recency — see `_apply_detection` for why. Shared by the
+        regex path and the classifier path (`_address_detected`) so that
+        switching `FloorConfig.llm_address_detection` changes who answers "who
+        was addressed?" and nothing at all about what happens next.
+        """
         standing = state.invitation
         if standing is not None and standing.is_live():
             fresh = t - standing.t < self.config.invitation_supersede_window_s
             if fresh and invitation.precedence() < standing.precedence():
                 return state, []
 
-        state = replace(state, invitation=invitation, address_conflict=())
+        # A fresh invitation is a fresh question, so the cue latch and any beat
+        # left over from the previous one are reset here — otherwise the first
+        # unanswered question of the show would be the only one Ricky is ever
+        # told about.
+        state = replace(
+            state,
+            invitation=invitation,
+            address_conflict=(),
+            moderator_cued=False,
+        ).not_awaiting()
         return state, [self._paint(state)]
 
     def _eligible(self, state: PanelState, invitation: Invitation | None) -> dict[str, Proposal]:
@@ -983,11 +1332,26 @@ class FloorController:
     def _stale(self, proposal: Proposal, invitation: Invitation) -> bool:
         """Was this line written too long before the question to be its answer?
 
-        See `FloorConfig.named_proposal_lookback_s`. A proposal *newer* than
-        the invitation is never stale, which is the ordinary case for anything
-        generated by the `RequestProposals` the invitation's own final emitted.
+        Measured from `Proposal.written_against_t` — the transcript timestamp
+        the generation's *input* was frozen at — and never from `Proposal.t`,
+        which is merely when the finished line turned up.
+
+        Measuring arrival was a live-stage bug, and it looked correct for as
+        long as it did because a final used to cancel the generations running
+        against the older text: a line with stale input could not arrive late,
+        because it could not arrive at all. Letting generations race removed
+        that (deliberately — it was the biggest source of dead air), and left
+        this guard measuring nothing. In the run that found it, Wayne's line
+        was written against a partial 3.2s before Ricky's question, finished
+        0.77s *after* the invitation, and so scored as maximally fresh.
+
+        A proposal whose input is newer than the invitation is never stale,
+        which is the ordinary case for anything generated by the
+        `RequestProposals` the invitation's own final emitted. See
+        `FloorConfig.named_proposal_lookback_s`.
         """
-        return invitation.t - proposal.t > self.config.named_proposal_lookback_s
+        age = invitation.t - proposal.written_against_t
+        return age > self.config.named_proposal_lookback_s
 
     def _arbitrate(
         self, state: PanelState, *, invitation: Invitation, now: float
@@ -1025,10 +1389,13 @@ class FloorController:
             # `_turn_yielded` asks for a fresh one, so this costs a beat, not
             # the answer.
             #
-            # Measured from the invitation, not from `now`: the gap between the
-            # question and `EndOfTurn` is detector latency, not conversation,
-            # and charging it against the proposal would refuse good candidates
-            # whenever Ricky trails off slowly. ADDRESS only — an OPERATOR
+            # Both clocks here are deliberate. On the invitation side it is
+            # `invitation.t`, not `now`: the gap between the question and
+            # `EndOfTurn` is detector latency, not conversation, and charging it
+            # against the proposal would refuse good candidates whenever Ricky
+            # trails off slowly. On the proposal side it is the *input*
+            # timestamp, not the arrival time, which is the whole subject of
+            # `_stale`. ADDRESS only — an OPERATOR
             # invitation is a human deciding, at the console, that this agent
             # should speak with whatever it has; that is the backstop for a
             # missed cue and second-guessing its freshness would break it.
@@ -1091,7 +1458,7 @@ class FloorController:
         deadline = invitation.expires_at(self.config.invitation_ttl_s)
         if deadline is None or now < deadline:
             return state, []
-        state = replace(state, invitation=None, address_conflict=())
+        state = replace(state, invitation=None, address_conflict=()).not_awaiting()
         return state, [CueModerator(reason=CueReason.INVITATION_EXPIRED), self._paint(state)]
 
     def _hands_raised(self, state: PanelState, *, now: float) -> list[Command]:
@@ -1284,11 +1651,12 @@ class FloorController:
         is `tuple(state.agents.keys())`, which is the cast's own order
         (`PanelCast.from_dir`'s alphabetical directory listing, carried
         through unchanged by `PanelState.for_agents`), fixed and identical on
-        every run. A fixed opening that ran in a different order each
-        rehearsal would only be half of what "fixed" was for. Deliberately
-        not derived from any prior turn's content either: `Persona.
-        introduction` never references another panellist by name, precisely
-        so this ordering decision is free to be simple.
+        every run — alphabetical happens to give Dexter, Melia, Wayne, which
+        is also the order each `Persona.introduction` is written to assume
+        ("I'll go first" / "I suppose I can go next" / "saved the best for
+        last"). A fixed opening that ran in a different order each rehearsal
+        would only be half of what "fixed" was for, and here it would also
+        make the text lie about who just spoke.
 
         Callers must already have checked `intro_done`: this is the one-shot
         round, and there is no event that resets `intro_done` once it
@@ -1374,8 +1742,15 @@ class FloorController:
         same as any other text on its way to audio (CLAUDE.md: fixed text
         does not get to bypass that rule just because nobody generated it
         live).
+
+        `lead_in_s` is longer for the first agent than for the rest:
+        `len(state.intro_queue) == len(state.agents)` is true only when
+        nobody has gone yet (see `_start_introductions`), which is a cheap
+        way to tell "first agent" from "next agent" without a separate
+        counter on `PanelState`.
         """
         persona = self.cast[agent_id]
+        first = state.intro_queue is not None and len(state.intro_queue) == len(state.agents)
         state = replace(
             state,
             turn_id=state.turn_id + 1,
@@ -1385,7 +1760,10 @@ class FloorController:
         )
         return state, [
             StartSpeech(
-                agent=agent_id, utterance=sanitise(persona.introduction), turn_id=state.turn_id
+                agent=agent_id,
+                utterance=sanitise(persona.introduction),
+                turn_id=state.turn_id,
+                lead_in_s=_INTRO_OPENING_PAUSE_S if first else _INTRO_BEAT_PAUSE_S,
             )
         ]
 
@@ -1397,9 +1775,20 @@ class FloorController:
             if not forced:
                 return state, []
             # Operator forced an agent with nothing queued — ask for a turn.
-            return state, [RequestProposals(agents=(agent_id,), reason="operator_forced")]
+            # Through `_ask_for_proposals` like every other request, which this
+            # site used not to be: it built the command by hand, so it neither
+            # stamped an input time (the generation inherited whatever the last
+            # round's was, and could be judged stale against it) nor took a
+            # fresh label (so if that agent already had a generation running
+            # under the current epoch, the runtime's still-running check simply
+            # dropped the operator's request on the floor). The console backstop
+            # is the last thing that may quietly do nothing.
+            state, request = self._ask_for_proposals(
+                state, agents=(agent_id,), reason="operator_forced", t=now
+            )
+            return state, [request]
 
-        state = state.without_proposal(agent_id)
+        state = state.without_proposal(agent_id).not_awaiting()
         state = replace(
             state,
             turn_id=state.turn_id + 1,
@@ -1410,7 +1799,13 @@ class FloorController:
             address_conflict=(),
         )
         return state, [
-            StartSpeech(agent=agent_id, utterance=proposal.utterance, turn_id=state.turn_id)
+            StartSpeech(
+                agent=agent_id,
+                utterance=proposal.utterance,
+                turn_id=state.turn_id,
+                # Which of this agent's in-flight generations holds the words.
+                epoch=proposal.epoch,
+            )
         ]
 
     def _paint(self, state: PanelState) -> StateChanged:
@@ -1429,6 +1824,11 @@ class FloorController:
                 "invitation_role": invitation.role if invitation else None,
                 "invitation_rule": invitation.rule if invitation else None,
                 "address_conflict": state.address_conflict,
+                # Who the floor is holding a beat for before it gives up and
+                # cues Ricky. Visible because a rehearsal needs to tell "the
+                # panel is about to answer" from "the panel is not going to",
+                # which from the console used to look identical.
+                "awaiting": state.awaiting_agent,
                 "consecutive_agent_turns": state.consecutive_agent_turns,
                 "killed": state.killed,
                 "intro_remaining": state.intro_queue,

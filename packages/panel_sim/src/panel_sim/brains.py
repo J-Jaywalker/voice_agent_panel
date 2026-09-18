@@ -70,7 +70,17 @@ class ClaudeBrain:
 
         if not os.environ.get("ANTHROPIC_API_KEY"):
             raise RuntimeError("ANTHROPIC_API_KEY is not set — run with --stub instead")
-        self.client = anthropic.Anthropic()
+        # Explicit, so `--live` never inherits a proxy from the launching shell
+        # via `ANTHROPIC_BASE_URL`. A proxy that rewrites prompts in flight
+        # would mean personas are tuned here against text that is not what the
+        # stage sends, which is the one guarantee this harness exists to make.
+        # Duplicated rather than imported: `panel_sim` depends on `panel_core`
+        # only, and reaching for `panel_runtime.config.anthropic_base_url()`
+        # would pull livekit and sounddevice into an offline text tool. Keep
+        # the two in step — there is no behaviour here to drift, only a name.
+        self.client = anthropic.Anthropic(
+            base_url=os.environ.get("PANEL_ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+        )
         self.model = model
         self.effort = effort
 

@@ -11,6 +11,19 @@ FEASIBILITY.md 5.2.
 
 Virtual clock: the sim advances time in proportion to words spoken, so runs are
 reproducible and a rehearsal replays identically.
+
+**The sim always uses the regex address detector**, never the LLM one
+(`FloorConfig.llm_address_detection` is left at its default here, and there is
+no `--llm-address` flag). `panel_sim` depends on `panel_core` alone and must
+keep running offline with stub brains, so importing `panel_runtime.address`
+— and with it livekit and sounddevice — is not an option. Do not read a
+`panel-sim` run as a rehearsal of the classifier: it exercises everything
+downstream of the invitation and nothing about how the invitation was chosen.
+The event log a live run writes does carry its `AddressDetected` events, and
+with the flag off `panel_core` ignores them and lets the regex decide again.
+That is deliberate — it is what would let one recorded session be scored
+through both detectors — but note that the `--replay` flag advertised above is
+not built yet (there is no such argument), so nothing exercises it today.
 """
 
 from __future__ import annotations
@@ -39,6 +52,7 @@ from panel_core import (
     RequestProposals,
     StartSpeech,
     StopSpeech,
+    Tick,
     TranscriptUpdated,
     TurnYielded,
 )
@@ -90,6 +104,14 @@ class Simulation:
 
             case StartSpeech():
                 persona = self.cast[command.agent]
+                if command.lead_in_s:
+                    # Introduction round only — a silent beat before this
+                    # agent's first word (`StartSpeech.lead_in_s`). No real
+                    # audio here, so there is nothing to sleep through; just
+                    # carry it into the virtual clock so replays stay
+                    # reproducible.
+                    console.print("  [dim]…[/]")
+                    self.clock += command.lead_in_s
                 console.print(
                     f"\n[bold cyan]{persona.name}[/] [dim](turn {command.turn_id})[/]\n"
                     f"  {command.utterance}"
@@ -115,7 +137,21 @@ class Simulation:
                 console.print(f"  [magenta]▸ hand back to Ricky ({command.reason})[/]")
 
     def _gather(self, agents: tuple[str, ...]) -> None:
-        """Speculative proposals, in parallel — as production will do."""
+        """Speculative proposals, in parallel — as production will do.
+
+        `epoch` and `input_t` are snapshotted together, up front, because they
+        are one round's identity: `FloorController._ask_for_proposals` set both
+        in the same `reduce()` call that produced the command being executed
+        here, and `emit()` has already installed that state. They must not be
+        re-read per agent — emitting one proposal can run a whole agent turn
+        synchronously (see `_execute`), which opens another round and moves
+        both, and half this round would then be labelled as the next one.
+
+        `input_t` is what `FloorController._stale` measures: the transcript
+        timestamp these lines are answers to, not the moment they arrived.
+        """
+        epoch = self.state.speculation_epoch
+        input_t = self.state.last_proposal_request_t
         futures = {
             agent: self.pool.submit(self.brain.propose, self.cast[agent], self.state)
             for agent in agents
@@ -130,7 +166,14 @@ class Simulation:
                 continue
             utterance, signals = result
             self.emit(
-                AgentProposal(t=self.clock, agent=agent, utterance=utterance, signals=signals)
+                AgentProposal(
+                    t=self.clock,
+                    agent=agent,
+                    utterance=utterance,
+                    signals=signals,
+                    epoch=epoch,
+                    input_t=input_t,
+                )
             )
 
         # An invitation worth more than one turn keeps the floor with the panel.
@@ -144,6 +187,10 @@ class Simulation:
             and invitation.is_live()
         ):
             self.emit(TurnYielded(t=self.clock))
+            # That re-arbitration can arm the beat too, so it needs resolving
+            # here as well as after a human turn. `_cue_overdue` emits only a
+            # cue and a repaint, so this cannot re-enter `_gather`.
+            self._settle()
 
     # ---------------------------------------------------------------------- turns
 
@@ -152,6 +199,27 @@ class Simulation:
         self.emit(TranscriptUpdated(t=self.clock, speaker=HUMAN, text=text, is_final=True))
         self.clock += len(text.split()) / WORDS_PER_SECOND
         self.emit(TurnYielded(t=self.clock))
+        self._settle()
+
+    def _settle(self) -> None:
+        """Run the virtual clock past any beat the floor is holding.
+
+        A named agent with no answer no longer cues the moderator immediately —
+        the floor holds `FloorConfig.invited_agent_grace_s` for the answer that
+        is probably still being written, and `Tick` is what resolves the wait
+        (see `FloorController._cue_overdue`). The live runtime ticks every
+        100ms; this harness has no clock of its own, so without this a silent
+        named agent would leave the sim sitting on an armed beat that nothing
+        ever fires, and `▸ hand back to Ricky` would simply never print.
+
+        Gathering here is synchronous, so by this point every brain has already
+        returned: the beat can only be resolved one way and there is nothing to
+        be gained by paying it out in real time.
+        """
+        if self.state.awaiting_agent is None:
+            return
+        self.clock += self.fc.config.invited_agent_grace_s
+        self.emit(Tick(t=self.clock))
 
     def show_scores(self) -> None:
         from panel_core import floor_priority
@@ -223,6 +291,11 @@ def main() -> None:
     parser.add_argument("--effort", default="low", choices=["low", "medium", "high"])
     parser.add_argument("--log", type=Path, default=None, help="append an event log for replay")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--agent-interrupts",
+        action="store_true",
+        help="let an agent cut off a speaking agent (off by default)",
+    )
     args = parser.parse_args()
 
     cast = PanelCast.from_dir(args.personas)
@@ -234,7 +307,12 @@ def main() -> None:
     )
     console.print(HELP)
 
-    sim = Simulation(cast, brain, FloorConfig(), args.log)
+    sim = Simulation(
+        cast,
+        brain,
+        FloorConfig(allow_agent_interrupts=args.agent_interrupts),
+        args.log,
+    )
 
     while True:
         try:

@@ -133,8 +133,15 @@ async def main() -> None:
         raise SystemExit("ANTHROPIC_API_KEY is not set")
 
     import anthropic
+    from panel_runtime.config import anthropic_base_url
 
-    client = anthropic.AsyncAnthropic()
+    # The same endpoint the live runtime uses, for the reason this bench exists
+    # at all: it reported 1119ms to first token while the stage was seeing
+    # 6300ms, and the gap was a proxy the bench happened to warm up and the
+    # panel never did. A bench pointed somewhere the panel isn't measures
+    # nothing.
+    client = anthropic.AsyncAnthropic(base_url=anthropic_base_url())
+    print(f"endpoint: {client.base_url}\n")
     cast = PanelCast.from_dir(args.personas)
     persona = cast["melia"]
     state = scenario(cast)

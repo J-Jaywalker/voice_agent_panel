@@ -74,6 +74,59 @@ class TranscriptUpdated:
 
 
 @dataclass(frozen=True, slots=True)
+class AddressDetected:
+    """Who the moderator just invited, as decided by a model not a regex.
+
+    The classifier lives in the runtime (`panel_runtime.address`) because it
+    makes a network call and `panel_core` may not. Its answer arrives back here
+    as an *event*, which is the whole point: the reducer stays a pure function
+    of events, so a recorded session still replays identically through modified
+    floor logic (FEASIBILITY.md 5.3) — the verdict is replayed, never re-asked.
+
+    Only read when `FloorConfig.llm_address_detection` is on. With the flag off
+    the regex path in `FloorController._transcript` owns the decision and this
+    event is ignored, so one recording replays cleanly both ways and neither
+    run applies two detections to the same final.
+
+    Attributes:
+        t: Timestamp of the *final transcript segment* the verdict was computed
+            from, not of the verdict's arrival. The invitation is dated to the
+            question, which keeps `named_proposal_lookback_s` and the
+            invitation TTL measuring exactly what they measure on the regex
+            path.
+        text: The final it was computed from, verbatim, so a replay can be
+            audited against the verdict it produced.
+        verdict: A verdict token from `prompts.address_verdicts()`, or None
+            meaning the classifier was unavailable — timed out, errored, or
+            went off-script — and the regex must decide instead. None is not
+            "nobody was invited"; that is `NO_VERDICT`, which is a real answer.
+        agent: The agent id `verdict` resolved to, or None.
+        conflict: The agents that tied for addressee, for `AMBIGUOUS_VERDICT`.
+            The verdict token cannot name them — it is one word — so the
+            runtime supplies the candidates it could not choose between.
+        reason: The model's own short justification, for the operator console.
+            Routinely empty: it streams *behind* the verdict and the floor
+            never waits on prose, so only a verdict that was already cached
+            carries one.
+        latency_ms: Time to the verdict token, not to completion. Zero on a
+            cache hit, because the decision predates the question.
+        source: How the verdict was obtained — "speculative_hit", "joined",
+            "fresh", "recomputed", "unavailable" or "timeout". The on-stage
+            cache-hit rate is read off this field, and it is currently the
+            main open question about the whole approach.
+    """
+
+    t: float
+    text: str
+    verdict: str | None = None
+    agent: str | None = None
+    conflict: tuple[str, ...] = ()
+    reason: str = ""
+    latency_ms: float = 0.0
+    source: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class TurnYielded:
     """End-of-turn confirmed. The floor is open for arbitration."""
 
@@ -86,12 +139,51 @@ class AgentProposal:
 
     Produced during the human's turn (see FEASIBILITY.md 3.6) so the floor
     controller already holds scored candidates when TurnYielded fires.
+
+    ``epoch`` is the ``PanelState.speculation_epoch`` the generation was started
+    against — which round of speculation this is an answer to. Several
+    generations for one agent now run at the same time (every ``RequestProposals``
+    starts a fresh one without killing the ones already running), so proposals
+    for the same agent can arrive out of order and the reducer needs to tell
+    "newer" from "older" rather than trusting arrival order. See
+    ``FloorController._proposal``.
+
+    Attributes:
+        t: When the finished proposal *arrived*. Useful for the log and for
+            nothing else in the freshness decision — see ``input_t``.
+        agent: Which agent wrote it.
+        utterance: The candidate turn. Always ``""`` in the live runtime, where
+            the words live in a ``panel_runtime.panel.Candidate`` still being
+            filled by the stream; non-empty in ``panel_sim``.
+        signals: The agent's own account of why it wants the floor.
+        epoch: The generation label — see above.
+        input_t: The transcript timestamp this generation's input was frozen
+            at, i.e. *what question it is an answer to*. Set by the emitter
+            from ``PanelState.last_proposal_request_t``, which
+            ``FloorController._ask_for_proposals`` stamped in the same
+            ``reduce()`` call that asked for this round.
+
+            This, not ``t``, is what ``FloorController._stale`` measures.
+            Arrival time is the wrong clock and measuring it was a live-stage
+            bug: generations race, so a line written against Ricky's preamble
+            3.2s before his question can finish 0.77s *after* the invitation
+            and score as maximally fresh. The freshness of an answer is a
+            property of its input, not of when it turned up.
+
+            ``None`` means "no emitter supplied one", and
+            ``state.Proposal.written_against_t`` then falls back to ``t`` —
+            the behaviour from before this field existed, kept so an older
+            recorded log still replays and so a future emitter that forgets
+            the field gets the old answer rather than a wrong one. Every
+            emitter in this repo supplies it.
     """
 
     t: float
     agent: str
     utterance: str
     signals: Signals
+    epoch: int = 0
+    input_t: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +241,7 @@ Event = (
     HumanSpeechStarted
     | HumanSpeechEnded
     | TranscriptUpdated
+    | AddressDetected
     | TurnYielded
     | AgentProposal
     | AgentSpeechStarted
@@ -172,9 +265,28 @@ class StopReason(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class StartSpeech:
+    """Grant an agent the floor.
+
+    ``lead_in_s`` is a silent beat the runtime waits out before the agent's
+    first word — zero for an ordinary grant, non-zero only for the
+    introduction round (`FloorController._grant_introduction`), where an
+    instantaneous jump from Ricky's cue to Dexter's first word read as a
+    glitch rather than a person taking a breath. Advisory only: this is data
+    on a command, not a clock read or an await, so the reducer stays pure
+    (CLAUDE.md `panel_core` invariants) — the runtime decides how to honour
+    it.
+    """
+
     agent: str
     utterance: str
     turn_id: int
+    lead_in_s: float = 0.0
+    # Which generation's words to speak. Several generations per agent can be
+    # in flight at once, each with its own half-written utterance parked in the
+    # runtime, so naming the agent is no longer enough to identify the text —
+    # this is the `AgentProposal.epoch` of the proposal that actually won.
+    # Ignored for a fixed line (`utterance` non-empty), which has no generation.
+    epoch: int = 0
 
 
 @dataclass(frozen=True, slots=True)

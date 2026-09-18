@@ -67,6 +67,7 @@ from panel_core import (
 )
 
 from .chunking import SentenceChunker
+from .config import anthropic_base_url
 
 SIGNAL_FIELDS = (
     "relevance",
@@ -137,7 +138,7 @@ class ClaudeBrain:
         if not os.environ.get("ANTHROPIC_API_KEY"):
             raise RuntimeError("ANTHROPIC_API_KEY is not set")
         self.config = config or BrainConfig()
-        self.client = anthropic.AsyncAnthropic()
+        self.client = anthropic.AsyncAnthropic(base_url=anthropic_base_url())
         self.last_latency_ms: dict[str, float] = {}
 
     async def propose(self, persona: Persona, state: PanelState) -> tuple[str, Signals] | None:
@@ -286,7 +287,7 @@ class StreamingClaudeBrain:
         if not os.environ.get("ANTHROPIC_API_KEY"):
             raise RuntimeError("ANTHROPIC_API_KEY is not set")
         self.config = config or BrainConfig()
-        self.client = anthropic.AsyncAnthropic()
+        self.client = anthropic.AsyncAnthropic(base_url=anthropic_base_url())
 
     async def stream(
         self,

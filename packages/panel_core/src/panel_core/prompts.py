@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 
-from .personas import Persona
+from .personas import PanelCast, Persona
 from .state import PanelState
 
 # Global guardrail. The structural fix from FEASIBILITY.md 4.2: the agents are
@@ -144,6 +144,164 @@ low. You decline by scoring low, never by leaving the utterance empty. The floor
 controller reads the scores and may still hand you the turn, and an empty line
 at that point is your name on stage over dead air. If you genuinely have nothing,
 write the short thing you would actually say out loud instead.""".strip()
+
+
+# --------------------------------------------------------------------------
+# Address classification
+# --------------------------------------------------------------------------
+#
+# An LLM answer to the question `FloorController._detect` answers with regex:
+# *who did Ricky just invite to speak?* Rendered here, from cast data, for the
+# same reason every other prompt is — personas are the source of truth, and the
+# classifier has to know the panel's names, jobs and areas of authority to
+# resolve "I'd love the financial view on that" to Wayne, which no pattern can.
+#
+# Prototype. Scored against the 50-row corpus in
+# `packages/panel_core/tests/test_address.py` by
+# `packages/panel_runtime/tests/bench_address.py`; nothing is wired to it yet.
+#
+# The verdict vocabulary is shaped for time-to-first-token, not readability:
+# every token starts with a different letter, so the first alphabetic character
+# of the completion normally settles the answer and the reason can keep
+# streaming behind it. `~/git/FDE/amazon_alexa_demo/wake.py` is where that
+# design comes from and it is worth reading before changing any of this.
+
+# Verdicts that are not an agent. Kept apart from the cast because their initials
+# have to stay clear of every persona's, which `address_verdicts` enforces.
+OPEN_VERDICT = "OPEN"  # the panel as a body
+NO_VERDICT = "NONE"  # nobody — the floor stays closed
+AMBIGUOUS_VERDICT = "AMBIGUOUS"  # two agents at the same role; the operator decides
+INTRO_VERDICT = "INTRO"  # the one-shot "introduce yourselves" round
+
+_NON_AGENT_VERDICTS = (OPEN_VERDICT, NO_VERDICT, AMBIGUOUS_VERDICT, INTRO_VERDICT)
+
+
+def address_verdicts(cast: PanelCast) -> dict[str, str | None]:
+    """Verdict token -> agent id, or None for the four non-agent outcomes.
+
+    Raises if two tokens share an initial. That is not fussiness: the whole
+    latency argument for doing this with a model rests on decoding the verdict
+    from the first content delta, and a cast containing both "Melia" and "Marco"
+    would silently cost a token or two per turn on stage without anything
+    failing. Renaming a persona is the moment to find out, not the show.
+    """
+    verdicts: dict[str, str | None] = {
+        persona.name.upper(): agent_id for agent_id, persona in cast.personas.items()
+    }
+    verdicts.update({token: None for token in _NON_AGENT_VERDICTS})
+
+    initials: dict[str, str] = {}
+    for token in verdicts:
+        clash = initials.setdefault(token[0], token)
+        if clash != token:
+            raise ValueError(
+                f"address verdicts {clash!r} and {token!r} share an initial; "
+                "first-token decoding needs them distinct"
+            )
+    return verdicts
+
+
+def decode_address_verdict(buffer: str, verdicts: dict[str, str | None]) -> str | None:
+    """Resolve a verdict from a partially streamed completion, or None.
+
+    Returns as soon as exactly one token is still possible — normally on the
+    first character. `None` means keep reading; it never means "no invitation",
+    which is `NO_VERDICT` and a real answer.
+    """
+    prefix = ""
+    for char in buffer:
+        if char.isalpha():
+            prefix += char.upper()
+        elif prefix:
+            break
+    if not prefix:
+        return None
+    possible = [token for token in verdicts if token.startswith(prefix)]
+    if len(possible) == 1:
+        return possible[0]
+    return None
+
+
+def build_address_prompt(cast: PanelCast) -> str:
+    """The classifier's system prompt. Cache this — it never changes mid-show."""
+    panel = "\n".join(
+        f"- {persona.name.upper()} — {persona.name}, {persona.job_title} at "
+        f"{persona.employer}. Speaks with authority on: "
+        f"{', '.join(persona.topics_of_authority) or 'nothing in particular'}."
+        for persona in cast.personas.values()
+    )
+    aliases = "\n".join(
+        f"- {persona.name} may be transcribed as: "
+        f"{', '.join(persona.extra_aliases)}."
+        for persona in cast.personas.values()
+        if persona.extra_aliases
+    )
+    alias_block = f"\nSpeech-to-text mishears names. Treat these as the same person:\n{aliases}\n" if aliases else ""
+
+    return f"""You decide who the moderator of a live panel has just invited to speak.
+
+Ricky is the human moderator. The panel:
+
+{panel}
+{alias_block}
+Answer with exactly one verdict:
+
+{chr(10).join(f"- {persona.name.upper()} — Ricky is inviting {persona.name} specifically." for persona in cast.personas.values())}
+- {OPEN_VERDICT} — Ricky is inviting the panel as a body, nobody in particular.
+- {NO_VERDICT} — Ricky invited nobody. He is making a point, thinking aloud,
+  checking in on his own sentence, talking to the room or the AV desk, or asking
+  permission to interrupt. The floor stays closed.
+- {AMBIGUOUS_VERDICT} — two or more panellists are invited in the same way and
+  there is no basis to choose between them. Do not guess; a human will decide.
+  If Ricky names two or more panellists, the answer is {AMBIGUOUS_VERDICT} and
+  never {OPEN_VERDICT}, however jointly he phrases it — "can you take that
+  between you?" is still two named people, and only one of them can hold a
+  microphone. {OPEN_VERDICT} is for an invitation that names nobody at all.
+- {INTRO_VERDICT} — Ricky is asking the panel to introduce itself.
+
+How to decide:
+
+Grammatical role decides the addressee, never position in the sentence. A name
+can appear first and be the one person who must NOT speak.
+
+Strongest role wins. Being the subject of Ricky's request ("can Melia take
+that?", "over to Melia", "what about Melia?", "let's hear from Melia") beats
+being addressed directly ("Melia, what do you think?"), which beats being merely
+mentioned. So "Sorry Dexter, can you let Melia finish?" is MELIA.
+
+A name mentioned but not addressed invites nobody. "Sorry for interrupting
+Dexter" and "I'm cutting off Dexter there" are {NO_VERDICT}. Someone being stood
+down is not being invited: "Sorry, Dexter, can I just interrupt?" is
+{NO_VERDICT}, because the request is Ricky's own. But "Sorry, Dexter, can you
+wrap up?" is DEXTER, because the request is put to Dexter.
+
+A question is not automatically an invitation. Ricky checking his own sentence —
+"is that okay?", "does that work?", "right?", "does that make sense?" — invites
+nobody. Neither does asking to speak himself: "can I just jump in?" is
+{NO_VERDICT}. But permission wrapped around a real request still invites the
+person inside it: "can I ask Melia to comment?" is MELIA.
+
+An invitation does not need a question mark. "Melia, carry on." and "Wayne,
+finish your point." are invitations. "Let me elaborate on that." is not.
+
+Asking for more without naming anyone is {OPEN_VERDICT}, not {NO_VERDICT}.
+"Say more about that.", "go on", "tell us more" hand the floor back to the panel
+and let it work out who picks it up. Ricky asking to elaborate *himself* — "let
+me expand on that" — is still {NO_VERDICT}.
+
+A statement invites nobody, however interesting it is.
+
+Ricky need not use a name. If he asks for something squarely inside one
+panellist's authority — "what does the financial side say?" — name that
+panellist. Only do this when one of them is the obvious owner; if two could
+answer, that is {OPEN_VERDICT}.
+
+When in doubt, prefer {NO_VERDICT}. A missed invitation costs one beat and the
+moderator moves on. A wrong one puts the wrong panellist on a PA over him, in
+front of a live audience.
+
+Reply with the verdict token, then " - " and at most eight words of reason. The
+verdict token must be the very first thing you write."""
 
 
 # --------------------------------------------------------------------------

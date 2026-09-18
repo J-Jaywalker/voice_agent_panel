@@ -42,6 +42,7 @@ import queue
 import re
 import time
 from dataclasses import asdict, is_dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -50,6 +51,8 @@ from livekit import rtc
 from livekit.agents import vad as lkvad
 from livekit.plugins import silero
 from panel_core import (
+    HUMAN,
+    AddressDetected,
     AgentProposal,
     AgentSpeechEnded,
     AgentSpeechStarted,
@@ -71,10 +74,13 @@ from panel_core import (
     TranscriptUpdated,
     TurnYielded,
 )
+from panel_core.prompts import AMBIGUOUS_VERDICT
 from rich.console import Console
 from rich.live import Live
+from rich.markup import escape
 from rich.text import Text
 
+from .address import AddressClassifier, AddressVerdict
 from .brains import (
     BrainConfig,
     ProposalComplete,
@@ -90,6 +96,39 @@ from .tts import ElevenLabsTTS, TTSConfig
 console = Console()
 
 TICK_INTERVAL_S = 0.1  # drives turn-length deadlines and duration classification
+
+# How long a `TurnYielded` may be held back waiting for an address verdict.
+#
+# Speechmatics' `EndOfTurn` lands within a few milliseconds of the final that
+# names an agent, so `TurnYielded` normally beats the verdict. Arbitrating first
+# means arbitrating with the floor still closed: Ricky gets cued, the panel says
+# nothing, and the audience hears the dead air this project spent a week
+# removing. So one event — and only that one — waits.
+#
+# 0.7s against a measured p50 of 526ms and p95 of 781ms to verdict
+# (`tests/bench_address.py`, dev box). Deliberately *inside* the p95 rather than
+# outside it, because the hold is not free in either direction: every
+# millisecond of it is silence on stage, and the fallback when it expires is the
+# regex detector, which is correct for all 153 rows of the regression corpus.
+# The trade is "the slowest few per cent of verdicts lose the new capability"
+# against "every single turn pays the tail", and the first is much the cheaper.
+# Re-measure on the venue rig before trusting either number (CLAUDE.md
+# § Deployment) — this dial is the first thing to move if the tail is worse
+# there.
+ADDRESS_HOLD_TIMEOUT_S = 0.7
+
+# How `AddressVerdict.source` reads on the console. Whether a verdict was
+# already decided before Ricky stopped talking is the open question about this
+# whole approach — free at a cache hit, ~500ms in series with arbitration at a
+# fresh call — and nothing measures it today, so every verdict prints one line.
+_ADDRESS_SOURCE_LABELS = {
+    "speculative_hit": "cache hit",
+    "joined": "joined in-flight",
+    "fresh": "fresh call",
+    "recomputed": "fresh call, partial revised",
+    "unavailable": "unavailable — regex fallback",
+    "timeout": "timed out — regex fallback",
+}
 
 
 class Candidate:
@@ -157,6 +196,7 @@ class PanelRuntime:
         block_size: int = 256,
         use_tts: bool = True,
         log_path: Path | None = None,
+        address_classifier: AddressClassifier | None = None,
     ) -> None:
         self.cast = cast
         self.fc = FloorController(cast, floor_config or FloorConfig())
@@ -171,6 +211,14 @@ class PanelRuntime:
         self.stt = PanelSTT({"ricky": "human"}, config=STTConfig.from_cast(cast))
         self.tts = ElevenLabsTTS(TTSConfig()) if use_tts else None
 
+        # Built only when `FloorConfig.llm_address_detection` is on: it holds an
+        # HTTP client and a model choice, and the regex path must cost nothing
+        # at all. Injectable so the runtime tests can drive the deferred-
+        # TurnYielded logic with no network call and no API key.
+        self._address = address_classifier
+        if self._address is None and self.fc.config.llm_address_detection:
+            self._address = AddressClassifier(cast)
+
         self.events: asyncio.Queue = asyncio.Queue()
         self._mic: queue.Queue = queue.Queue()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -178,19 +226,25 @@ class PanelRuntime:
         self._speaking_turn = None
         self._ricky_final_text = ""
         self._ricky_live: Live | None = None
-        # Live candidates, one per agent, filling while the human is still
-        # talking. The floor decides *who* speaks; this holds *what* they say.
-        self._candidates: dict[str, Candidate] = {}
-        # One in-flight brain stream per agent, keyed so a re-request can tell
-        # "already running, leave it" from "nothing running, start one" — see
-        # `_request_proposals`. `_proposal_stamp` records the
-        # `(turn_id, speculation_epoch)` each task was started against, which is
-        # what makes genuinely superseded work distinguishable from an agent
-        # simply being asked again mid-turn: `turn_id` moves when someone is
-        # granted the floor, `speculation_epoch` when a final transcript
-        # segment lands and changes the text being answered.
-        self._proposal_tasks: dict[str, asyncio.Task] = {}
-        self._proposal_stamp: dict[str, tuple[int, int]] = {}
+        # Live candidates filling while the human is still talking. The floor
+        # decides *who* speaks; this holds *what* they say.
+        #
+        # Keyed by `(agent, epoch)`, not by agent. Several generations for one
+        # agent are deliberately in flight at once — see `_request_proposals` —
+        # so "Wayne's words" is ambiguous and `StartSpeech.epoch` is what
+        # resolves it.
+        self._candidates: dict[tuple[str, int], Candidate] = {}
+        # The brain stream feeding each of those candidates, same key. A
+        # generation is identified by the `speculation_epoch` it was started
+        # against: `epoch` moves when a final transcript segment lands and
+        # changes the text being answered.
+        self._proposal_tasks: dict[tuple[str, int], asyncio.Task] = {}
+        # The turn each generation was started against, so a grant elsewhere
+        # can retire work that is answering a moment nobody can act on any
+        # more. Kept separate from the key because `turn_id` is not part of a
+        # generation's identity — two generations in the same turn differ by
+        # epoch, and epoch alone is what `StartSpeech` can name.
+        self._proposal_turn: dict[tuple[str, int], int] = {}
         self._running = True
         self._last_intro_remaining: tuple[str, ...] | None = None
         self._last_intro_done = False
@@ -198,6 +252,7 @@ class PanelRuntime:
         # printed, so a repaint that changed nothing stays silent.
         self._last_invitation: tuple[str | None, str | None] = (None, None)
         self._last_address_conflict: tuple[str, ...] = ()
+        self._last_awaiting: str | None = None
         # True from the moment a synthetic TurnYielded is queued until its
         # arbitration resolves. Blocks a second proposal from queuing another
         # one in the meantime — without it, two proposals landing back to
@@ -216,10 +271,32 @@ class PanelRuntime:
         # on the event, not the command it produced, is what makes this
         # robust to outcomes we cannot enumerate from here.
         self._pending_rearbitration_event: TurnYielded | None = None
-
+        # The address classification running against the most recent human
+        # final, and the one `TurnYielded` waiting behind it. Deliberately
+        # *runtime* state: the reducer gets no new field for this race, it just
+        # sees `AddressDetected` and then `TurnYielded`, in that order.
+        self._address_task: asyncio.Task | None = None
+        self._held_turn: TurnYielded | None = None
         if log_path:
             log_path.parent.mkdir(parents=True, exist_ok=True)
             log_path.write_text("")
+
+    # ------------------------------------------------------------ console clock
+
+    def _stamp(self) -> str:
+        """`HH:MM:SS.mmm`, wall clock.
+
+        Wall clock so a console line can be lined up against a rehearsal
+        recording, the venue's own logs or someone's note of when a thing went
+        wrong. Milliseconds because the numbers worth arguing about — dead air
+        before an agent takes the floor, barge-in reflex latency — are the
+        differences between two of these lines.
+        """
+        return f"[dim]{datetime.now(UTC).astimezone().strftime('%H:%M:%S.%f')[:-3]}[/]"
+
+    def _print(self, markup: str) -> None:
+        """Every console line in the runtime goes through here, stamped."""
+        console.print(f"{self._stamp()} {markup}")
 
     # ------------------------------------------------------------ audio thread
 
@@ -316,7 +393,7 @@ class PanelRuntime:
     async def _execute(self, command) -> None:
         match command:
             case RequestProposals():
-                console.print(f"  [dim]… gathering proposals ({command.reason})[/]")
+                self._print(f"  [dim]… gathering proposals ({command.reason})[/]")
                 self._request_proposals(command.agents)
 
             case StartSpeech():
@@ -330,7 +407,7 @@ class PanelRuntime:
                     self._speaking_turn.cancel()
                 if task is not None:
                     task.cancel()
-                console.print(
+                self._print(
                     f"  [red]⏹ {self.cast[command.agent].name}[/] "
                     f"[dim]({command.reason.value})[/]"
                 )
@@ -355,7 +432,7 @@ class PanelRuntime:
                 hands = "  ".join(
                     f"{self.cast[a].name} {s:.2f}" for a, s in command.agents
                 )
-                console.print(f"  [yellow]✋ wants in:[/] {hands} [dim](not invited)[/]")
+                self._print(f"  [yellow]✋ wants in:[/] {hands} [dim](not invited)[/]")
 
             case CueModerator():
                 # Arbitration resolved with nobody granted — the floor is
@@ -367,7 +444,7 @@ class PanelRuntime:
                 # apart from "the one agent Ricky named had nothing", which is
                 # the entire point of the enum replacing the old undifferen-
                 # tiated `no_candidate` string.
-                console.print(f"  [magenta]▸ back to Ricky ({command.reason.value})[/]")
+                self._print(f"  [magenta]▸ back to Ricky ({command.reason.value})[/]")
 
             case StateChanged():
                 self._show_state_change(command)
@@ -391,25 +468,34 @@ class PanelRuntime:
             self._last_intro_remaining = remaining
             if remaining:
                 names = ", ".join(self.cast[a].name for a in remaining)
-                console.print(f"  [dim]intros: {len(remaining)} remaining — {names}[/]")
+                self._print(f"  [dim]intros: {len(remaining)} remaining — {names}[/]")
 
         done = command.extra.get("intro_done")
         if done and not self._last_intro_done:
             self._last_intro_done = True
-            console.print("  [dim]intros: all done[/]")
+            self._print("  [dim]intros: all done[/]")
 
         invited = command.extra.get("invited")
         source = command.extra.get("invitation_source")
         if (invited, source) != self._last_invitation:
             self._last_invitation = (invited, source)
             if source is None:
-                console.print("  [dim]floor: closed (no live invitation)[/]")
+                self._print("  [dim]floor: closed (no live invitation)[/]")
             else:
                 who = self.cast[invited].name if invited else "the panel"
                 role = command.extra.get("invitation_role") or "-"
                 rule = command.extra.get("invitation_rule") or "-"
-                console.print(
+                self._print(
                     f"  [dim]floor: invited {who} — {source}/{role} ({rule})[/]"
+                )
+
+        awaiting = command.extra.get("awaiting")
+        if awaiting != self._last_awaiting:
+            self._last_awaiting = awaiting
+            if awaiting:
+                self._print(
+                    f"  [dim]… holding for {self.cast[awaiting].name} "
+                    f"({self.fc.config.invited_agent_grace_s:.1f}s)[/]"
                 )
 
         conflict = command.extra.get("address_conflict") or ()
@@ -417,78 +503,186 @@ class PanelRuntime:
             self._last_address_conflict = conflict
             if conflict:
                 names = ", ".join(self.cast[a].name for a in conflict)
-                console.print(
+                self._print(
                     f"  [yellow]✋ ambiguous address:[/] {names} [dim](floor stays closed)[/]"
                 )
 
     # --------------------------------------------------------------- proposals
 
     def _request_proposals(self, agents: tuple[str, ...]) -> None:
-        """Speculate during the human's turn. Additive, not cancel-and-restart.
+        """Speculate during the human's turn. Generations race; none is discarded.
 
         The floor re-requests proposals on roughly every 0.8s of partial
-        transcript, and unconditionally on every final segment, but a brain
-        takes 2-3s to reach `SignalsReady`. Cancelling every in-flight stream
-        on each request — the previous behaviour — meant no agent ever
-        finished before `EndOfTurn` arrived: `state.proposals` was reliably
-        empty at the first arbitration, a guaranteed spurious `no_proposals`.
+        transcript and unconditionally on every final segment, while a brain
+        takes 1.7-2.4s to reach `SignalsReady` (`tests/bench_brains.py`). Those
+        two facts do not fit together under any cancel-and-restart rule, and
+        this method has now been wrong in both directions:
 
-        Only genuinely stale work is torn down: a task started against a turn
-        a grant has since superseded (`state.turn_id` has moved on, so its
-        `Signals` were scored against a conversational moment nobody can act
-        on any more), a task started against text a *final* segment has since
-        replaced (`state.speculation_epoch` has moved on — the "So, Wayne, uh,"
-        case, where the words the stream is answering were two of the eleven
-        Ricky actually said), or an agent no longer in the requested set at
-        all. The agent currently on the PA is never touched here regardless of
-        any of those tests — its task may still be feeding `speak()`'s
-        `Candidate` queue live, and cancelling it would cut off audio already
-        playing.
+        Cancelling on every *request* meant no agent ever finished at all.
+        Cancelling on every *final* — the version this replaces — looked
+        careful and was worse, because of where the finals fall. Speechmatics'
+        `EndOfTurn` arrives within a few milliseconds of the final that names an
+        agent, so the last teardown of a turn always landed at the exact instant
+        the work was needed. Arbitration ran against an empty proposal set on
+        every invitation and the full cold generation latency sat on the
+        critical path, which on stage was about six seconds of Ricky covering
+        for a panel that had thrown its answer away.
 
-        Finals are the right granularity for that second test and partials are
-        not. Speechmatics segments on pauses, so one turn arrives as several
-        finals and a long preamble as many: cancelling per final costs at most
-        one restart per segment, while cancelling per partial (every 0.8s) is
-        what used to guarantee an empty `state.proposals` at the first
-        arbitration. `FloorConfig.speculation_min_words` is what keeps the
-        fragment from being asked about in the first place; this is what stops
-        it holding the agent's one slot for the rest of the turn.
+        So nothing is cancelled here. Every round starts a *new* generation per
+        agent and leaves the running ones alone; they all finish; `panel_core`'s
+        `_proposal` keeps whichever is newest by epoch rather than whichever
+        arrives last. An answer to "Thanks, everybody. Um, so," is a poor answer
+        to "where are we on the adoption curve" — but it exists, it is one
+        `_stale` check away from being rejected on its own merits, and having it
+        is strictly better than having nothing. Cost is not a constraint
+        (CLAUDE.md): a discarded proposal is cheap and a silence in front of 400
+        people is not.
+
+        *Every* round, and that word is the fix to the second half of the same
+        stage failure. `speculation_epoch` used to move only when a final
+        landed, so every speculative round inside one human turn asked under
+        the same `(agent, epoch)` key — and the still-running check below then
+        refused to start a second generation for an agent whose first one had
+        not finished. Each agent therefore got at most *one* in-flight
+        generation per human turn. The two fast agents finished in ~2.1s, freed
+        their key, and were re-asked against a later partial; the slow one
+        (3967ms, spanning Ricky's entire question) was not, so its single answer
+        was necessarily written against the oldest input of the three. The
+        slower the agent, the staler the input behind its winning line — every
+        single time, and always the same agent. `_ask_for_proposals` now takes a
+        fresh label per round, so a slow generation no longer holds the key
+        against its own replacement.
+
+        The cost of that is concurrency: a round opens at most every
+        `speculation_interval_s` (0.8s) and a generation lives 2-4s, so expect
+        up to ~5 in flight per agent during a long human turn. That is the
+        number to watch on the venue rig — not the spend, which is not a
+        constraint, but provider concurrency limits and any TTFB degradation
+        under it. `speculation_interval_s` is the dial if the rig cannot take
+        it; measure before moving it (CLAUDE.md § Deployment).
+
+        Two things are still retired, both after the fact rather than
+        pre-emptively, and neither can leave an agent with nothing:
+
+        * `_retire_superseded` drops an agent's older generations once a newer
+          one has actually produced a proposal — never before, so the fallback
+          is only released when something better is genuinely in hand.
+        * A turn boundary (`_retire_stale_turns`) drops work scored against a
+          conversational moment a grant has since closed.
+
+        The agent currently on the PA is never touched by either: its stream may
+        still be feeding `speak()`'s `Candidate` queue live, and cancelling it
+        would cut off audio already playing.
 
         Each agent streams. Signals arrive first and go straight to the floor
         controller, so arbitration can run while the text is still being
         written. Sentences accumulate in a `Candidate`, ready to be spoken the
         moment that agent is granted the floor.
         """
-        stamp = (self.state.turn_id, self.state.speculation_epoch)
-        requested = set(agents)
-        speaking = self.state.speaking
-
-        for agent_id, task in list(self._proposal_tasks.items()):
-            if agent_id == speaking:
-                continue
-            stale = agent_id not in requested or self._proposal_stamp.get(agent_id) != stamp
-            if not stale:
-                continue
-            if not task.done():
-                task.cancel()
-            del self._proposal_tasks[agent_id]
-            self._proposal_stamp.pop(agent_id, None)
-
         snapshot = self.state
+        epoch = snapshot.speculation_epoch
+        turn_id = snapshot.turn_id
+        speaking = snapshot.speaking
+        # The transcript timestamp this round's input is frozen at — which
+        # question these generations are answers to. `panel_core`'s
+        # `_ask_for_proposals` stamped it, alongside the epoch above, in the
+        # same `reduce()` call that produced the command being executed here,
+        # and `_drain_events` installs the new state before running any command
+        # — so `self.state` already carries this round's pair and the two can
+        # never be read from different rounds. It rides out on every
+        # `AgentProposal` as `input_t`, and `FloorController._stale` measures
+        # it. Read anything off `snapshot`, never off `self.state` again below:
+        # a grant landing mid-loop would otherwise split the round in two.
+        input_t = snapshot.last_proposal_request_t
+
+        self._retire_stale_turns(turn_id, speaking)
+
         for agent_id in agents:
             if agent_id == speaking:
                 continue
-            existing = self._proposal_tasks.get(agent_id)
+            key = (agent_id, epoch)
+            existing = self._proposal_tasks.get(key)
             if existing is not None and not existing.done():
-                continue  # already in flight against this turn — let it run
+                # Unreachable as the code stands, and kept as a guard rather
+                # than deleted. `_ask_for_proposals` takes a fresh epoch per
+                # round and no single `reduce()` emits two `RequestProposals`,
+                # so no key can be asked twice — but this is what enforces "at
+                # most one live generation per key", and the key is what
+                # `StartSpeech.epoch` uses to find an agent's words. Without
+                # it, a second generation on one key would overwrite
+                # `_candidates[key]` and orphan the first task with nothing
+                # left holding a reference to cancel it. Cheap insurance
+                # against the epoch ever stopping being per-round; if it does,
+                # this skip is the bug it caused, not the cause.
+                continue
             candidate = Candidate(agent_id)
-            self._candidates[agent_id] = candidate
-            self._proposal_stamp[agent_id] = stamp
-            self._proposal_tasks[agent_id] = asyncio.create_task(
-                self._stream_one(candidate, snapshot), name=f"propose-{agent_id}"
+            self._candidates[key] = candidate
+            self._proposal_turn[key] = turn_id
+            self._proposal_tasks[key] = asyncio.create_task(
+                self._stream_one(candidate, snapshot, epoch, input_t),
+                name=f"propose-{agent_id}-e{epoch}",
             )
 
-    async def _stream_one(self, candidate: Candidate, snapshot: PanelState) -> None:
+    def _retire_superseded(self, agent_id: str, epoch: int) -> None:
+        """Drop `agent_id`'s generations older than `epoch`.
+
+        Called only once `epoch` has produced a proposal. That ordering is the
+        whole safety property: an older generation is the fallback answer until
+        a better one exists, so it is released when the replacement is in hand
+        and not a moment earlier. Doing this at request time instead is exactly
+        the bug this design replaces.
+
+        Per-round epochs make this fire on every round rather than only at a
+        turn boundary, so the *window* between dropping the old candidates and
+        the replacement proposal being reduced now matters. There isn't one:
+        `_stream_one` calls this and then `emit`s the replacement with no
+        `await` in between, and `_drain_events` only ever suspends on an empty
+        queue — so nothing can arbitrate against a dropped candidate, because
+        the proposal that replaces it is already queued ahead of any event that
+        could. Keep those two statements adjacent.
+        """
+        if agent_id == self.state.speaking:
+            return
+        for key in [k for k in self._proposal_tasks if k[0] == agent_id and k[1] < epoch]:
+            task = self._proposal_tasks.pop(key)
+            if not task.done():
+                task.cancel()
+            self._proposal_turn.pop(key, None)
+            self._candidates.pop(key, None)
+
+    def _retire_stale_turns(self, turn_id: int, speaking: str | None) -> None:
+        """Drop work generated for a turn that has since been granted away.
+
+        `turn_id` moves when someone takes the floor, so these proposals were
+        scored against a conversational moment nobody can act on any more. This
+        is a genuine supersede rather than a guess about freshness, which is
+        why it is safe to do pre-emptively where the epoch test was not.
+        """
+        for key in [k for k in self._proposal_tasks if self._proposal_turn.get(k, turn_id) != turn_id]:
+            if key[0] == speaking:
+                continue
+            task = self._proposal_tasks.pop(key)
+            if not task.done():
+                task.cancel()
+            self._proposal_turn.pop(key, None)
+            self._candidates.pop(key, None)
+
+    async def _stream_one(
+        self, candidate: Candidate, snapshot: PanelState, epoch: int, input_t: float
+    ) -> None:
+        """Run one generation and report it.
+
+        Args:
+            candidate: Where the streamed sentences accumulate, ready for
+                `speak()` if this generation wins the floor.
+            snapshot: The conversation state this generation answers. Frozen at
+                request time, which is what makes `input_t` meaningful.
+            epoch: This round's label, from `PanelState.speculation_epoch`.
+            input_t: The transcript timestamp `snapshot` was taken at. Goes out
+                on the `AgentProposal` so `FloorController._stale` can judge
+                whether this line is an answer to the question that eventually
+                opened the floor, rather than to the preamble in front of it.
+        """
         persona = self.cast[candidate.agent]
         spoke = False
         try:
@@ -497,12 +691,27 @@ class PanelRuntime:
                     # The floor can be arbitrated now. The utterance is carried
                     # by the Candidate, not by the event — the reducer decides
                     # who speaks and never needs to know what they will say.
+                    self._print(
+                        f"  [dim]· {persona.name} ready ({event.elapsed_ms:.0f}ms, "
+                        f"e{epoch})[/]"
+                    )
+                    # Now — and only now — this agent's older generations are
+                    # surplus. Retiring them here rather than when the newer
+                    # request went out is what guarantees the fallback outlives
+                    # its replacement's latency. See `_retire_superseded`.
+                    self._retire_superseded(candidate.agent, epoch)
                     self.emit(
                         AgentProposal(
                             t=time.monotonic(),
                             agent=candidate.agent,
                             utterance="",
                             signals=event.signals,
+                            epoch=epoch,
+                            # Not `t`: the floor has to know how old this
+                            # line's *input* was, and a generation that raced
+                            # past the question it was written before would
+                            # otherwise arrive looking newer than the question.
+                            input_t=input_t,
                         )
                     )
                 elif isinstance(event, SentenceReady):
@@ -521,10 +730,10 @@ class PanelRuntime:
             candidate.close()
             raise
         except Exception as exc:  # noqa: BLE001 — one dead brain must not stop the panel
-            console.print(f"  [red]x {candidate.agent} brain failed: {str(exc)[:60]}[/]")
+            self._print(f"  [red]x {candidate.agent} brain failed: {str(exc)[:60]}[/]")
             candidate.close()
         finally:
-            if not spoke and self._candidates.get(candidate.agent) is candidate:
+            if not spoke and self._candidates.get((candidate.agent, epoch)) is candidate:
                 # This generation produced no speakable text, so it must not be
                 # left parked where a grant can find it. `state.proposals` can
                 # still hold an *earlier* generation's hand-raise for the same
@@ -535,11 +744,35 @@ class PanelRuntime:
                 # instead of printing a name over silence, which is the whole
                 # failure this guard exists for. The identity check is what
                 # keeps a late teardown from evicting a newer, live candidate.
-                del self._candidates[candidate.agent]
+                del self._candidates[(candidate.agent, epoch)]
 
     # ------------------------------------------------------------------ speech
 
     def _start_speaking(self, command: StartSpeech) -> None:
+        """Dispatch a grant, honouring `command.lead_in_s` if it has one.
+
+        A non-zero `lead_in_s` (introduction round only) is a silent beat
+        before this agent's first word — the instant jump from Ricky's cue
+        straight to Dexter's opening line read as a glitch on stage-adjacent
+        testing, not a person taking a moment to go first. Scheduled as its
+        own task rather than an `await` inline here: `_execute` runs on
+        `_drain_events`'s single event loop, and blocking that loop for the
+        pause would stall every other event — barge-in included — for its
+        duration. Everything else about the grant is unaffected; it just
+        starts a beat later.
+        """
+        if command.lead_in_s:
+            asyncio.create_task(
+                self._start_speaking_after_delay(command), name=f"lead-in-{command.agent}"
+            )
+        else:
+            self._start_speaking_now(command)
+
+    async def _start_speaking_after_delay(self, command: StartSpeech) -> None:
+        await asyncio.sleep(command.lead_in_s)
+        self._start_speaking_now(command)
+
+    def _start_speaking_now(self, command: StartSpeech) -> None:
         persona = self.cast[command.agent]
         candidate: Candidate | None = None
         if command.utterance:
@@ -594,16 +827,26 @@ class PanelRuntime:
                 # also runs `_stream_one`'s `CancelledError` path, which closes
                 # the *old* candidate — correct: nothing is consuming it, and
                 # an unclosed queue is what wedges the floor.
-                stale = self._proposal_tasks.pop(command.agent, None)
-                if stale is not None and not stale.done():
-                    stale.cancel()
-                self._proposal_stamp.pop(command.agent, None)
+                #
+                # *Every* generation for this agent goes, not just one: several
+                # run concurrently now, and a fixed line supersedes all of them
+                # unconditionally.
+                for key in [k for k in self._proposal_tasks if k[0] == command.agent]:
+                    stale = self._proposal_tasks.pop(key)
+                    if not stale.done():
+                        stale.cancel()
+                    self._proposal_turn.pop(key, None)
+                    self._candidates.pop(key, None)
                 candidate = Candidate.fixed(command.agent, sentences)
-                self._candidates[command.agent] = candidate
+                self._candidates[(command.agent, command.epoch)] = candidate
         else:
             # The ordinary streamed grant: the words are still arriving, so the
             # candidate `_request_proposals` parked is the whole point.
-            candidate = self._candidates.get(command.agent)
+            # `command.epoch` names *which* of this agent's parked candidates
+            # won arbitration — the floor scored one specific generation's
+            # signals, and speaking a different generation's words would air an
+            # answer nobody arbitrated.
+            candidate = self._candidates.get((command.agent, command.epoch))
         if candidate is None:
             # Either nothing was ever requested for this agent, or the stream
             # that was requested finished without producing a speakable word
@@ -612,13 +855,14 @@ class PanelRuntime:
             # name appearing on stage with nothing under it and the turn quietly
             # consumed, which from the console was indistinguishable from an
             # agent choosing to say nothing.
-            console.print(f"  [red]x {persona.name} has nothing to say — turn skipped[/]")
+            self._print(f"  [red]x {persona.name} has nothing to say — turn skipped[/]")
             self.emit(
                 AgentSpeechEnded(t=time.monotonic(), agent=command.agent, completed=False)
             )
             return
 
-        console.print(f"\n[bold cyan]{persona.name}[/]")
+        console.print()
+        self._print(f"[bold cyan]{persona.name}[/]")
         self.emit(AgentSpeechStarted(t=time.monotonic(), agent=command.agent))
 
         async def speak() -> None:
@@ -629,7 +873,7 @@ class PanelRuntime:
                     # so floor behaviour can be exercised without audio.
                     async for sentence in candidate.sentences():
                         spoken.append(sentence)
-                        console.print(f"  {sentence}")
+                        self._print(f"  {sentence}")
                         await asyncio.sleep(len(sentence.split()) / 2.8)
                 else:
                     turn = await self.tts.open(voice_id=persona.voice_id)
@@ -643,7 +887,11 @@ class PanelRuntime:
                     audio = asyncio.create_task(pump_audio(), name="tts-audio")
                     async for sentence in candidate.sentences():
                         spoken.append(sentence)
-                        console.print(f"  {sentence}")
+                        # Stamped when the sentence is *pushed*, which runs
+                        # ahead of the audio — the model writes faster than
+                        # the agent speaks (`Candidate`). Read these gaps as
+                        # generation pace, not as what the room hears.
+                        self._print(f"  {sentence}")
                         await turn.push(sentence)
                     await turn.finish()
                     await audio
@@ -663,7 +911,11 @@ class PanelRuntime:
                 return
             finally:
                 self._speaking_turn = None
-                self._candidates.pop(command.agent, None)
+                # The turn is over, so this generation's words are spent. Only
+                # this one: any other generation for the same agent is a fresh
+                # answer to a later moment and must survive the turn that just
+                # ended.
+                self._candidates.pop((command.agent, command.epoch), None)
 
             self.emit(
                 AgentSpeechEnded(
@@ -715,7 +967,8 @@ class PanelRuntime:
             pump_task.cancel()
 
     def _ricky_renderable(self, partial: str = "") -> Text:
-        line = Text("  ")
+        line = Text.from_markup(self._stamp())
+        line.append("   ")
         line.append("Ricky: ", style="bold")
         line.append(self._ricky_final_text)
         if partial:
@@ -732,13 +985,26 @@ class PanelRuntime:
 
     def _close_ricky_line(self) -> None:
         if self._ricky_live is not None:
+            # Repainted once more so the stamp left on screen is `TurnYielded`
+            # — the moment Ricky stopped, not the moment he started.
             self._ricky_live.update(self._ricky_renderable(), refresh=True)
             self._ricky_live.stop()
             self._ricky_live = None
         self._ricky_final_text = ""
 
     async def _run_stt(self) -> None:
-        """Forward Speechmatics events into the single ordered event path."""
+        """Forward Speechmatics events into the single ordered event path.
+
+        `TranscriptUpdated` is emitted immediately, always. It drives the
+        barge-in content check and speculative generation, and delaying it by
+        even one classifier round trip would undo both.
+
+        With `--llm-address` on, a human final additionally kicks off address
+        classification — non-blocking; this loop must keep pumping or every
+        other STT event stalls behind it — and `TurnYielded`, and only
+        `TurnYielded`, is held back until that verdict lands. See
+        `_defer_turn_yielded`.
+        """
         while self._running:
             event = await self.stt.events.get()
             if isinstance(event, TranscriptUpdated):
@@ -747,9 +1013,189 @@ class PanelRuntime:
                     self._render_ricky_line()
                 else:
                     self._render_ricky_line(event.text)
-            elif isinstance(event, TurnYielded):
+                self.emit(event)
+                self._classify_address_from(event)
+                continue
+            if isinstance(event, TurnYielded):
                 self._close_ricky_line()
+                if not self._defer_turn_yielded(event):
+                    self._end_of_turn(event)
+                continue
             self.emit(event)
+
+    # ----------------------------------------------------------- addressing
+
+    def _classify_address_from(self, event: TranscriptUpdated) -> None:
+        """Feed one transcript segment to the address classifier.
+
+        Partials go to `speculate()`, which is fire-and-forget and gated, so
+        the answer to the question Ricky is still asking is usually already
+        cached by the time he finishes it. Finals go to `classify()`, whose
+        verdict becomes an `AddressDetected` event.
+        """
+        classifier = self._address
+        if classifier is None or event.speaker != HUMAN:
+            return
+        if not event.is_final:
+            classifier.speculate(event.text)
+            return
+
+        # One classification outstanding at a time. A turn arrives as several
+        # finals and only the last of them can be the question; an earlier one
+        # is answering text that has since been extended.
+        previous = self._address_task
+        self._address_task = asyncio.create_task(
+            self._classify_address(classifier, event.text, t=event.t),
+            name="address-classify",
+        )
+        if previous is not None and not previous.done():
+            # Cancelled *after* the replacement is installed, and that order is
+            # load-bearing: the cancelled task's `finally` checks whether it is
+            # still the current classification before releasing a held
+            # `TurnYielded`, so installing first is what stops it letting go
+            # early and arbitrating ahead of the newer verdict.
+            previous.cancel()
+
+    async def _classify_address(
+        self, classifier: AddressClassifier, text: str, *, t: float
+    ) -> None:
+        """Classify one human final and emit the verdict as an event.
+
+        Bounded by `ADDRESS_HOLD_TIMEOUT_S` — the same number that bounds the
+        hold — so every human final produces exactly one `AddressDetected`, and
+        it always arrives *before* arbitration rather than after it. A verdict
+        allowed to land late could only install a surprise invitation on top of
+        a moderator cue that had already gone out; on stage, predictable beats
+        salvaged. On expiry the event carries `verdict=None`, which is the
+        reducer's instruction to fall back to the regex.
+        """
+        current = asyncio.current_task()
+        started = time.monotonic()
+        try:
+            try:
+                outcome = await asyncio.wait_for(
+                    classifier.classify(text), ADDRESS_HOLD_TIMEOUT_S
+                )
+            except TimeoutError:
+                outcome = AddressVerdict(
+                    verdict=None,
+                    agent=None,
+                    reason=f"no verdict within {ADDRESS_HOLD_TIMEOUT_S * 1000:.0f}ms",
+                    latency_ms=(time.monotonic() - started) * 1000.0,
+                    source="timeout",
+                )
+            detected = self._as_detected(outcome, text=text, t=t)
+            # Emitted before it is rendered, deliberately. `emit` is a
+            # `put_nowait` and nothing is reduced until this task yields, so
+            # the console ordering is unaffected — but a console line that
+            # somehow threw would otherwise take the verdict with it, and the
+            # floor would be released with no invitation and no fallback.
+            self.emit(detected)
+            self._show_address_verdict(detected)
+        finally:
+            # Release the held `TurnYielded` unless a newer final has taken over
+            # this turn's classification — then the hold is that task's to
+            # release, and letting go here would arbitrate before its verdict
+            # lands. This runs on cancellation too, on purpose: a held
+            # `TurnYielded` that is never released is a panel that never
+            # arbitrates again, which is the worst failure this file can cause.
+            if self._address_task is current:
+                self._release_held_turn()
+
+    def _as_detected(
+        self, outcome: AddressVerdict, *, text: str, t: float
+    ) -> AddressDetected:
+        """Translate a classifier result into the event the reducer reads.
+
+        `t` is the *final's* timestamp, not the verdict's arrival time. The
+        invitation has to be dated to the question, or `named_proposal_lookback_
+        s` and the invitation TTL would quietly measure something different on
+        this path than on the regex one — and the classifier's own cost is
+        already carried separately, on `latency_ms`.
+        """
+        return AddressDetected(
+            t=t,
+            text=text,
+            verdict=outcome.verdict,
+            agent=outcome.agent,
+            # The verdict token is one word and cannot name who tied. The floor
+            # needs a non-empty set to report `AMBIGUOUS_ADDRESS` at all, so the
+            # cast stands in for "between these, and we cannot say which".
+            conflict=self.cast.ids() if outcome.verdict == AMBIGUOUS_VERDICT else (),
+            reason=outcome.reason,
+            latency_ms=outcome.latency_ms,
+            source=outcome.source,
+        )
+
+    def _defer_turn_yielded(self, event: TurnYielded) -> bool:
+        """Hold `TurnYielded` back if this final's verdict is still outstanding.
+
+        Speechmatics' `EndOfTurn` lands within a few milliseconds of the final
+        that names an agent, so without this the floor is arbitrated before the
+        invitation exists: floor closed, Ricky cued, dead air — the exact bug
+        removed the week before this was written. Only `TurnYielded` ever waits;
+        everything else, `TranscriptUpdated` above all, goes straight through.
+
+        Args:
+            event: The end-of-turn event Speechmatics just produced.
+
+        Returns:
+            True if this runtime has taken the event over and will emit it
+            later, False if the caller should emit it now.
+        """
+        task = self._address_task
+        if task is None or task.done():
+            return False
+        if self._held_turn is not None:
+            # Already holding one. Emitting this now would put it *ahead* of
+            # the one already waiting, and holding both would let
+            # `_turn_yielded` arbitrate twice for one end of turn — the second
+            # run before `AgentSpeechStarted` had set `state.speaking`, which is
+            # how two agents end up granted the floor at once. One is enough:
+            # a `TurnYielded` carries nothing beyond "the turn ended".
+            return True
+        self._held_turn = event
+        self._print("  [dim]⌛ holding end-of-turn for the address verdict[/]")
+        return True
+
+    def _release_held_turn(self) -> None:
+        """Emit the `TurnYielded` that was held behind a verdict, if any."""
+        held = self._held_turn
+        self._held_turn = None
+        if held is not None:
+            self._end_of_turn(held)
+
+    def _end_of_turn(self, event: TurnYielded) -> None:
+        """Emit a `TurnYielded` and close the classifier's books on the turn.
+
+        The reset is not optional. `AddressClassifier`'s growth gate carries the
+        previous turn's word count, so without it the next turn's early partials
+        — the ones whose head start is worth most — would never be speculated
+        on at all.
+        """
+        self.emit(event)
+        if self._address is not None:
+            self._address.reset()
+
+    def _show_address_verdict(self, detected: AddressDetected) -> None:
+        """One dim line per verdict. This is the cache-hit diagnostic.
+
+        Whether the verdict was already decided before Ricky stopped talking is
+        the open question about this whole approach — free at a cache hit,
+        ~500ms in series with arbitration at a fresh call — and nothing else
+        measures it, on stage or in rehearsal.
+        """
+        who = detected.verdict or "unavailable"
+        persona = self.cast.personas.get(detected.agent or "")
+        if persona is not None:
+            who = f"{who} → {persona.name}"
+        label = _ADDRESS_SOURCE_LABELS.get(detected.source, detected.source)
+        line = f"  [dim]⌖ address: {who}  {detected.latency_ms:.0f}ms ({label})[/]"
+        if detected.reason:
+            # Model output on its way to a rich console: escaped, because a
+            # stray "[" in the reason would otherwise be read as markup.
+            line += f" [dim]— {escape(detected.reason)}[/]"
+        self._print(line)
 
     async def _run_ticks(self) -> None:
         while self._running:
@@ -763,10 +1209,10 @@ class PanelRuntime:
 
         if self.tts is not None:
             voices = [p.voice_id for p in self.cast.personas.values()]
-            console.print("[dim]pre-warming TTS connections…[/]")
+            self._print("[dim]pre-warming TTS connections…[/]")
             t0 = time.monotonic()
             await self.tts.prewarm(voices)
-            console.print(f"[dim]  {1000 * (time.monotonic() - t0):.0f}ms (paid once)[/]")
+            self._print(f"[dim]  {1000 * (time.monotonic() - t0):.0f}ms (paid once)[/]")
 
         await self.stt.start()
 
@@ -790,6 +1236,7 @@ class PanelRuntime:
             f"[bold]Panel live.[/] {', '.join(p.name for p in self.cast.personas.values())}\n"
             "[dim]Ask a question to open the floor. A statement invites nobody. "
             "Ctrl-C to stop.[/]\n"
+            "[dim]Left columns: seconds since start, +gap since the line above.[/]\n"
         )
 
         with stream:
@@ -804,6 +1251,8 @@ class PanelRuntime:
                 await self.stt.stop()
                 if self.tts is not None:
                     await self.tts.aclose()
+                if self._address is not None:
+                    await self._address.close()
 
 
 def _jsonable(value):
@@ -821,6 +1270,19 @@ def main() -> None:
     parser.add_argument("--personas", type=Path, default=Path("personas"))
     parser.add_argument("--block", type=int, default=256)
     parser.add_argument("--no-tts", action="store_true", help="print turns instead of speaking")
+    parser.add_argument(
+        "--agent-interrupts",
+        action="store_true",
+        help="let an agent cut off a speaking agent (off by default)",
+    )
+    parser.add_argument(
+        "--llm-address",
+        action="store_true",
+        help=(
+            "resolve who Ricky addressed with a model instead of the regex "
+            "(off by default; needs ANTHROPIC_API_KEY)"
+        ),
+    )
     parser.add_argument("--input-device", default=None)
     parser.add_argument("--output-device", default=None)
     parser.add_argument("--log", type=Path, default=None, help="event log for replay")
@@ -834,6 +1296,13 @@ def main() -> None:
     cast = PanelCast.from_dir(args.personas)
     runtime = PanelRuntime(
         cast,
+        floor_config=FloorConfig(
+            allow_agent_interrupts=args.agent_interrupts,
+            # One flag does both halves: the reducer starts reading
+            # `AddressDetected`, and `PanelRuntime` builds the classifier that
+            # produces it. Off, neither exists.
+            llm_address_detection=args.llm_address,
+        ),
         block_size=args.block,
         use_tts=not args.no_tts,
         log_path=args.log,

@@ -36,6 +36,19 @@ class FloorConfig:
     min_floor_priority: float = 0.45
 
     # --- interrupting a *speaking agent* ---
+    # Off by default. An agent cutting another agent off is the one floor
+    # behaviour whose payoff is theatrical rather than structural, and it is
+    # not worth what it costs: `_agent_ended` carries a whole branch that
+    # exists only for the case where a turn ends with someone else already
+    # granted (`floor.py`), and the brief overlap that makes an interruption
+    # read as an argument rather than a dropout is not honoured by the live
+    # runtime at all — `StopSpeech.overlap_ms` is currently only rendered by
+    # `panel_sim`. Ricky interrupting an agent is a separate path
+    # (`_human_started`) and is unaffected by this flag.
+    #
+    # Everything below stays live so the behaviour can be switched back on for
+    # a rehearsal (`panel --agent-interrupts`) without re-deriving the tuning.
+    allow_agent_interrupts: bool = False
     interrupt_threshold: float = 0.55
     # Never interrupt inside the opening of a turn; it just looks broken.
     interrupt_grace_s: float = 2.5
@@ -101,7 +114,63 @@ class FloorConfig:
     # he had asked anything) and must not be aired in answer to a question it
     # never heard. Only applies to *named* invitations: an open invitation is
     # already protected by the score floor, which filler loses to.
-    named_proposal_lookback_s: float = 6.0
+    #
+    # **This number is not "6.0, lowered".** The thing it measures changed.
+    # `_stale` used to compare the invitation against `Proposal.t`, the moment
+    # the finished line *arrived*, and 6.0 was calibrated against that. Arrival
+    # was the wrong clock — a line whose input predated the question by 3.2s
+    # arrived 0.77s *after* the invitation and measured as maximally fresh — so
+    # it now compares against `Proposal.written_against_t`, the timestamp of
+    # the transcript its generation was started from. Input times are earlier
+    # than arrival times by the whole generation latency, so the same window
+    # measured this way is far tighter: 6.0 would still admit that line, since
+    # Ricky's entire question only took 3.2s.
+    #
+    # A rehearsal dial, not a derived number, and the floor under it is set by
+    # `invited_agent_grace_s`: a generation that lands just inside the beat was
+    # started roughly (generation latency - grace) before the question, so at
+    # 2.4s to signals and a 1.0s beat, anything below ~1.4s would refuse the
+    # answers the beat exists to wait for. 2.0 leaves headroom for that and
+    # still refuses a whole moderator preamble. Move them together, and
+    # re-measure generation latency on the venue rig first (CLAUDE.md
+    # § Deployment).
+    named_proposal_lookback_s: float = 2.0
+    # How long a named agent gets to finish writing before the floor gives up on
+    # them and cues Ricky. Speechmatics' `EndOfTurn` lands within a few ms of the
+    # final that names the agent, so arbitration runs before any generation
+    # started against that final could possibly have produced signals — measured
+    # 1.7-2.4s to signals (`tests/bench_brains.py`). Without this the cue is
+    # certain, not occasional.
+    #
+    # A rehearsal dial, not a derived number. Too short and Ricky is told to fill
+    # a gap the panel was about to fill itself; too long and the audience hears
+    # dead air. One second is about a natural beat before an answer; it does not
+    # cover a cold 2.4s generation on its own and is not meant to — letting
+    # generations race (so the answer usually exists before the question ends) is
+    # what closes the rest, and this only has to cover the residue.
+    invited_agent_grace_s: float = 1.0
+
+    # --- who did Ricky address? ---
+    # Off by default, and off is the tested path. With this on, the regex
+    # detector in `FloorController._detect` no longer runs on a human final:
+    # `panel_runtime.address` asks a model the same question and the answer
+    # arrives back as an `AddressDetected` event, which is what keeps the
+    # reducer a pure function of events and a recording replayable.
+    #
+    # It exists because a regex can never resolve a *descriptive* reference —
+    # "what does the financial side make of that?" is Wayne, and no pattern
+    # over the transcript knows that. Measured at 153/153 on the regression
+    # corpus (`packages/panel_runtime/tests/bench_address.py` against
+    # `packages/panel_core/tests/test_address.py`) with p50 526ms to verdict,
+    # which is why it is a dial and not yet the default: 526ms of that sits in
+    # series with arbitration unless speculation on partials has already hidden
+    # it, and the on-stage cache-hit rate is still unmeasured.
+    #
+    # With it off, every path below behaves exactly as it did before the
+    # classifier existed, including the one-shot introduction latch. With it
+    # on, `AddressDetected` owns that latch too — two things able to start the
+    # introduction round is one too many.
+    llm_address_detection: bool = False
 
     # --- safety valve ---
     # After this many agent turns in a row, hand back to the moderator so the

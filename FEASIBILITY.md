@@ -77,7 +77,13 @@ Not re-measured: Sonnet 5 at `effort: "low"` (§10 #3) wasn't a direct S0.7 row 
 Duck-first-classify-after (S0.2), not the originally proposed flat 300–500ms overlap + hard duck.
 
 - Ricky interrupts agent: instant duck, zero overlap (`human_duck_ms = 90`).
-- Agent interrupts agent: 380ms overlap (`interrupt_overlap_ms`) before cut.
+- Agent interrupts agent: **off by default** (`FloorConfig.allow_agent_interrupts = False`,
+  18 Sept). Re-enable per run with `panel --agent-interrupts` /
+  `panel-sim --agent-interrupts`. The designed 380ms overlap
+  (`interrupt_overlap_ms`) is asserted on the command and rendered by
+  `panel_sim`, but `panel_runtime` has never honoured it — its `StopSpeech`
+  handler stops the mixer immediately, so on stage this was a hard cut, not an
+  overlap. Fix that before switching it back on for the show.
 
 ---
 

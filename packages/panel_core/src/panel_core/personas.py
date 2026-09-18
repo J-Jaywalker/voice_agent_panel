@@ -42,11 +42,14 @@ class Persona(BaseModel):
     # 4.5 wants the opening to become anyway (pre-rendered to audio) — see
     # `FloorController._grant_introduction`, which is the only thing that
     # ever reads this field. Two or three sentences, written to be read
-    # aloud, and — because a fixed round's speaking order cannot safely be
-    # assumed by its own content (see `FloorController._start_introductions`
-    # for why the order is fixed but the text still does not lean on it) —
-    # written to stand on its own rather than responding to another
-    # panellist's introduction.
+    # aloud. Deliberately leans on its position in the running order —
+    # "I'll go first" / "I suppose I can go next" / "saved the best for
+    # last" — rather than standing alone, because that running order is
+    # itself fixed (`FloorController._start_introductions`: cast directory
+    # order, Dexter/Melia/Wayne, identical every run). Renaming a persona
+    # file or reordering the cast changes who speaks when without touching
+    # this text, so any change to speaking order must be carried into every
+    # `introduction` string by hand.
     introduction: str = Field(
         min_length=1,
         description="Fixed, verbatim text for the introduction round. Never sent to a model.",

@@ -99,7 +99,32 @@ class Proposal:
     agent: str
     utterance: str
     signals: Signals
+    # When the finished line *arrived*. Not what decides whether it is a stale
+    # answer — see `input_t` and `written_against_t`.
     t: float
+    # The `speculation_epoch` this was generated against. Only the newest
+    # generation per agent is kept in `PanelState.proposals`; see
+    # `FloorController._proposal` for why arrival order cannot be trusted.
+    epoch: int = 0
+    # The transcript timestamp this generation's input was frozen at — which
+    # question it is an answer to. Carried straight off `AgentProposal.input_t`,
+    # where the reasoning lives. None means the emitter supplied none.
+    input_t: float | None = None
+
+    @property
+    def written_against_t(self) -> float:
+        """The moment in the conversation this line is an answer to.
+
+        `FloorController._stale` measures from here, never from `t`. A
+        proposal's arrival time says nothing about the age of the question it
+        answers: generations race, so the slowest one in a turn finishes last
+        while having had the oldest input.
+
+        Falls back to `t` when no `input_t` was supplied, which is the
+        behaviour from before the field existed. A missing input time must
+        degrade to the old answer, not to a wrong one.
+        """
+        return self.t if self.input_t is None else self.input_t
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,15 +173,43 @@ class PanelState:
     consecutive_agent_turns: int = 0
     beat_index: int = 0
 
+    # The transcript timestamp of the most recent `RequestProposals`, i.e. the
+    # input every generation in the current round was frozen against. Two jobs,
+    # and both are why it may only ever be written by
+    # `FloorController._ask_for_proposals`:
+    #   * it is the debounce's clock (`FloorConfig.speculation_interval_s`);
+    #   * the runtime reads it back out to stamp `AgentProposal.input_t`, which
+    #     is what `FloorController._stale` measures.
     last_proposal_request_t: float = -999.0
-    # Bumped every time a final transcript segment lands. A speculative
-    # proposal generated against a partial ("So, Wayne, uh") is answering a
-    # question that no longer exists once the final arrives, and the runtime
-    # uses this to tell that apart from an agent simply being asked again
-    # mid-partial — see `FloorController._transcript` and the staleness test in
-    # `panel_runtime.panel.PanelRuntime._request_proposals`.
+    # Bumped once per `RequestProposals`, by `_ask_for_proposals` and nowhere
+    # else, so `(agent, epoch)` names exactly one generation. That is what lets
+    # the runtime start a fresh generation for an agent whose previous one is
+    # still running — without it, every speculative generation in one human
+    # turn shared a label, the slowest agent could never be re-asked inside its
+    # own turn, and so the slower the agent the staler the input its winning
+    # line had. See `panel_runtime.panel.PanelRuntime._request_proposals`.
+    #
+    # It labels generations; it does not judge them. `_stale` does that, off
+    # `last_proposal_request_t` above.
     speculation_epoch: int = 0
     killed: bool = False
+
+    # --- the beat before the floor goes back to Ricky ---
+    #
+    # Set when arbitration found nothing for an agent Ricky named by name.
+    # Rather than telling him to fill the silence in the same millisecond his
+    # question landed, the floor waits `FloorConfig.invited_agent_grace_s` for
+    # the answer that is almost certainly still being written, and only cues him
+    # if it never turns up. On stage the difference is a panellist taking a
+    # breath versus a panellist who is not there.
+    #
+    # `moderator_cued` latches for the life of one invitation. Every proposal
+    # that lands re-opens arbitration (`PanelRuntime._maybe_rearbitrate`), so a
+    # single unanswered question used to cue Ricky once per proposal — three
+    # times over, in the run that prompted this. Ricky needs telling once.
+    awaiting_agent: str | None = None
+    awaiting_since: float | None = None
+    moderator_cued: bool = False
 
     # Agents still owed a turn in the current introduction round, or None if
     # no round is active. `intro_done` latches permanently once the round
@@ -187,6 +240,14 @@ class PanelState:
 
     def cleared_proposals(self) -> PanelState:
         return replace(self, proposals={})
+
+    def not_awaiting(self) -> PanelState:
+        """Stand down the beat before the moderator cue.
+
+        Called wherever the wait is over however it ended — the answer arrived,
+        someone took the floor, Ricky spoke again, or the cue finally fired.
+        """
+        return replace(self, awaiting_agent=None, awaiting_since=None)
 
     def recent_text(self, limit: int = 12) -> str:
         lines = [f"{u.speaker}: {u.text}" for u in self.transcript[-limit:]]

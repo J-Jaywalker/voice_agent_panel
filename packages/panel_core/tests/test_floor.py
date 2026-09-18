@@ -55,6 +55,16 @@ def fc(cast: PanelCast) -> FloorController:
 
 
 @pytest.fixture
+def fc_interrupts(cast: PanelCast) -> FloorController:
+    """Agent-interrupts-agent switched back on — off in the shipped default.
+
+    The tuning below it (threshold, grace, cooldown) is still live config, so
+    it still needs covering; it just no longer fires on the `fc` fixture.
+    """
+    return FloorController(cast, FloorConfig(allow_agent_interrupts=True))
+
+
+@pytest.fixture
 def state(cast: PanelCast) -> PanelState:
     return PanelState.for_agents(cast.ids())
 
@@ -231,8 +241,10 @@ def test_a_named_agent_answers_alone(fc, state):
         invite(0.0, "Wayne, does oversight actually scale?"),
         AgentProposal(t=0.5, agent="dex", utterance="Historically...", signals=strong()),
     )
-    _, cmds = fc.reduce(state, TurnYielded(t=1.0))
+    state, cmds = fc.reduce(state, TurnYielded(t=1.0))
     assert not [c for c in cmds if isinstance(c, StartSpeech)]
+    # Wayne is given the beat first; the floor still ends up back with Ricky.
+    _, cmds = fc.reduce(state, Tick(t=1.0 + fc.config.invited_agent_grace_s))
     assert [c for c in cmds if isinstance(c, CueModerator)]
 
 
@@ -246,38 +258,182 @@ def test_a_named_agent_may_not_answer_with_a_line_written_before_the_question(fc
     in answer to a direct question. Silence plus a cue is recoverable; this is
     not. The same guard covers the slower version: a proposal left over from a
     previous turn that ended without a grant, so nothing cleared it.
+
+    Stated on the input clock — `AgentProposal.input_t`, the transcript
+    timestamp the generation was started from — because that is the only clock
+    that means anything here: what makes this line unairable is when it was
+    *written*, not when it happened to turn up. The sibling test below is the
+    case where those two disagree, which is what made this guard stop working.
     """
     state, _ = run(
         fc,
         state,
-        AgentProposal(t=0.0, agent="wayne", utterance="Take your time, Ricky.", signals=strong()),
+        AgentProposal(
+            t=0.2,
+            input_t=0.0,
+            agent="wayne",
+            utterance="Take your time, Ricky.",
+            signals=strong(),
+        ),
         invite(20.0, "So Wayne, where are we on the adoption curve?"),
     )
     assert state.invitation.agent == "wayne"
 
     state, cmds = fc.reduce(state, TurnYielded(t=20.5))
     assert not [c for c in cmds if isinstance(c, StartSpeech)]
+    state, cmds = fc.reduce(state, Tick(t=20.5 + fc.config.invited_agent_grace_s))
     assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [
         CueReason.INVITED_AGENT_SILENT
     ]
     assert state.invitation.is_live(), "the invitation survives so a fresh answer can take it"
 
 
+def test_a_named_agent_may_not_answer_with_a_line_that_raced_past_the_question(fc, state):
+    """The same guard, on the live run where it silently stopped working.
+
+    To the timestamps, off the console log:
+
+        12:54:47.461  speculation fires on the partial "Thanks, guys. Um, so
+                      we'll get straight into it." — no question in it at all.
+                      Wayne's generation starts against that text.
+        12:54:50.670  "...Wayne, where do you think we actually are on the
+                      adoption curve?" lands, and invites Wayne.
+        12:54:51.437  that 3967ms generation finally finishes — 0.77s *after*
+                      the invitation.
+        12:54:52.233  Wayne airs "Happy to let Ricky finish setting the table
+                      —" in answer to a direct question, because it was the
+                      only proposal in hand.
+        12:54:53.054  the real answer exists. 1.6s too late.
+
+    `_stale` measured `invitation.t - proposal.t`, and `proposal.t` is the
+    *arrival* time, so a line whose input predated the question by 3.2s scored
+    as maximally fresh. The guard had been passing by accident: until
+    generations were allowed to race, a final cancelled everything started
+    against older text, so a line with stale input could not arrive late
+    because it could not arrive at all.
+
+    Address detection was correct in this run and is not what is under test —
+    the invitation is asserted, not the phrasing.
+    """
+    state, _ = fc.reduce(
+        state,
+        invite(50.670, "Wayne, where do you think we actually are on the adoption curve?"),
+    )
+    assert state.invitation.agent == "wayne"
+
+    state, cmds = fc.reduce(state, TurnYielded(t=50.671))
+    assert not [c for c in cmds if isinstance(c, StartSpeech)]
+    assert state.awaiting_agent == "wayne", "the beat is held for an answer still being written"
+
+    # The holding line arrives after the invitation, having been written 3.2s
+    # before the question.
+    state, cmds = fc.reduce(
+        state,
+        AgentProposal(
+            t=51.437,
+            input_t=47.461,
+            agent="wayne",
+            utterance="Happy to let Ricky finish setting the table —",
+            signals=strong(),
+            epoch=1,
+        ),
+    )
+    assert not [c for c in cmds if isinstance(c, StartSpeech)], "a proposal is not a floor claim"
+
+    # The runtime re-drives arbitration on every proposal that lands
+    # (`PanelRuntime._maybe_rearbitrate`), and that is where it used to go on
+    # the PA.
+    state, cmds = fc.reduce(state, TurnYielded(t=51.44))
+    assert not [c for c in cmds if isinstance(c, StartSpeech)], (
+        "a line written before the question was aired in answer to it"
+    )
+    assert state.proposals["wayne"].utterance.startswith("Happy to let Ricky"), (
+        "refused for airing, but kept — nothing here throws a fallback away"
+    )
+
+    # Ricky is cued instead, and the invitation survives so the real answer can
+    # still take it.
+    state, cmds = fc.reduce(state, Tick(t=51.44 + fc.config.invited_agent_grace_s))
+    assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [
+        CueReason.INVITED_AGENT_SILENT
+    ]
+    assert state.invitation.is_live()
+
+    # ...and 1.6s later it does. `input_t` is the final's own timestamp, so
+    # this is the generation the invitation's own `RequestProposals` started.
+    state, _ = fc.reduce(
+        state,
+        AgentProposal(
+            t=53.054,
+            input_t=50.670,
+            agent="wayne",
+            utterance="Faster than the room thinks.",
+            signals=strong(),
+            epoch=2,
+        ),
+    )
+    _, cmds = fc.reduce(state, TurnYielded(t=53.06))
+    granted = [c for c in cmds if isinstance(c, StartSpeech)]
+    assert [c.agent for c in granted] == ["wayne"]
+    assert granted[0].epoch == 2, "the right generation's words, too"
+
+
 def test_a_named_agent_answers_with_a_line_written_during_the_question(fc, state):
     """...and the latency win speculation exists for is preserved.
 
-    A proposal started against the partials of the question itself lands a
-    second or two *before* the final that opens the floor. Refusing those would
-    put a 2-3s model round trip after every direct address, which is the whole
-    thing `speculation_interval_s` is for.
+    The half of `_stale` that must NOT change. A generation started against a
+    *partial of the question itself* is an answer to it, and those rounds are
+    the whole reason the post-turn gap is short: they run 1-3s ahead of the
+    final, so their output routinely lands after it. Fixing the staleness clock
+    by refusing everything speculative would put a full model round trip after
+    every direct address, which is exactly what speculation buys back.
     """
     state, _ = run(
         fc,
         state,
-        AgentProposal(t=18.5, agent="wayne", utterance="About a third of it.", signals=weak()),
+        # Ricky is mid-question and the partial already carries it, so this is
+        # the round whose answer is worth having.
+        TranscriptUpdated(
+            t=19.4, speaker=HUMAN, text="So Wayne, where are we on the adoption", is_final=False
+        ),
         invite(20.0, "So Wayne, where are we on the adoption curve?"),
+        # ...and it finishes after the final that opened the floor.
+        AgentProposal(
+            t=21.2,
+            input_t=19.4,
+            agent="wayne",
+            utterance="About a third of it.",
+            signals=weak(),
+            epoch=1,
+        ),
     )
-    _, cmds = fc.reduce(state, TurnYielded(t=20.5))
+    _, cmds = fc.reduce(state, TurnYielded(t=21.25))
+    granted = [c for c in cmds if isinstance(c, StartSpeech)]
+    assert [c.agent for c in granted] == ["wayne"], (
+        "speculation on the question itself must still be airable"
+    )
+    assert granted[0].epoch == 1
+
+
+def test_a_proposal_with_no_input_time_falls_back_to_its_arrival_time(fc, state):
+    """The compatibility hinge, asserted rather than assumed.
+
+    `AgentProposal.input_t` defaults to None so that an emitter which does not
+    set it — an older recorded log being replayed, or a future one that forgets
+    — degrades to the behaviour from before the field existed rather than to a
+    wrong answer in either direction. Every emitter in this repo sets it; this
+    is what keeps that a belt rather than a load-bearing assumption.
+    """
+    stale = AgentProposal(t=0.0, agent="wayne", utterance="Take your time.", signals=strong())
+    fresh = AgentProposal(t=19.5, agent="wayne", utterance="A third.", signals=strong())
+    assert stale.input_t is None and fresh.input_t is None
+
+    refused, _ = run(fc, state, stale, invite(20.0, "So Wayne, where are we?"))
+    _, cmds = fc.reduce(refused, TurnYielded(t=20.5))
+    assert not [c for c in cmds if isinstance(c, StartSpeech)], "20s before the question"
+
+    accepted, _ = run(fc, state, fresh, invite(20.0, "So Wayne, where are we?"))
+    _, cmds = fc.reduce(accepted, TurnYielded(t=20.5))
     assert [c.agent for c in cmds if isinstance(c, StartSpeech)] == ["wayne"]
 
 
@@ -291,9 +447,9 @@ def test_a_silent_arbitration_asks_the_panel_again(fc, state):
     """
     state, _ = fc.reduce(state, invite(20.0, "So Wayne, where are we on the curve?"))
     state, cmds = fc.reduce(state, TurnYielded(t=21.0))
-    assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [
-        CueReason.INVITED_AGENT_SILENT
-    ]
+    # The re-ask is the point of this test and it happens immediately — it must
+    # not wait out the moderator-cue beat, or the beat would be spent waiting
+    # for an answer nobody had been asked for.
     requests = [c for c in cmds if isinstance(c, RequestProposals)]
     assert [c.reason for c in requests] == ["post_turn"]
     assert "wayne" in requests[0].agents
@@ -448,7 +604,41 @@ def test_agent_can_hand_off_to_a_better_placed_colleague(fc, state):
 # --------------------------------------------------------------- interrupting
 
 
-def test_strong_disagreement_interrupts_a_speaking_agent(fc, state):
+def test_default_config_does_not_let_an_agent_interrupt_an_agent(fc, state):
+    """The shipped default: a maximal interruption bid is stored, not aired.
+
+    Same setup as the test below it, on the default `fc` fixture rather than
+    `fc_interrupts`. Wayne keeps the floor, Dexter's proposal stays in
+    `state.proposals` where the next arbitration can find it, and nothing is
+    thrown away — which is the whole difference between disabling this and
+    deleting it.
+    """
+    state, _ = run(
+        fc,
+        state,
+        invite(0.0),
+        AgentProposal(t=0.0, agent="wayne", utterance="Completely useless.", signals=strong()),
+        TurnYielded(t=1.0),
+        AgentSpeechStarted(t=1.1, agent="wayne"),
+    )
+
+    state, cmds = fc.reduce(
+        state,
+        AgentProposal(
+            t=5.0,  # past the grace window; would interrupt if it were allowed
+            agent="dex",
+            utterance="Sorry, I've got to disagree there.",
+            signals=strong(disagreement=1.0, urgency=1.0),
+        ),
+    )
+    assert not [c for c in cmds if isinstance(c, StopSpeech)]
+    assert not [c for c in cmds if isinstance(c, StartSpeech)]
+    assert state.speaking == "wayne", "the speaker runs to the end of their turn"
+    assert "dex" in state.proposals, "the bid is kept for the next arbitration"
+
+
+def test_strong_disagreement_interrupts_a_speaking_agent(fc_interrupts, state):
+    fc = fc_interrupts
     state, _ = run(
         fc,
         state,
@@ -475,11 +665,17 @@ def test_strong_disagreement_interrupts_a_speaking_agent(fc, state):
     assert starts[0].agent == "dex"
 
 
-def test_stale_end_of_an_interrupted_turn_does_not_disturb_the_challenger(fc, state):
+def test_stale_end_of_an_interrupted_turn_does_not_disturb_the_challenger(
+    fc_interrupts, state
+):
     """The interrupted agent's own AgentSpeechEnded arrives after the
     challenger already has the floor. It must not re-trigger continuation
     logic (extra RequestProposals, popping an introduction queue, etc.) —
-    the challenger, not the arbitrator, owns what happens next."""
+    the challenger, not the arbitrator, owns what happens next.
+
+    This is the `_agent_ended` branch that only agent interrupts can reach,
+    which is most of what `allow_agent_interrupts=False` buys back."""
+    fc = fc_interrupts
     state, _ = run(
         fc,
         state,
@@ -510,8 +706,9 @@ def test_stale_end_of_an_interrupted_turn_does_not_disturb_the_challenger(fc, st
     assert not [c for c in cmds if isinstance(c, CueModerator)]
 
 
-def test_no_interrupt_inside_the_grace_window(fc, state):
+def test_no_interrupt_inside_the_grace_window(fc_interrupts, state):
     """Cutting in half a second into a turn just looks broken."""
+    fc = fc_interrupts
     state, _ = run(
         fc,
         state,
@@ -529,7 +726,8 @@ def test_no_interrupt_inside_the_grace_window(fc, state):
     assert not [c for c in cmds if isinstance(c, StopSpeech)]
 
 
-def test_mild_disagreement_does_not_interrupt(fc, state):
+def test_mild_disagreement_does_not_interrupt(fc_interrupts, state):
+    fc = fc_interrupts
     state, _ = run(
         fc,
         state,
@@ -676,29 +874,132 @@ def test_a_short_final_always_asks_however_few_words(fc, state):
     assert [c for c in cmds if isinstance(c, RequestProposals)]
 
 
-def test_finals_bump_the_speculation_epoch_and_partials_do_not(fc, state):
-    """The runtime's staleness signal: one bump per final, none per partial.
+def test_every_proposal_request_takes_a_fresh_epoch_partials_included(fc, state):
+    """The generation label: one bump per round, and none without a round.
 
-    Per-final is what lets a stream started against "So, Wayne, uh," be torn
-    down and restarted against the completed question. Per-partial would cancel
-    every 0.8s and nothing would ever finish.
+    This used to bump once per *final* and never on a partial, on the reasoning
+    that a generation per 0.8s partial was spend without a matching gain. The
+    gain is fresher input, and the counter-evidence is the live run in
+    `test_a_named_agent_may_not_answer_with_a_line_that_raced_past_the_question`:
+    one label per human turn meant `PanelRuntime._request_proposals` skipped any
+    agent whose single generation for that label was still running, so the
+    slowest agent could never be re-asked inside the turn and its answer was
+    always written against the turn's oldest input. Cost is not a constraint
+    here (CLAUDE.md); a stale answer to a direct question is.
+
+    `(agent, epoch)` has to name exactly one generation for the runtime to be
+    able to start a second one for the same agent, so the invariant is
+    epoch-moves-if-and-only-if-a-round-opened — in both directions. A label
+    handed out with no round behind it would make the runtime treat a
+    generation it never started as having superseded a live one.
     """
-    state, _ = fc.reduce(
-        state, TranscriptUpdated(t=10.0, speaker=HUMAN, text="So, Wayne, uh", is_final=False)
-    )
+
+    def ask(st, event):
+        st, cmds = fc.reduce(st, event)
+        return st, bool([c for c in cmds if isinstance(c, RequestProposals)])
+
+    def partial(t: float, text: str) -> TranscriptUpdated:
+        return TranscriptUpdated(t=t, speaker=HUMAN, text=text, is_final=False)
+
+    # Too short to be worth asking about (`speculation_min_words`): no round,
+    # so no new label either.
+    state, asked = ask(state, partial(10.0, "So, Wayne, uh"))
+    assert not asked
     assert state.speculation_epoch == 0
 
-    state, _ = fc.reduce(
-        state, TranscriptUpdated(t=10.5, speaker=HUMAN, text="So, Wayne, uh,", is_final=True)
-    )
+    # A partial long enough to answer opens a round — and takes a label. This
+    # is the assertion the old test had inverted.
+    state, asked = ask(state, partial(10.2, "So, Wayne, uh, where are we"))
+    assert asked
+    assert state.speculation_epoch == 1, "a speculative round must be labelled too"
+
+    # Debounced (`speculation_interval_s`): no round, so no label.
+    state, asked = ask(state, partial(10.3, "So, Wayne, uh, where are we on"))
+    assert not asked
     assert state.speculation_epoch == 1
 
-    # A turn arriving as several finals bumps once per segment.
+    # Past the debounce, so a new round against newer text — which is the point
+    # of the change: the slow agent gets asked again without its in-flight
+    # generation being cancelled or its key being occupied.
+    state, asked = ask(
+        state,
+        partial(
+            10.2 + fc.config.speculation_interval_s + 0.01,
+            "So, Wayne, uh, where are we on the adoption curve",
+        ),
+    )
+    assert asked
+    assert state.speculation_epoch == 2
+
+    # A final always asks, however short, so it always relabels.
+    state, asked = ask(
+        state, TranscriptUpdated(t=11.2, speaker=HUMAN, text="Wayne?", is_final=True)
+    )
+    assert asked
+    assert state.speculation_epoch == 3
+
+
+def test_every_proposal_request_stamps_its_input_time_and_takes_a_label(fc, state):
+    """Whatever opens a round, the same three things move together.
+
+    `PanelRuntime._request_proposals` has no other way to know what its
+    generations are answering: it snapshots the state the reducer just
+    returned, reads `last_proposal_request_t` off it, and stamps that onto
+    every `AgentProposal` as `input_t` — while keying the generation by
+    `speculation_epoch` from the same snapshot. A site that built the command
+    without setting both would hand the floor a generation whose label and
+    input time came from different rounds, which is precisely what
+    `_ask_for_proposals` exists to make impossible.
+
+    So this walks every emitter in the file and checks the pair lands on the
+    triggering event's own timestamp. `operator_forced` is here because it is
+    the site that used to build its command by hand.
+    """
+    seen: list[tuple[str, float, int]] = []
+
+    def record(st, event):
+        st, cmds = fc.reduce(st, event)
+        for command in cmds:
+            if isinstance(command, RequestProposals):
+                seen.append((command.reason, st.last_proposal_request_t, st.speculation_epoch))
+        return st
+
+    state = record(
+        state,
+        TranscriptUpdated(t=10.0, speaker=HUMAN, text="So where are we on adoption",
+                          is_final=False),
+    )
+    state = record(state, invite(11.0))
+    # Arbitration found nothing, so the completed turn is asked again.
+    state = record(state, TurnYielded(t=12.0))
     state, _ = fc.reduce(
         state,
-        TranscriptUpdated(t=12.0, speaker=HUMAN, text="where are we on the curve?", is_final=True),
+        AgentProposal(t=12.1, input_t=11.0, agent="dex", utterance="Trust.", signals=strong()),
     )
-    assert state.speculation_epoch == 2
+    state = record(state, TurnYielded(t=12.2))
+    state, _ = fc.reduce(state, AgentSpeechStarted(t=12.3, agent="dex"))
+    # A granted turn ending, with the open invitation still worth another one.
+    state = record(
+        state, AgentSpeechEnded(t=18.0, agent="dex", completed=True, utterance="Trust.")
+    )
+    # ...and the operator backstop, forcing an agent with nothing queued.
+    state = record(
+        state, OperatorCommand(t=20.0, action=OperatorAction.FORCE_AGENT, agent="melia")
+    )
+
+    assert [reason for reason, _, _ in seen] == [
+        "speculation",
+        "final",
+        "post_turn",
+        "agent_turn_ended",
+        "operator_forced",
+    ]
+    assert [t for _, t, _ in seen] == [10.0, 11.0, 12.0, 18.0, 20.0], (
+        "the input time must be the triggering event's own, not the previous round's"
+    )
+    epochs = [epoch for _, _, epoch in seen]
+    assert epochs == sorted(set(epochs)), "one fresh label per round, never reused"
+    assert epochs[0] >= 1, "no round may go out unlabelled"
 
 
 def test_final_transcript_always_requests_proposals(fc, state):
@@ -984,3 +1285,180 @@ def test_agents_hear_each_other(fc, state):
         AgentSpeechEnded(t=6.0, agent="dex", completed=True, utterance="Trust is the blocker."),
     )
     assert "Trust is the blocker." in state.recent_text()
+
+
+# ------------------------------------------------- the beat before the cue
+
+
+def test_a_named_agent_answering_within_the_beat_takes_the_floor(fc, state):
+    """The fix for the six-second hole, stated as the behaviour that was missing.
+
+    Speechmatics' `EndOfTurn` lands within a few milliseconds of the final that
+    names an agent, so the first arbitration of every invitation runs before any
+    generation started against that final could have produced signals. The old
+    reducer read that as "Wayne had nothing", cued Ricky, and the answer arrived
+    moments later into a floor that had already moved on.
+    """
+    state, cmds = run(
+        fc,
+        state,
+        invite(20.0, "So Wayne, where are we on the adoption curve?"),
+        TurnYielded(t=20.01),  # EndOfTurn, effectively simultaneous
+    )
+    assert not [c for c in cmds if isinstance(c, CueModerator)], (
+        "Ricky must not be told to fill a gap nobody has had time to fill"
+    )
+    assert state.awaiting_agent == "wayne"
+
+    # Wayne's stream finishes inside the beat.
+    state, cmds = fc.reduce(
+        state,
+        AgentProposal(t=20.4, agent="wayne", utterance="", signals=strong(), epoch=1),
+    )
+    assert state.awaiting_agent is None, "the answer arrived; stand the cue down"
+
+    state, cmds = fc.reduce(state, TurnYielded(t=20.45))
+    assert [c.agent for c in cmds if isinstance(c, StartSpeech)] == ["wayne"]
+
+    # ...and the cue that was armed never fires, however long we wait.
+    _, cmds = fc.reduce(state, Tick(t=30.0))
+    assert not [c for c in cmds if isinstance(c, CueModerator)]
+
+
+def test_the_moderator_is_cued_once_per_invitation_not_once_per_proposal(fc, state):
+    """The live run printed `back to Ricky` three times for one question.
+
+    Every proposal re-opens arbitration from the runtime
+    (`PanelRuntime._maybe_rearbitrate`), so each of the other two agents landing
+    a proposal Wayne's invitation does not admit produced another cue.
+    """
+    state, _ = run(
+        fc,
+        state,
+        invite(20.0, "So Wayne, where are we on the adoption curve?"),
+        TurnYielded(t=20.01),
+    )
+    state, cmds = fc.reduce(state, Tick(t=20.01 + fc.config.invited_agent_grace_s))
+    assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [
+        CueReason.INVITED_AGENT_SILENT
+    ]
+
+    # Dexter and Melia answer a question that was not put to them.
+    state, cmds = run(
+        fc,
+        state,
+        AgentProposal(t=22.0, agent="dex", utterance="", signals=strong(), epoch=1),
+        TurnYielded(t=22.01),
+        AgentProposal(t=22.3, agent="melia", utterance="", signals=strong(), epoch=1),
+        TurnYielded(t=22.31),
+        Tick(t=24.0),
+    )
+    assert not [c for c in cmds if isinstance(c, CueModerator)], (
+        "Ricky needs telling once"
+    )
+
+
+def test_an_open_invitation_with_nothing_cues_at_once(fc, state):
+    """The beat is for a named agent only.
+
+    An open invitation nobody wants is a real answer — the panel declining as a
+    body, decided correctly by the score floor. Waiting on it would delay a
+    decision rather than allow one.
+    """
+    state, cmds = run(fc, state, invite(0.0, "What holds it back?"), TurnYielded(t=1.0))
+    assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [CueReason.NO_PROPOSALS]
+    assert state.awaiting_agent is None
+
+
+def test_ricky_speaking_during_the_beat_stands_the_cue_down(fc, state):
+    """He filled the gap himself, which is what the beat was hedging against."""
+    state, _ = run(
+        fc,
+        state,
+        invite(20.0, "So Wayne, where are we on the adoption curve?"),
+        TurnYielded(t=20.01),
+    )
+    assert state.awaiting_agent == "wayne"
+
+    state, _ = fc.reduce(state, HumanSpeechStarted(t=20.3))
+    assert state.awaiting_agent is None
+
+    _, cmds = fc.reduce(state, Tick(t=25.0))
+    assert not [c for c in cmds if isinstance(c, CueModerator)], (
+        "cueing Ricky to do what he is already doing prints a stale instruction"
+    )
+
+
+def test_a_later_question_re_arms_the_cue(fc, state):
+    """The latch is per invitation, not per show."""
+    state, _ = run(
+        fc,
+        state,
+        invite(20.0, "So Wayne, where are we on the adoption curve?"),
+        TurnYielded(t=20.01),
+        Tick(t=20.01 + fc.config.invited_agent_grace_s),
+    )
+    assert state.moderator_cued
+
+    state, _ = fc.reduce(state, invite(30.0, "Melia, does that match your read?"))
+    assert not state.moderator_cued, "a fresh question is a fresh chance to be told"
+
+    state, _ = fc.reduce(state, TurnYielded(t=30.01))
+    _, cmds = fc.reduce(state, Tick(t=30.01 + fc.config.invited_agent_grace_s))
+    assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [
+        CueReason.INVITED_AGENT_SILENT
+    ]
+
+
+# --------------------------------------------------- racing generations
+
+
+def test_a_slower_older_generation_does_not_overwrite_a_newer_answer(fc, state):
+    """Generations race, so arrival order is not generation order.
+
+    A stream started against Ricky's preamble can finish *after* one started
+    against his actual question. Keeping the newest by epoch rather than by
+    arrival is what stops the worse answer winning on a technicality.
+    """
+    state, _ = run(
+        fc,
+        state,
+        invite(20.0, "So Wayne, where are we on the adoption curve?"),
+        # The answer to the real question lands first.
+        AgentProposal(
+            t=20.3, input_t=19.6, agent="wayne", utterance="", signals=strong(), epoch=2
+        ),
+        # The answer to "Thanks, everybody. Um, so," straggles in behind it.
+        AgentProposal(
+            t=20.4, input_t=18.0, agent="wayne", utterance="", signals=strong(), epoch=1
+        ),
+    )
+    assert state.proposals["wayne"].epoch == 2, "the older generation overwrote the newer one"
+
+    _, cmds = fc.reduce(state, TurnYielded(t=20.5))
+    granted = [c for c in cmds if isinstance(c, StartSpeech)]
+    assert [c.agent for c in granted] == ["wayne"]
+    assert granted[0].epoch == 2, "the runtime would have spoken the wrong generation's words"
+
+
+def test_an_earlier_generation_is_still_usable_when_it_is_all_there_is(fc, state):
+    """The fallback the old teardown destroyed.
+
+    An answer written against the partials of the question is 1-3s ahead of the
+    final that opens the floor, and `named_proposal_lookback_s` exists to admit
+    exactly that. Cancelling on every final made this window unreachable.
+    """
+    state, _ = run(
+        fc,
+        state,
+        AgentProposal(
+            t=18.5, input_t=18.5, agent="wayne", utterance="", signals=strong(), epoch=1
+        ),
+        invite(20.0, "So Wayne, where are we on the adoption curve?"),
+    )
+    _, cmds = fc.reduce(state, TurnYielded(t=20.01))
+    granted = [c for c in cmds if isinstance(c, StartSpeech)]
+    assert [c.agent for c in granted] == ["wayne"], (
+        "speculation from inside the lookback window must still be airable"
+    )
+    assert granted[0].epoch == 1

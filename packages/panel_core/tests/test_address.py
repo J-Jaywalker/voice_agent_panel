@@ -353,6 +353,10 @@ def test_an_invitation_nobody_acts_on_expires(fc, state):
     assert state.invitation is not None
 
     state, cmds = fc.reduce(state, TurnYielded(t=1.0))
+    assert not [c for c in cmds if isinstance(c, CueModerator)], (
+        "a named agent gets a beat to finish answering before Ricky is told to fill"
+    )
+    state, cmds = fc.reduce(state, Tick(t=1.0 + fc.config.invited_agent_grace_s))
     assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [
         CueReason.INVITED_AGENT_SILENT
     ]
@@ -473,8 +477,10 @@ def test_no_candidate_is_split_into_distinct_reasons(fc, state):
         said("Wayne, does oversight actually scale?"),
         AgentProposal(t=0.5, agent="dex", utterance="Historically...", signals=strong()),
     )
-    _, cmds = fc.reduce(named, TurnYielded(t=1.0))
+    named, cmds = fc.reduce(named, TurnYielded(t=1.0))
     assert not [c for c in cmds if isinstance(c, StartSpeech)]
+    # Deferred, not cancelled: Wayne gets the beat, then Ricky is told.
+    _, cmds = fc.reduce(named, Tick(t=1.0 + fc.config.invited_agent_grace_s))
     assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [
         CueReason.INVITED_AGENT_SILENT
     ]

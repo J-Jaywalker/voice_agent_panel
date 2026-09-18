@@ -5,6 +5,7 @@ Import nothing here that performs I/O. This package must stay replayable.
 
 from .events import (
     HUMAN,
+    AddressDetected,
     AgentProposal,
     AgentSpeechEnded,
     AgentSpeechStarted,
@@ -58,6 +59,7 @@ __all__ = [
     "GUARDRAILS",
     "HUMAN",
     "PROPOSAL_SCHEMA",
+    "AddressDetected",
     "AddressRole",
     "AgentProposal",
     "AgentSpeechEnded",

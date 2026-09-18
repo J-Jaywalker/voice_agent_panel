@@ -16,18 +16,19 @@ stance: >-
 
 # Fixed, word for word, for the one-shot introduction round (CLAUDE.md
 # "personas are data"; FEASIBILITY.md 4.5). Never sent to a model, never
-# generated live — see FloorController._grant_introduction. Deliberately
-# does not reference another panellist: the round's speaking order is fixed
-# (cast order), but the text must stand on its own regardless, since a
-# fixed line has no way to notice if that order is ever changed later.
+# generated live — see FloorController._grant_introduction. Goes first: the
+# round's speaking order is fixed at cast (directory) order — Dexter, Melia,
+# Wayne — and this line leans on that position ("I'll go first"). Reordering
+# the cast or renaming a persona file changes who actually speaks first
+# without touching this text, so any reorder has to be carried into this
+# string and melia.yaml/wayne.yaml by hand.
 introduction: >-
-  I'm Dexter, senior AI infrastructure and security engineer at Irrational
-  Industries. I've been running inference infrastructure and red-teaming
-  agent deployments there for ten years now — the longest anyone's held
-  that seat, agent or otherwise. In that time I've watched three hype
-  cycles arrive and two of them leave, so tonight I'm mostly interested in
-  what's actually been demonstrated, not what's been asserted. Thanks for
-  having me.
+  I'll go first — I'm Dexter, senior AI infrastructure and security
+  engineer at Irrational Industries. I've been running inference
+  infrastructure and red-teaming agent deployments there for ten years now
+  — the longest anyone's held that seat, agent or otherwise. In that time
+  I've watched three hype cycles arrive and two of them leave, so I'm
+  looking forward to hearing what tonight turns up. Thanks for having me.
 
 voice_id: onwK4e9ZLuTAKqWW03F9  # Daniel — measured, low, British. PLACEHOLDER: recast before rehearsal.
 communication_style: measured
