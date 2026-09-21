@@ -1087,6 +1087,11 @@ class FloorController:
     def _agent_ended(
         self, state: PanelState, event: AgentSpeechEnded
     ) -> tuple[PanelState, list[Command]]:
+        # Read before `with_agent` clears it: when the turn that is ending
+        # began. Everything proposed since then was written by an agent who
+        # had heard it, and is a hand raised during this turn rather than a
+        # leftover from the last one.
+        turn_started_at = state.agents[event.agent].speaking_since
         state = state.with_agent(
             event.agent,
             state=AgentState.IDLE,
@@ -1125,7 +1130,30 @@ class FloorController:
         # A completed agent turn does NOT reopen the floor. The panel continues
         # only if the invitation had turns left on it; otherwise it goes back to
         # Ricky, which is what stops three agents relaying to each other.
-        state = state.cleared_proposals()
+        #
+        # Proposals written *during* the turn survive it. This used to clear
+        # them all, which threw away exactly the bids that make a handover
+        # quick: on stage 21 Sept 2026 both idle agents had a line ready 1.7s
+        # into a 30s turn, both were binned at the boundary, and the panel then
+        # paid a fresh 2s generation for lines it already had. Anything older
+        # than the turn was written against a moment two turns back, was
+        # already passed over once, and goes — that is what `_proposal`'s
+        # newest-per-agent rule cannot decide on its own.
+        #
+        # `speaking_since` is None only if the agent was never recorded as
+        # speaking, which should not happen; clearing everything is the old
+        # behaviour and the safe way to be wrong.
+        #
+        # The agent who just finished is excluded regardless. Anything they
+        # wrote mid-turn was written while they held the floor, and letting it
+        # win the arbitration below would hand the same voice two consecutive
+        # turns off one invitation — which `max_consecutive_agent_turns` bounds
+        # but does not prevent. They are still asked for a fresh line on the
+        # request path, which is where a genuine continuation belongs.
+        if turn_started_at is None:
+            state = state.cleared_proposals()
+        else:
+            state = state.proposals_written_since(turn_started_at).without_proposal(event.agent)
 
         if state.intro_queue is not None and event.agent in state.intro_queue:
             # Pop the agent who just finished and hand the round straight to
@@ -1152,6 +1180,33 @@ class FloorController:
         if state.consecutive_agent_turns >= self.config.max_consecutive_agent_turns:
             state = replace(state, invitation=None)
             commands.append(CueModerator(reason=CueReason.AGENT_TURN_LIMIT))
+            return state, commands
+
+        # The turn that just ended is this invitation's activity. Without this
+        # the TTL clock only ever moves when a turn *starts*, so any turn
+        # longer than `invitation_ttl_s` guarantees the floor closes the
+        # instant it finishes — `_expire_invitation` is held off while someone
+        # is on the PA and fires on the very next tick. Turns run 20-30s
+        # against a 25s TTL, so this was not an edge case.
+        invitation = invitation.touched(t=event.t)
+        state = replace(state, invitation=invitation)
+
+        # A bid raised during the turn can be taken now. Keeping those
+        # proposals is only half the fix: nothing in the reducer re-arbitrates
+        # on its own, and the runtime re-drives arbitration solely when an
+        # `AgentProposal` lands (`PanelRuntime._maybe_rearbitrate`), so without
+        # this the panel still waits out a fresh 2s generation before it can
+        # use a line it already had in hand. Arbitrating here is the whole
+        # latency win.
+        #
+        # The request below still goes out when nobody wins — and only then:
+        # asking every idle agent for a line we are about to talk over is how
+        # the next boundary ends up holding proposals written against a turn
+        # that had barely started.
+        winner, _reason = self._arbitrate(state, invitation=invitation, now=event.t)
+        if winner is not None:
+            state, grant_cmds = self._grant(state, winner, now=event.t)
+            commands.extend(grant_cmds)
             return state, commands
 
         targets = state.idle_agents()
@@ -1428,6 +1483,11 @@ class FloorController:
             config=self.config,
         )
 
+    def _stale_open(self, proposal: Proposal, invitation: Invitation) -> bool:
+        """`_stale`, on an open floor. See `FloorConfig.open_proposal_lookback_s`."""
+        age = invitation.t - proposal.written_against_t
+        return age > self.config.open_proposal_lookback_s
+
     def _stale(self, proposal: Proposal, invitation: Invitation) -> bool:
         """Was this line written too long before the question to be its answer?
 
@@ -1523,6 +1583,17 @@ class FloorController:
             ):
                 return deferred, None
             return invitation.agent, None
+
+        # An open floor gets the freshness test too. OPEN only — an OPERATOR
+        # invitation is a human at the console deciding the panel should speak
+        # with whatever it has, and second-guessing that breaks the backstop,
+        # exactly as on the named path above.
+        if invitation.source is InvitationSource.OPEN:
+            candidates = {
+                a: p for a, p in candidates.items() if not self._stale_open(p, invitation)
+            }
+            if not candidates:
+                return None, CueReason.NO_PROPOSALS
 
         scored = sorted(
             ((self._score(state, a, p, now=now), a) for a, p in candidates.items()),

@@ -56,22 +56,43 @@ class Invitation:
     agent: str | None  # None = open to the whole panel
     turns_remaining: int
     source: InvitationSource
+    # The moment Ricky opened the floor. This never moves. It is the question a
+    # proposal has to be an answer to (``FloorController._stale``) and the
+    # anchor for the supersede window, and both of those are about *when the
+    # invitation was made*, not about how recently it has been used.
     t: float
     role: str = ""  # AddressRole value, or "open"/"introduction"/"operator"
     rule: str = ""  # the specific pattern that matched, for the console
+    # The TTL clock, and a different question from ``t``: when this invitation
+    # was last acted on. None until it has produced a turn. Kept apart because
+    # one field cannot answer both — ``spent()`` used to refresh ``t`` itself,
+    # which meant an invitation that produced turns slid its own freshness and
+    # supersede windows forward with it.
+    last_active_t: float | None = None
 
     def spent(self, *, t: float | None = None) -> Invitation:
         """Consume one turn.
 
-        ``t`` refreshes the invitation's clock. An invitation that is actually
-        producing turns is live conversation and must not age out mid-exchange;
-        the TTL exists for one that never produces a turn at all (see
-        ``FloorConfig.invitation_ttl_s``).
+        ``t`` refreshes the *activity* clock, not ``self.t``. An invitation that
+        is actually producing turns is live conversation and must not age out
+        mid-exchange; the TTL exists for one that never produces a turn at all
+        (see ``FloorConfig.invitation_ttl_s``).
         """
         remaining = max(0, self.turns_remaining - 1)
         if t is None:
             return replace(self, turns_remaining=remaining)
-        return replace(self, turns_remaining=remaining, t=t)
+        return replace(self, turns_remaining=remaining, last_active_t=t)
+
+    def touched(self, *, t: float) -> Invitation:
+        """Record activity without consuming a turn.
+
+        ``spent()`` stamps the clock when a turn *starts*. A turn longer than
+        ``FloorConfig.invitation_ttl_s`` therefore left the invitation already
+        past its deadline the moment it finished, and the next tick reaped an
+        exchange that was plainly still live. Seen on stage 21 Sept 2026: a
+        29.9s turn against a 25s TTL, cue 89ms after the audio stopped.
+        """
+        return replace(self, last_active_t=t)
 
     def is_live(self) -> bool:
         return self.turns_remaining > 0
@@ -86,12 +107,16 @@ class Invitation:
     def expires_at(self, ttl_s: float) -> float | None:
         """When this invitation goes stale, or None if it never does.
 
+        Measured from the last activity, falling back to when the invitation
+        was made if it has never produced a turn — which is the case the TTL
+        exists for.
+
         The introduction round is exempt: it is bounded by the cast size and
         cutting it short strands agents who have not spoken yet.
         """
         if self.source is InvitationSource.INTRODUCTION:
             return None
-        return self.t + ttl_s
+        return (self.t if self.last_active_t is None else self.last_active_t) + ttl_s
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +281,16 @@ class PanelState:
 
     def cleared_proposals(self) -> PanelState:
         return replace(self, proposals={})
+
+    def proposals_written_since(self, t: float) -> PanelState:
+        """Drop proposals answering a moment older than ``t``.
+
+        Measured on ``Proposal.written_against_t``, never on arrival: a line
+        that took four seconds to generate is still an answer to the moment it
+        was started from. See ``FloorController._agent_ended``, the one caller.
+        """
+        proposals = {a: p for a, p in self.proposals.items() if p.written_against_t >= t}
+        return replace(self, proposals=proposals)
 
     def not_awaiting(self) -> PanelState:
         """Stand down the beat before the moderator cue.

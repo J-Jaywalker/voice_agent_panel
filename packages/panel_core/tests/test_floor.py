@@ -974,6 +974,200 @@ def test_turn_immediately_after_an_agent_finishes_is_not_starved(fc, state):
     assert [c for c in cmds if isinstance(c, RequestProposals)]
 
 
+# ------------------------------------------------- the turn boundary, 21 Sept
+
+
+def _open_turn(fc, state, agent="dex", *, invited_at=0.0, started=0.5, ended=30.0):
+    """Ricky opens the floor, one agent takes it and speaks for `ended - started`.
+
+    Turn lengths on stage run 20-30s, which is the whole point of the fixtures
+    below: the numbers here are not arbitrary, they straddle `invitation_ttl_s`.
+    """
+    state, _ = run(
+        fc,
+        state,
+        invite(invited_at, "Where are we on the adoption curve?"),
+        AgentProposal(
+            t=invited_at + 0.1,
+            input_t=invited_at,
+            agent=agent,
+            utterance="Unevenly.",
+            signals=strong(),
+        ),
+        TurnYielded(t=started),
+        AgentSpeechStarted(t=started + 0.1, agent=agent),
+    )
+    assert state.speaking == agent
+    return state
+
+
+def test_a_long_turn_does_not_age_out_its_own_invitation(fc, state):
+    """From the stage, 21 Sept 2026.
+
+        16:40:07.975  floor: invited the panel — open/llm_open
+        16:40:07.976  Dexter granted; the TTL clock is stamped here, at the
+                      *start* of the turn, and nowhere else.
+        16:40:37.851  Dexter finishes — 29.9s, against a 25s TTL. The
+                      invitation has been past its deadline for five seconds
+                      and nothing noticed, because `_expire_invitation` is
+                      held off while anyone is on the PA.
+        16:40:37.940  first tick afterwards: `invitation_expired`, floor
+                      closed, Ricky told to fill.
+        16:40:39.695  the other two agents' lines arrive, to a closed floor.
+
+    Nobody was unwilling. The invitation died of old age at the exact moment
+    the exchange it was granting became possible.
+    """
+    state = _open_turn(fc, state)
+    state, cmds = fc.reduce(state, AgentSpeechEnded(t=30.0, agent="dex", completed=True))
+    assert state.invitation is not None and state.invitation.is_live()
+
+    state, cmds = fc.reduce(state, Tick(t=30.1))
+    assert not [c for c in cmds if isinstance(c, CueModerator)]
+    assert state.invitation is not None, "a turn that just ended is not an invitation nobody used"
+
+
+def test_an_invitation_nobody_ever_acts_on_still_expires(fc, state):
+    """The behaviour the TTL is actually for, unchanged by the above."""
+    state, _ = fc.reduce(state, invite(0.0))
+    assert state.invitation is not None
+
+    state, cmds = fc.reduce(state, Tick(t=fc.config.invitation_ttl_s + 1.0))
+    assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [
+        CueReason.INVITATION_EXPIRED
+    ]
+    assert state.invitation is None
+
+
+def test_a_bid_raised_during_a_turn_survives_it_and_is_taken_at_once(fc, state):
+    """The other half of the same 30 seconds.
+
+    Wayne and Melia both had a line ready 1.7s into Dexter's turn. The turn
+    boundary cleared every proposal unconditionally, so the panel then sent a
+    fresh `RequestProposals` and waited out another 2s generation for lines it
+    was already holding. Keeping them is only useful if they can be used
+    immediately: the reducer never re-arbitrates on its own and the runtime
+    only does so when a proposal *arrives*, so the grant has to happen here.
+    """
+    state = _open_turn(fc, state)
+    state, _ = fc.reduce(
+        state,
+        AgentProposal(
+            t=2.5, input_t=2.2, agent="wayne", utterance="I've been bitten too.", signals=strong()
+        ),
+    )
+    state, cmds = fc.reduce(state, AgentSpeechEnded(t=30.0, agent="dex", completed=True))
+
+    starts = [c for c in cmds if isinstance(c, StartSpeech)]
+    assert [c.agent for c in starts] == ["wayne"]
+    assert starts[0].utterance == "I've been bitten too."
+    assert not [c for c in cmds if isinstance(c, RequestProposals)], (
+        "no point asking for a line we are about to talk over"
+    )
+
+
+def test_a_bid_written_before_the_turn_does_not_survive_it(fc, state):
+    """Kept means "written during the turn", not "kept forever".
+
+    A proposal older than the turn was answering a moment two turns back and
+    has already been passed over once. Measured on the input clock, so a slow
+    generation that started before the turn is still refused however late it
+    happened to arrive.
+    """
+    state = _open_turn(fc, state)
+    state, _ = fc.reduce(
+        state,
+        AgentProposal(
+            t=2.5,
+            input_t=0.05,  # started before Dexter had the floor
+            agent="wayne",
+            utterance="Take your time, Ricky.",
+            signals=strong(),
+        ),
+    )
+    state, cmds = fc.reduce(state, AgentSpeechEnded(t=30.0, agent="dex", completed=True))
+
+    assert "wayne" not in state.proposals
+    assert not [c for c in cmds if isinstance(c, StartSpeech)]
+    assert [c for c in cmds if isinstance(c, RequestProposals)]
+
+
+def test_the_agent_who_just_spoke_may_not_take_the_next_turn_off_its_own_bid(fc, state):
+    """A line written while holding the floor may not win the floor back.
+
+    `max_consecutive_agent_turns` bounds a relay; it does not stop one voice
+    taking both turns of a single open invitation, which is what keeping
+    mid-turn proposals would otherwise allow. Dexter is asked again on the
+    request path — a genuine continuation goes through a fresh line.
+    """
+    state = _open_turn(fc, state)
+    state, _ = fc.reduce(
+        state,
+        AgentProposal(
+            t=2.5, input_t=2.2, agent="dex", utterance="And another thing.", signals=strong()
+        ),
+    )
+    state, cmds = fc.reduce(state, AgentSpeechEnded(t=30.0, agent="dex", completed=True))
+
+    assert not [c for c in cmds if isinstance(c, StartSpeech)]
+    assert [c for c in cmds if isinstance(c, RequestProposals)]
+
+
+def test_a_line_written_before_the_question_does_not_win_an_open_floor(fc, state):
+    """`_stale`, on the open floor it never covered. From the stage, 21 Sept.
+
+        15:12:58.247  "Um, so let's just dive right into it. Where do you think
+                      we are on the adoption curve? Who wants to go first?"
+        15:12:58.420  floor invited, and Melia airs "Mm, I'll wait to hear
+                      where Ricky's actually pointing this before I stake out
+                      ground." — one millisecond later, so necessarily written
+                      against the preamble, since generation measures 1.7-2.4s.
+
+    The open floor was guarded only by `min_floor_priority`, and a confident
+    holding line clears that comfortably. Note the window here does not by
+    itself catch that particular line — Melia's input was frozen ~1.9s before
+    the final, inside `open_proposal_lookback_s`; the prompt is what stops an
+    agent writing it. This is the backstop for the grossly old, which the turn
+    boundary now deliberately keeps around.
+    """
+    state, _ = run(
+        fc,
+        state,
+        TranscriptUpdated(t=0.0, speaker=HUMAN, text="Um, so", is_final=False),
+        AgentProposal(
+            t=1.0,
+            input_t=0.0,
+            agent="melia",
+            utterance="I'll wait to hear where Ricky's pointing this.",
+            signals=strong(),
+        ),
+        invite(10.0, "Where do you think we are on the adoption curve?"),
+    )
+    assert state.invitation is not None and state.invitation.agent is None
+
+    state, cmds = fc.reduce(state, TurnYielded(t=10.2))
+    assert not [c for c in cmds if isinstance(c, StartSpeech)]
+    assert state.invitation.is_live(), "the floor stays open for a real answer"
+
+
+def test_a_line_written_during_the_previous_turn_still_wins_an_open_floor(fc, state):
+    """The two fixes have to coexist: the backstop must not eat what we keep.
+
+    A bid raised mid-turn is 30 seconds older than the *grant* but newer than
+    the invitation, and `Invitation.t` no longer moves as turns are spent — so
+    it measures as fresh, which is the entire point of keeping it.
+    """
+    state = _open_turn(fc, state)
+    state, _ = fc.reduce(
+        state,
+        AgentProposal(
+            t=29.0, input_t=28.5, agent="melia", utterance="Flag it all you want.", signals=strong()
+        ),
+    )
+    state, cmds = fc.reduce(state, AgentSpeechEnded(t=30.0, agent="dex", completed=True))
+    assert [c.agent for c in cmds if isinstance(c, StartSpeech)] == ["melia"]
+
+
 # ------------------------------------------------------------------- replay
 
 

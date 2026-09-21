@@ -65,8 +65,11 @@ class FloorConfig:
     # of the show. `no_candidate` deliberately does NOT clear the invitation —
     # an empty proposal set for two or three seconds is normal — so this is the
     # only thing that reaps a mis-addressed one. Measured from the invitation's
-    # last activity: `Invitation.spent()` refreshes the clock, so a live
-    # exchange never ages out. The introduction round is exempt.
+    # last activity, which `Invitation.spent()` stamps when a turn starts and
+    # `Invitation.touched()` stamps again when it ends, so a live exchange
+    # never ages out. Both are needed: with only the first, any turn longer
+    # than this closed the floor the moment it finished. The introduction round
+    # is exempt.
     invitation_ttl_s: float = 25.0
     # A later, vaguer invitation may not downgrade a live specific one inside
     # this window — "Melia, can you continue? ... is that okay?" is one act of
@@ -91,8 +94,9 @@ class FloorConfig:
     # those run 1-3s ahead of the final. A proposal older than this was written
     # against a different moment (the previous turn, or Ricky's preamble before
     # he had asked anything) and must not be aired in answer to a question it
-    # never heard. Only applies to *named* invitations: an open invitation is
-    # already protected by the score floor, which filler loses to.
+    # never heard. Applies to *named* invitations; `open_proposal_lookback_s`
+    # below is the same test for an open floor, and says why one number does
+    # not serve both.
     #
     # **This number is not "6.0, lowered".** The thing it measures changed.
     # `_stale` used to compare the invitation against `Proposal.t`, the moment
@@ -114,6 +118,31 @@ class FloorConfig:
     # re-measure generation latency on the venue rig first (CLAUDE.md
     # § Deployment).
     named_proposal_lookback_s: float = 2.0
+    # The same test on an open floor. The comment above used to end "only
+    # applies to named invitations: an open invitation is already protected by
+    # the score floor, which filler loses to" — and that was wrong twice over.
+    # A holding line written against Ricky's preamble ("I'll wait to hear where
+    # he's actually pointing this") clears `min_floor_priority` comfortably,
+    # and took an open floor on stage 21 Sept 2026 one millisecond after the
+    # invitation — far sooner than any generation started from the question
+    # could have finished. The second reason is new: `_agent_ended` now keeps
+    # proposals across a turn boundary, so the open candidate set routinely
+    # holds lines aimed at an earlier moment and something has to bound them.
+    #
+    # Measured against `Invitation.t`, the moment the floor opened, which no
+    # longer moves as turns are spent. So a bid written mid-turn is *newer*
+    # than the invitation and always fresh — which is the point; this window
+    # governs only how far ahead of the invitation speculation may have run.
+    #
+    # Not calibrated to catch that Melia line on its own: her input was frozen
+    # roughly 1.9s before the final, inside this window. The fix for the line
+    # itself is the speculative branch of `build_turn_prompt`, which asks an
+    # agent to answer a question Ricky has not asked yet. This is the backstop
+    # for the grossly old, and the dial to lower in rehearsal if filler still
+    # wins an open floor. Separate from the named window because the trade is
+    # different: refusing a named agent leaves a direct question unanswered,
+    # refusing here only means the panel does not volunteer for a beat.
+    open_proposal_lookback_s: float = 2.0
     # How long a named agent gets to finish writing before the floor gives up on
     # them and cues Ricky. Speechmatics' `EndOfTurn` lands within a few ms of the
     # final that names the agent, so arbitration runs before any generation
