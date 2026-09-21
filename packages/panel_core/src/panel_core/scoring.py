@@ -156,6 +156,46 @@ class FloorConfig:
     # panel cannot drift into an unbounded machine-to-machine conversation.
     max_consecutive_agent_turns: int = 3
 
+    # --- liveness watchdog ---
+    #
+    # **Neither of these is a turn-length limit.** Mid-turn steering was cut on
+    # 11 Sept 2026: turn length is a prompt instruction (GUARDRAILS in
+    # prompts.py) with no orchestrator-enforced ceiling, and the moderator
+    # handles overruns live (CLAUDE.md). A wall-clock ceiling on *speaking*
+    # would quietly reinstate that, and would genuinely fire on a healthy turn
+    # — `BrainConfig.max_tokens` is 1200, so a model ignoring "two or three
+    # sentences" can produce minutes of legitimate speech. So the question these
+    # ask is not "has this agent talked too long?" but "is any sound still
+    # coming out?". A turn producing audio is never touched at any length; a
+    # turn producing silence is broken however briefly it has been running.
+    #
+    # Without them, `state.speaking` is cleared by exactly one thing —
+    # `AgentSpeechEnded` — and every path that can fail to emit it (a dead TTS
+    # socket, a raising `_guard`, a crashed speak task, a hung brain stream, a
+    # faulted audio device) pins the floor to an agent who is not speaking for
+    # the rest of the show. The only recovery was Ricky talking, which forces
+    # the floor back via `_commit_human_interrupt`. That is a human noticing,
+    # not a system recovering.
+    #
+    # How long the agent gets to produce its *first* audio after the grant.
+    # Measured TTFB on the multi-stream endpoint is ~440ms median (tts.py), so
+    # this is ~10x headroom: it is here to catch "nothing ever arrived", not to
+    # police a slow start.
+    agent_first_audio_timeout_s: float = 5.0
+    # ...and how long a gap in audio is tolerated once it has started. The floor
+    # under this is the natural inter-chunk gap on a healthy turn, which should
+    # be near zero — the model writes at ~40 tok/s and the agent speaks at ~2.8
+    # words/s, so the mixer buffer should never run dry mid-turn (see
+    # `panel_runtime.panel.Candidate`) — but that is the assumption, not a
+    # measurement. The runtime counts buffered-but-unplayed audio as progress,
+    # so the end-of-turn drain does not read as a stall.
+    #
+    # Log inter-heartbeat gaps across a rehearsal and set this above their p99
+    # before trusting it, on the venue rig rather than a dev box (CLAUDE.md
+    # § Deployment). 2.0 is a starting point chosen so the audience hears about
+    # two seconds of dead air rather than a minute; it is not derived.
+    agent_audio_stall_timeout_s: float = 2.0
+
 
 BACKCHANNEL_LEXICON: frozenset[str] = frozenset(
     {

@@ -135,6 +135,19 @@ class Mixer:
             voice = self.voices.get(agent_id)
             return voice is None or voice.drained
 
+    def buffered_seconds(self, agent_id: str) -> float:
+        """How much audio is queued but not yet played.
+
+        Liveness evidence for the heartbeat (`PanelRuntime._pump_heartbeat`):
+        audio sitting here is audio the room is about to hear, so a turn
+        draining its tail is making progress even though no new chunk has
+        arrived from the provider. Without this the end of every turn reads as
+        a stall.
+        """
+        with self._lock:
+            voice = self.voices.get(agent_id)
+            return 0.0 if voice is None else voice.buffered_seconds
+
     # ----------------------------------------------------------- audio thread
 
     def render(self, frames: int) -> np.ndarray:

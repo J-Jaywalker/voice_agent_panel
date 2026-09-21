@@ -195,6 +195,28 @@ class AgentSpeechStarted:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentAudioProgress:
+    """Sound is still coming out of a speaking agent. The liveness heartbeat.
+
+    Emitted periodically by the runtime for whichever agent is on the PA, and
+    only on *evidence*: new audio arrived from the provider, or the mixer still
+    has buffered samples left to play. It is deliberately not a "the speak task
+    is alive" ping — a task blocked forever on a queue nobody will close is
+    alive in that sense, and is exactly the failure this exists to catch.
+
+    What the reducer does with the absence of these is `_stalled_speaker`. Note
+    what it is *not*: a turn-length ceiling. Mid-turn steering was cut on
+    11 Sept 2026 and turn length is a prompt instruction with no orchestrator
+    ceiling (CLAUDE.md) — so the watchdog this feeds measures silence, never
+    duration. A long turn that keeps producing audio is never touched, however
+    long it runs.
+    """
+
+    t: float
+    agent: str
+
+
+@dataclass(frozen=True, slots=True)
 class AgentSpeechEnded:
     """An agent's turn is over, carrying what it actually said.
 
@@ -245,6 +267,7 @@ Event = (
     | TurnYielded
     | AgentProposal
     | AgentSpeechStarted
+    | AgentAudioProgress
     | AgentSpeechEnded
     | Tick
     | OperatorCommand
@@ -260,6 +283,10 @@ class StopReason(str, Enum):
     HUMAN_INTERRUPT = "human_interrupt"
     OPERATOR = "operator"
     KILL = "kill"
+    # The agent held the floor but stopped producing audio. Not an interrupt
+    # and not a length limit: something downstream broke and the turn is being
+    # taken off a speaker who is no longer speaking. See `AgentAudioProgress`.
+    STALLED = "stalled"
 
 
 @dataclass(frozen=True, slots=True)

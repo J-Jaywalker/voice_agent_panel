@@ -53,6 +53,7 @@ from livekit.plugins import silero
 from panel_core import (
     HUMAN,
     AddressDetected,
+    AgentAudioProgress,
     AgentProposal,
     AgentSpeechEnded,
     AgentSpeechStarted,
@@ -96,6 +97,16 @@ from .tts import ElevenLabsTTS, TTSConfig
 console = Console()
 
 TICK_INTERVAL_S = 0.1  # drives turn-length deadlines and duration classification
+
+# How often a speaking agent reports that sound is still coming out of it.
+#
+# Well inside `FloorConfig.agent_audio_stall_timeout_s` (2.0s), because the
+# watchdog measures the gap between heartbeats: at this interval a healthy turn
+# has four chances to report before the floor is taken off it, so one late
+# event loop iteration is not a false positive. Cheap — it is a `put_nowait`
+# onto a queue the reducer is already draining, and `_agent_audio_progress`
+# emits no commands and does not repaint.
+HEARTBEAT_INTERVAL_S = 0.5
 
 # How long a `TurnYielded` may be held back waiting for an address verdict.
 #
@@ -144,6 +155,14 @@ class Candidate:
         self.agent = agent
         self._queue: asyncio.Queue[str | None] = asyncio.Queue()
         self._closed = False
+        # True while `sentences()` is blocked waiting for the model to write
+        # the next chunk. Read by `PanelRuntime._pump_heartbeat`, which counts
+        # it as progress: an agent whose audio has caught up with its own
+        # generation is not a broken audio path, and the liveness watchdog in
+        # `panel_core` must not take the floor off it. Bounding *generation*
+        # is a separate job with a separate mechanism — see the note in
+        # `_pump_heartbeat`.
+        self.awaiting_text = False
 
     async def add(self, sentence: str) -> None:
         await self._queue.put(sentence)
@@ -165,7 +184,14 @@ class Candidate:
 
     async def sentences(self):
         while True:
-            sentence = await self._queue.get()
+            self.awaiting_text = True
+            try:
+                sentence = await self._queue.get()
+            finally:
+                # In a `finally` so a cancelled turn does not leave the flag
+                # set: a stuck `awaiting_text` would suppress the liveness
+                # watchdog for whatever runs next.
+                self.awaiting_text = False
             if sentence is None:
                 return
             yield sentence
@@ -184,6 +210,25 @@ class Candidate:
             candidate._queue.put_nowait(sentence)
         candidate.close()
         return candidate
+
+
+class _AudioProgress:
+    """Evidence that a turn is still producing sound, for the heartbeat.
+
+    A counter rather than a flag, so `_pump_heartbeat` can tell "audio arrived
+    since I last looked" from "audio arrived at some point during this turn".
+    Deliberately *not* a liveness ping on the speaking task: a task blocked
+    forever awaiting a queue nobody will close is alive in that sense, and is
+    exactly the failure the watchdog exists to catch.
+    """
+
+    __slots__ = ("chunks",)
+
+    def __init__(self) -> None:
+        self.chunks = 0
+
+    def bump(self) -> None:
+        self.chunks += 1
 
 
 class PanelRuntime:
@@ -865,6 +910,12 @@ class PanelRuntime:
         self._print(f"[bold cyan]{persona.name}[/]")
         self.emit(AgentSpeechStarted(t=time.monotonic(), agent=command.agent))
 
+        progress = _AudioProgress()
+        heartbeat = asyncio.create_task(
+            self._pump_heartbeat(command.agent, progress, candidate),
+            name=f"heartbeat-{command.agent}",
+        )
+
         async def speak() -> None:
             spoken: list[str] = []
             try:
@@ -874,7 +925,18 @@ class PanelRuntime:
                     async for sentence in candidate.sentences():
                         spoken.append(sentence)
                         self._print(f"  {sentence}")
-                        await asyncio.sleep(len(sentence.split()) / 2.8)
+                        # Slept in slices rather than one long sleep so the
+                        # heartbeat keeps reporting through a long sentence, and
+                        # the watchdog is therefore exercised in --no-tts too.
+                        # A single `sleep(len/2.8)` is 10s for a 30-word
+                        # sentence, well past `agent_audio_stall_timeout_s`, so
+                        # the floor would be taken off every printed turn.
+                        remaining = len(sentence.split()) / 2.8
+                        while remaining > 0:
+                            slice_s = min(remaining, HEARTBEAT_INTERVAL_S / 2)
+                            await asyncio.sleep(slice_s)
+                            remaining -= slice_s
+                            progress.bump()
                 else:
                     turn = await self.tts.open(voice_id=persona.voice_id)
                     self._speaking_turn = turn
@@ -883,6 +945,10 @@ class PanelRuntime:
                     async def pump_audio() -> None:
                         async for chunk in turn.chunks():
                             self.mixer.feed(command.agent, chunk)
+                            # One bump per chunk off the socket: the heartbeat's
+                            # primary evidence, and the only one that
+                            # distinguishes a live provider from a dead one.
+                            progress.bump()
 
                     audio = asyncio.create_task(pump_audio(), name="tts-audio")
                     async for sentence in candidate.sentences():
@@ -909,7 +975,37 @@ class PanelRuntime:
                     )
                 )
                 return
+            except Exception as exc:  # noqa: BLE001 — see below; this must not be fatal
+                # Every raising path in the block above used to kill this task
+                # silently: `tts.open()` on a dead socket, `ElevenLabsTTS._guard`
+                # refusing a sentence as empty or as markup, `push()` on a socket
+                # that died mid-turn. `AgentSpeechEnded` was then never emitted,
+                # so `state.speaking` stayed pinned to this agent for the rest of
+                # the show — and nobody saw the traceback either, because this
+                # task is only ever cancelled, never awaited, so asyncio reported
+                # it as "Task exception was never retrieved" at GC time.
+                #
+                # `_stalled_speaker` in `panel_core` is the backstop and would
+                # recover the floor within `agent_audio_stall_timeout_s` even
+                # without this arm. Reporting it here is still worth it: the
+                # floor recovers immediately rather than two seconds later, the
+                # console says which agent broke and why, and the turn is
+                # recorded as `completed=False` with the words actually spoken
+                # instead of being inferred from silence.
+                self._print(
+                    f"  [red]x {persona.name} speech failed: {str(exc)[:80]}[/]"
+                )
+                self.emit(
+                    AgentSpeechEnded(
+                        t=time.monotonic(),
+                        agent=command.agent,
+                        completed=False,
+                        utterance=" ".join(spoken),
+                    )
+                )
+                return
             finally:
+                heartbeat.cancel()
                 self._speaking_turn = None
                 # The turn is over, so this generation's words are spent. Only
                 # this one: any other generation for the same agent is a fresh
@@ -927,6 +1023,67 @@ class PanelRuntime:
             )
 
         self._speaking_task = asyncio.create_task(speak(), name=f"speak-{command.agent}")
+
+    async def _pump_heartbeat(
+        self, agent: str, progress: _AudioProgress, candidate: Candidate
+    ) -> None:
+        """Report, while `agent` holds the PA, that sound is still coming out.
+
+        Consumed by `FloorController._stalled_speaker`, which takes the floor
+        off an agent that stops reporting. So this must only ever fire on real
+        evidence, and there are two kinds:
+
+        * `progress.chunks` advanced — audio arrived from the provider (or, in
+          --no-tts, the printed turn advanced).
+        * the mixer's buffer *shrank* — nothing new arrived, but the room is
+          hearing what did. Without this the tail of every turn reads as a
+          stall: `turn.finish()` is followed by a drain of whatever is
+          buffered, during which no chunk arrives by definition.
+
+        Shrank, not merely non-empty, and that distinction is load-bearing.
+        "The buffer has audio in it" is true forever if the audio device has
+        faulted and `Mixer.render` is no longer being called from the PortAudio
+        callback — which is one of the failures being caught, and is also the
+        one that hangs `speak()`'s unbounded `while not is_drained` loop. A
+        buffer that is not going down is not being played.
+
+        Neither test is a check that this coroutine, or the speaking task, is
+        running. That is the whole design: a `speak()` blocked forever on a
+        `Candidate` queue nobody will *close* would pass any liveness ping, and
+        is another of the failures being caught.
+
+        There is one deliberate blind spot, `Candidate.awaiting_text`. If the
+        agent's audio has caught up with the model still writing its turn, the
+        buffer empties and no chunk arrives — and that is not a broken audio
+        path, so it counts as progress and the floor is left alone. It does
+        mean a brain stream that hangs *mid-turn* is not caught here. That is
+        the right split: bounding generation belongs to the generation, and
+        `StreamingClaudeBrain.stream` currently has no timeout of its own
+        (`BrainConfig.timeout_s` is wired only to the non-streaming
+        `ClaudeBrain.propose`), so it is bounded by the Anthropic client's
+        600s read timeout. Fixing that is a separate change; conflating the two
+        here would only trade a real hang for a false positive on every agent
+        whose first sentence is short.
+
+        Cancelled from `speak()`'s `finally`, so it cannot outlive the turn and
+        refresh the clock for the next one. `_agent_audio_progress` ignores
+        heartbeats for an agent that is not `state.speaking` anyway, which
+        covers the window between cancellation and the reducer catching up.
+        """
+        seen = progress.chunks
+        buffered = self.mixer.buffered_seconds(agent)
+        while self._running:
+            await asyncio.sleep(HEARTBEAT_INTERVAL_S)
+            buffered_now = self.mixer.buffered_seconds(agent)
+            advanced = (
+                progress.chunks != seen
+                or buffered_now < buffered
+                or candidate.awaiting_text
+            )
+            seen = progress.chunks
+            buffered = buffered_now
+            if advanced:
+                self.emit(AgentAudioProgress(t=time.monotonic(), agent=agent))
 
     # -------------------------------------------------------------------- pumps
 

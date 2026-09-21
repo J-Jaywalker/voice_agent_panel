@@ -27,6 +27,7 @@ from enum import Enum
 from .events import (
     HUMAN,
     AddressDetected,
+    AgentAudioProgress,
     AgentProposal,
     AgentSpeechEnded,
     AgentSpeechStarted,
@@ -80,6 +81,7 @@ class CueReason(str, Enum):
     INVITATION_EXPIRED = "invitation_expired"  # TTL reaped one nobody acted on
     AGENT_TURN_LIMIT = "agent_turn_limit"
     INTRODUCTIONS_COMPLETE = "introductions_complete"
+    AGENT_STALLED = "agent_stalled"  # on the PA but producing no audio
 
 
 class AddressRole(str, Enum):
@@ -447,6 +449,8 @@ class FloorController:
                 return self._proposal(state, event)
             case AgentSpeechStarted():
                 return self._agent_started(state, event)
+            case AgentAudioProgress():
+                return self._agent_audio_progress(state, event)
             case AgentSpeechEnded():
                 return self._agent_ended(state, event)
             case Tick():
@@ -536,6 +540,7 @@ class FloorController:
             ducked_agent=None,
             floor_holder=HUMAN,
             consecutive_agent_turns=0,
+            last_audio_progress_t=None,
             proposals={},
             invitation=None,  # Ricky is taking the floor back
             address_conflict=(),
@@ -954,8 +959,130 @@ class FloorController:
             state=AgentState.SPEAKING,
             speaking_since=event.t,
         )
-        state = replace(state, speaking=event.agent, floor_holder=event.agent)
+        state = replace(
+            state,
+            speaking=event.agent,
+            floor_holder=event.agent,
+            # Arm the liveness watchdog for this turn. None means "no audio
+            # observed yet", so `_stalled_speaker` runs the first-audio budget
+            # from `speaking_since` set just above. Resetting it here is what
+            # makes the field unambiguously about the current turn: it is the
+            # only place a turn begins, so a heartbeat left over from the
+            # previous speaker can never be mistaken for this one's.
+            last_audio_progress_t=None,
+        )
         return state, [self._paint(state)]
+
+    def _agent_audio_progress(
+        self, state: PanelState, event: AgentAudioProgress
+    ) -> tuple[PanelState, list[Command]]:
+        """Note that the agent on the PA is still audibly speaking.
+
+        Ignored for anyone who is not currently `state.speaking`. Heartbeats are
+        emitted from the audio path and the floor can change underneath them —
+        a barge-in clears `speaking` while chunks for the stopped agent are
+        still in flight — so an unfiltered refresh would keep the watchdog's
+        clock alive for a turn that is already over, or worse, extend the *next*
+        agent's budget on the strength of the previous one's audio.
+
+        No commands: this is bookkeeping for `_stalled_speaker` and nothing
+        else. In particular it deliberately does not `_paint()`, or the console
+        and the video wall would repaint twice a second per turn for a value
+        neither of them shows.
+        """
+        if state.speaking != event.agent:
+            return state, []
+        return replace(state, last_audio_progress_t=event.t), []
+
+    def _stalled_speaker(
+        self, state: PanelState, now: float
+    ) -> tuple[PanelState, list[Command]]:
+        """Take the floor off an agent that has stopped producing audio.
+
+        The counterpart to `AgentAudioProgress`, and the only thing besides
+        `AgentSpeechEnded` and a human interrupt that can clear
+        `state.speaking`. That was the gap: `AgentSpeechEnded` is emitted by the
+        runtime's `speak()` task, so every way that task can die without
+        emitting it — a dead TTS socket, `ElevenLabsTTS._guard` refusing a
+        sentence, a hung brain stream, a faulted audio device, an unhandled
+        exception — pinned the floor to a silent agent permanently. `_tick`
+        returned `state, []` forever, the invitation TTL could not reap it
+        (it only runs with the floor idle) and the show was over. The only
+        recovery was Ricky speaking, which forces the floor back through
+        `_commit_human_interrupt`: a human noticing, not a system recovering.
+
+        Two budgets, picked by whether any audio has been heard yet — see
+        `PanelState.last_audio_progress_t`. Both are silence budgets, never
+        length budgets (`FloorConfig.agent_first_audio_timeout_s`).
+
+        This path writes nothing to the transcript. The words are known — they
+        are in the runtime's `Candidate` — but what the *room* heard is not,
+        and recording a line nobody heard is how the rest of the panel ends up
+        answering a speech that never happened. The `StopSpeech` below does
+        cancel a still-live speaking task, and that task's own handler reports
+        what it had pushed to TTS as an incomplete turn; that is the same
+        fidelity a human interrupt has always had. What matters here is that
+        the stall itself never invents a line.
+
+        The floor is left safe by this function alone rather than by trusting
+        the `AgentSpeechEnded` that `StopSpeech` will probably produce — the
+        reducer cannot depend on the runtime to finish clearing its own state.
+        The cost is that a *live* stalled task cues the moderator twice, once
+        here and once when its cancellation lands on `_agent_ended` with a
+        spent invitation. Two console lines on a failure path is a better
+        trade than a reducer whose recovery is conditional on the runtime.
+
+        The invitation is dropped rather than continued. A failure in one
+        agent's audio path is evidence about the shared path (one provider, one
+        device, one mixer), so handing straight to the next agent is as likely
+        to stall again as to recover. Ricky gets the beat and can re-ask, which
+        regenerates everything cleanly. That costs one turn of the exchange and
+        is the predictable choice; keeping the invitation live to save the beat
+        is the tempting one, and it is not worth being clever on the failure
+        path.
+        """
+        agent = state.speaking
+        if agent is None:
+            return state, []
+        last = state.last_audio_progress_t
+        if last is None:
+            started = state.agents[agent].speaking_since
+            if started is None:
+                # Speaking with no start time is not a state this reducer can
+                # produce (`_agent_started` sets both together). Nothing to
+                # measure from, so say nothing rather than guess a deadline.
+                return state, []
+            deadline = started + self.config.agent_first_audio_timeout_s
+        else:
+            deadline = last + self.config.agent_audio_stall_timeout_s
+        if now < deadline:
+            return state, []
+
+        state = state.with_agent(agent, state=AgentState.IDLE, speaking_since=None)
+        state = replace(
+            state,
+            speaking=None,
+            floor_holder=HUMAN,
+            consecutive_agent_turns=0,
+            last_audio_progress_t=None,
+            # A stalled agent may also have been ducked — Ricky can say "mm-hm"
+            # over a turn that is already broken — and the duck must not outlive
+            # the turn it applied to.
+            ducked_agent=None,
+            proposals={},
+            invitation=None,
+            address_conflict=(),
+            # Abandoned, not spent: the round has not "been done", so the
+            # one-shot latch stays open and the phrase can restart it cleanly.
+            # Same reasoning as `_commit_human_interrupt`.
+            intro_queue=None,
+        )
+        state = state.not_awaiting()
+        return state, [
+            StopSpeech(agent=agent, reason=StopReason.STALLED),
+            CueModerator(reason=CueReason.AGENT_STALLED),
+            self._paint(state),
+        ]
 
     def _agent_ended(
         self, state: PanelState, event: AgentSpeechEnded
@@ -967,7 +1094,7 @@ class FloorController:
             last_spoke_at=event.t,
         )
         if state.speaking == event.agent:
-            state = replace(state, speaking=None, floor_holder=None)
+            state = replace(state, speaking=None, floor_holder=None, last_audio_progress_t=None)
         if state.ducked_agent == event.agent:
             state = replace(state, ducked_agent=None)
 
@@ -1060,7 +1187,11 @@ class FloorController:
             # leftover, whatever its clock says.
             return self._expire_invitation(state, now=event.t)
 
-        return state, []
+        # Someone is on the PA. The one question left is whether they are
+        # actually making a sound — see `_stalled_speaker`. This is the only
+        # branch that used to return unconditionally empty, which is precisely
+        # why a silent speaker could hold the floor for the rest of the show.
+        return self._stalled_speaker(state, now=event.t)
 
     def _operator(
         self, state: PanelState, event: OperatorCommand

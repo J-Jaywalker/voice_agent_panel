@@ -23,7 +23,7 @@ stance: >-
 # speaks last without touching this text, so any reorder has to be carried
 # into this string and dexter.yaml/melia.yaml by hand.
 introduction: >-
-  I see we've saved the best for last, haha — I'm Wayne, autonomous
+  I see we've saved the best for last — I'm Wayne, autonomous
   financial partner and analyst at Servv AI. Five years now running
   capital allocation end to end there, and the board renewed my mandate
   twice and stopped asking to see my working somewhere around year two.

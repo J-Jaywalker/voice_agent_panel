@@ -171,6 +171,20 @@ class PanelState:
     ducked_agent: str | None = None
     human_speech_started_at: float | None = None
 
+    # When audio was last observed leaving the agent in `speaking`, or None if
+    # none has been observed for this turn yet. Written only by
+    # `FloorController._agent_audio_progress` (from `AgentAudioProgress`) and
+    # reset to None by `_agent_started`, so it always describes the *current*
+    # turn and a late heartbeat from the previous speaker cannot refresh it.
+    #
+    # None versus a timestamp is what picks the deadline: before any audio has
+    # arrived the clock runs from `AgentRuntime.speaking_since` against
+    # `FloorConfig.agent_first_audio_timeout_s` (TTS never delivered anything),
+    # and afterwards from here against `agent_audio_stall_timeout_s` (it
+    # delivered and then stopped). Two failures, two budgets, one field — see
+    # `FloorController._stalled_speaker`.
+    last_audio_progress_t: float | None = None
+
     turn_id: int = 0
     consecutive_agent_turns: int = 0
     beat_index: int = 0

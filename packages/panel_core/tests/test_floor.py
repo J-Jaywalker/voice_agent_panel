@@ -6,14 +6,17 @@ Because the core is pure, each of these runs in microseconds and cannot flake.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from panel_core import (
     HUMAN,
+    AgentAudioProgress,
     AgentProposal,
     AgentSpeechEnded,
     AgentSpeechStarted,
+    AgentState,
     CueModerator,
     DuckSpeech,
     FloorConfig,
@@ -662,8 +665,19 @@ def test_stop_reasons_do_not_include_an_agent_interrupt():
     `StopReason` is the operator console's and the video wall's vocabulary, so
     an agent-interrupt value reappearing there is the signal that the path came
     back with it.
+
+    The set is exhaustive on purpose — a new reason has to be added here
+    deliberately, which is what makes the tripwire worth anything. `stalled` is
+    one such addition (`FloorController._stalled_speaker`): it stops an agent
+    that is no longer producing audio, which is neither an interrupt nor a
+    length limit. Adding a value is fine; an agent-interrupt value is not.
     """
-    assert {r.value for r in StopReason} == {"human_interrupt", "operator", "kill"}
+    assert {r.value for r in StopReason} == {
+        "human_interrupt",
+        "operator",
+        "kill",
+        "stalled",
+    }
 
 
 # ------------------------------------------------------------- safety valves
@@ -1383,3 +1397,205 @@ def test_an_earlier_generation_is_still_usable_when_it_is_all_there_is(fc, state
         "speculation from inside the lookback window must still be airable"
     )
     assert granted[0].epoch == 1
+
+
+# ------------------------------------------------------- the liveness watchdog
+#
+# `state.speaking` used to be cleared by exactly one event, `AgentSpeechEnded`,
+# and every runtime path that can fail to emit it pinned the floor to a silent
+# agent for the rest of the show. These pin the recovery, and — just as
+# importantly — pin that it is a *silence* watchdog and not the turn-length
+# ceiling that was cut on 11 Sept 2026.
+
+
+def test_a_speaking_agent_producing_audio_keeps_the_floor_indefinitely(fc, state):
+    """The settled decision this must not quietly reverse.
+
+    Turn length is a prompt instruction with no orchestrator-enforced ceiling
+    (CLAUDE.md). An agent that keeps reporting audio holds the floor for as
+    long as it likes — two minutes here, far past any plausible turn — and the
+    watchdog must never be the thing that ends it.
+    """
+    state = speaking_agent(fc, state, agent="wayne", t=1.0)
+
+    t = 1.1
+    while t < 121.0:
+        state, cmds = run(
+            fc,
+            state,
+            AgentAudioProgress(t=t, agent="wayne"),
+            Tick(t=t + 0.5),
+        )
+        assert not [c for c in cmds if isinstance(c, StopSpeech)], f"cut off at t={t}"
+        t += 0.5
+
+    assert state.speaking == "wayne"
+
+
+def test_a_speaking_agent_that_goes_silent_loses_the_floor(fc, state):
+    """The failure that used to end the show.
+
+    No `AgentAudioProgress` and no `AgentSpeechEnded` — a dead TTS socket, a
+    crashed speak task, a faulted audio device all look like this from here.
+    """
+    state = speaking_agent(fc, state, agent="wayne", t=1.0)
+    state, _ = fc.reduce(state, AgentAudioProgress(t=1.5, agent="wayne"))
+
+    # Inside the stall budget: nothing happens.
+    state, cmds = fc.reduce(state, Tick(t=1.5 + fc.config.agent_audio_stall_timeout_s - 0.01))
+    assert not cmds
+    assert state.speaking == "wayne"
+
+    state, cmds = fc.reduce(state, Tick(t=1.5 + fc.config.agent_audio_stall_timeout_s))
+    stops = [c for c in cmds if isinstance(c, StopSpeech)]
+    assert [c.agent for c in stops] == ["wayne"]
+    assert stops[0].reason is StopReason.STALLED
+    assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [CueReason.AGENT_STALLED]
+    assert state.speaking is None, "the floor must not stay pinned to a silent agent"
+    assert state.floor_holder == HUMAN
+
+
+def test_an_agent_that_never_produces_any_audio_gets_the_longer_budget(fc, state):
+    """Two failures, two budgets.
+
+    "TTS never delivered anything" is measured from the grant and gets
+    `agent_first_audio_timeout_s`; "it delivered and then stopped" is measured
+    from the last heartbeat and gets the much tighter stall budget. With no
+    heartbeat at all, the tight one must not apply — a slow first byte is not
+    a broken turn.
+    """
+    state = speaking_agent(fc, state, agent="wayne", t=1.0)
+    started = state.agents["wayne"].speaking_since
+    assert started is not None
+
+    state, cmds = fc.reduce(state, Tick(t=started + fc.config.agent_audio_stall_timeout_s + 0.5))
+    assert not cmds, "the stall budget must not apply before any audio has been heard"
+    assert state.speaking == "wayne"
+
+    state, cmds = fc.reduce(state, Tick(t=started + fc.config.agent_first_audio_timeout_s))
+    assert [c.agent for c in cmds if isinstance(c, StopSpeech)] == ["wayne"]
+    assert state.speaking is None
+
+
+def test_a_stalled_turn_never_enters_the_transcript(fc, state):
+    """What the room heard is unknown, so nothing is recorded.
+
+    The words exist — they are in the runtime's `Candidate` — and writing them
+    down is how the rest of the panel ends up answering a speech that never
+    happened.
+    """
+    state = speaking_agent(fc, state, agent="wayne", t=1.0)
+    before = state.transcript
+
+    state, _ = run(fc, state, Tick(t=1.0 + fc.config.agent_first_audio_timeout_s + 1.0))
+    assert state.transcript == before
+    assert not [u for u in state.transcript if u.speaker == "wayne"]
+
+
+def test_a_heartbeat_for_a_non_speaking_agent_is_ignored(fc, state):
+    """Heartbeats come off the audio path and the floor moves underneath them.
+
+    A late heartbeat for the previous speaker must not extend the *current*
+    speaker's budget, which is what an unfiltered refresh would do.
+    """
+    state = speaking_agent(fc, state, agent="wayne", t=1.0)
+    state, cmds = fc.reduce(state, AgentAudioProgress(t=1.5, agent="dex"))
+    assert not cmds
+    assert state.last_audio_progress_t is None, "only the speaker's audio counts"
+
+    started = state.agents["wayne"].speaking_since
+    assert started is not None
+    state, cmds = fc.reduce(state, Tick(t=started + fc.config.agent_first_audio_timeout_s))
+    assert [c.agent for c in cmds if isinstance(c, StopSpeech)] == ["wayne"], (
+        "another agent's heartbeat kept a silent speaker on the floor"
+    )
+
+
+def test_the_watchdog_clock_does_not_carry_across_turns(fc, state):
+    """Each turn arms its own budget.
+
+    Wayne's healthy turn must not leave a fresh timestamp behind that gives
+    Dexter's broken one a head start it did not earn.
+    """
+    state = speaking_agent(fc, state, agent="wayne", t=1.0)
+    state, _ = run(
+        fc,
+        state,
+        AgentAudioProgress(t=1.5, agent="wayne"),
+        AgentSpeechEnded(t=2.0, agent="wayne", completed=True, utterance="Done."),
+    )
+    assert state.last_audio_progress_t is None
+
+    state, _ = fc.reduce(state, AgentSpeechStarted(t=2.1, agent="dex"))
+    assert state.last_audio_progress_t is None, "a new turn starts with no audio observed"
+    assert state.agents["dex"].speaking_since == 2.1
+
+
+def test_the_panel_carries_on_after_a_stall(fc, state):
+    """Recovery is the point: the next question must behave normally.
+
+    A stall is not a state the panel can be left in — Ricky re-asks, the floor
+    opens, an agent answers. If any of the stall bookkeeping leaked, this is
+    where it shows up.
+    """
+    state = speaking_agent(fc, state, agent="wayne", t=1.0)
+    state, _ = fc.reduce(state, Tick(t=1.0 + fc.config.agent_first_audio_timeout_s + 1.0))
+    assert state.speaking is None
+    assert state.invitation is None
+    assert state.proposals == {}
+    assert state.agents["wayne"].state is AgentState.IDLE
+
+    state, cmds = run(
+        fc,
+        state,
+        invite(20.0, "Dexter, what does that do to the architecture?"),
+        AgentProposal(t=20.1, input_t=20.0, agent="dex", utterance="", signals=strong()),
+        TurnYielded(t=20.2),
+    )
+    granted = [c for c in cmds if isinstance(c, StartSpeech)]
+    assert [c.agent for c in granted] == ["dex"], "the panel did not recover"
+
+
+def test_a_stall_leaves_an_unfinished_introduction_round_restartable(fc, state):
+    """Abandoned, not spent — the same rule a human interrupt follows.
+
+    The round has not "been done", so the one-shot latch must stay open and
+    the phrase must be able to restart it cleanly.
+    """
+    state, _ = fc.reduce(state, _introduce(0.0))
+    first = state.intro_queue[0] if state.intro_queue else None
+    assert first is not None
+    state, _ = fc.reduce(state, AgentSpeechStarted(t=0.5, agent=first))
+
+    state, _ = fc.reduce(state, Tick(t=0.5 + fc.config.agent_first_audio_timeout_s + 1.0))
+    assert state.intro_queue is None
+    assert not state.intro_done, "a stalled round must not latch as complete"
+
+    state, _ = fc.reduce(state, _introduce(30.0))
+    assert state.intro_queue is not None
+    assert set(state.intro_queue) == set(fc.cast.ids())
+
+
+def test_a_ducked_agent_that_stalls_does_not_leave_the_duck_behind(fc, state):
+    """Defensive, and unreachable on the default config — deliberately both.
+
+    A duck cannot survive long enough to stall under these numbers:
+    `backchannel_max_duration_s` is 0.6s and the tightest stall budget is 2.0s,
+    so `_tick`'s duration branch commits the interrupt (which clears the duck
+    itself) several ticks before the watchdog could look. The state is
+    therefore built directly rather than driven through events — reaching it
+    through `HumanSpeechStarted` would pass by testing the interrupt path
+    instead, which is the trap this comment exists to stop.
+
+    Pinned anyway because the two budgets are independent dials and a
+    rehearsal is free to move them past each other, at which point a duck
+    outliving the turn it applied to is an agent permanently attenuated for
+    the rest of the show.
+    """
+    state = speaking_agent(fc, state, agent="wayne", t=1.0)
+    state = replace(state, ducked_agent="wayne")
+
+    state, cmds = fc.reduce(state, Tick(t=1.1 + fc.config.agent_first_audio_timeout_s))
+    assert [c.agent for c in cmds if isinstance(c, StopSpeech)] == ["wayne"]
+    assert state.ducked_agent is None
+    assert state.speaking is None
