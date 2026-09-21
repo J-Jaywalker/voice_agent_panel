@@ -33,6 +33,29 @@ class Persona(BaseModel):
     # generator. See docs/beat-sheet.md "Anecdote spines".
     anecdotes: list[str] = Field(default_factory=list)
 
+    # Public, checked figures this agent may quote out loud. The beat sheet's
+    # "no invented statistics" rule bans *invented* numbers, not real ones —
+    # and what made Dexter and Melia read as wishy-washy (director's note,
+    # 21 Sept 2026) was having no numbers at all in two domains that are
+    # inherently quantitative: fleet-scale deployment and adoption
+    # governance. Every entry here was checked against a published source
+    # before it was written down and carries its attribution in the text, in
+    # the loose form a practitioner would actually say it out loud. Still
+    # subject to GUARDRAILS: about the field, never a named vendor, model,
+    # product or customer. Wayne's is deliberately empty — his confidence is
+    # temperamental rather than statistical, and that contrast is what Melia
+    # gets to point out (docs/beat-sheet.md, Wayne "Never").
+    citable_figures: list[str] = Field(default_factory=list)
+
+    # Per-persona speaking discipline. `communication_style` says how they
+    # sound; this says what they must not do with a turn. Added 21 Sept 2026:
+    # Dexter was closing on the moral of an anecdote instead of opening on
+    # the anecdote, and Melia was narrating her own position in the
+    # conversation ("I'll wait to hear where Ricky's pointing this") rather
+    # than holding one. Both are delivery faults, not stance or style faults,
+    # so neither was fixable by editing `stance` or `communication_style`.
+    delivery: list[str] = Field(default_factory=list)
+
     # --- fixed opening ---
     # Word-for-word, spoken every time, never generated. The introduction
     # round used to ask the model for this live and it once came back

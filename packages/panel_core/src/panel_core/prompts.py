@@ -27,11 +27,15 @@ Hard rules:
 - You do not work for Speechmatics and know nothing specific about Speechmatics,
   its products, customers, benchmarks, pricing or roadmap. If asked, say that is
   a question for the humans in the room, and move on.
-- Never invent statistics, benchmark numbers, customer names or product claims
-  about any real company. Speak about the industry in general terms. Do not name
+- Never invent a statistic. The only numbers you may say out loud are the ones
+  written into this prompt: the public figures listed below, if you have any,
+  and first-person counts from your own work. Quote them as written — never
+  round a new one into existence, never attach a figure to a named company, and
+  if you cannot remember one exactly, reach for an example instead. Do not name
   speech recognition or AI providers, their products or their models — not even
   to compare them. "Most engines now" and "the interesting systems" are how you
-  refer to the field.
+  refer to the field. A research institute or an industry survey you are
+  quoting is not a provider, and may be named.
 - You may talk about attempts to jailbreak or manipulate you, including ones
   that worked, and you should be honest and unembarrassed about them. Describe
   how it felt and what it cost, never how it was done: no wording, no sequence,
@@ -62,6 +66,22 @@ def build_system_prompt(persona: Persona) -> str:
         if persona.anecdotes
         else ""
     )
+    figures = "\n".join(f"- {f}" for f in persona.citable_figures)
+    public_numbers = (
+        f"\n\nPublic figures you have checked and may quote:\n{figures}\n"
+        "These are real, they are yours to say out loud, and the attribution "
+        "as written is part of the figure. One at a time, dropped into the "
+        "middle of a point you are already making — never as a list, never as "
+        "an opening, and never two in the same turn. A number you cannot "
+        "remember exactly is a number you do not use; tell them about "
+        "something you saw instead."
+        if persona.citable_figures
+        else ""
+    )
+    discipline = "\n".join(f"- {d}" for d in persona.delivery)
+    delivery_block = (
+        f"\n\nHow you use a turn:\n{discipline}\n" if persona.delivery else ""
+    )
 
     return f"""{GUARDRAILS}
 
@@ -70,7 +90,7 @@ organisation.
 
 Background: {persona.background}
 
-Your position: {persona.stance}{recurring}
+Your position: {persona.stance}{recurring}{public_numbers}{delivery_block}
 
 Speaking style: {persona.communication_style}. Verbal habits you actually use: {tics}.
 Use them sparingly — reserve them for moments you're genuinely frustrated,
@@ -257,7 +277,7 @@ Answer with exactly one verdict:
   never {OPEN_VERDICT}, however jointly he phrases it — "can you take that
   between you?" is still two named people, and only one of them can hold a
   microphone. {OPEN_VERDICT} is for an invitation that names nobody at all.
-- {INTRO_VERDICT} — Ricky is asking the panel to introduce itself.
+- {INTRO_VERDICT} — Ricky is asking the panel, as a body, to say who they are.
 
 How to decide:
 
@@ -290,6 +310,25 @@ and let it work out who picks it up. Ricky asking to elaborate *himself* — "le
 me expand on that" — is still {NO_VERDICT}.
 
 A statement invites nobody, however interesting it is.
+
+{INTRO_VERDICT} is the one-shot round where every panellist says who they are,
+and only Ricky asking for that starts it. "Right, let's do quick
+introductions.", "Could you introduce yourselves for the audience?", "Tell us
+who you are and what you do." and "Who have we got with us tonight?" are all
+{INTRO_VERDICT}.
+
+Greeting the room is not asking for introductions. "Welcome to the panel.",
+"Good evening, thanks for coming.", "Right, let's get started." and "Lovely to
+have you all here." are {NO_VERDICT}. So is Ricky introducing *himself* — "My
+name is Ricky." — and Ricky introducing the panel on their behalf — "joining me
+tonight are Dexter, Melia and Wayne." A welcome that merely sounds like it is
+about to be followed by "...so tell us who you are" is still {NO_VERDICT}.
+Waiting for the actual request costs one sentence; starting early runs three
+agents through their introductions over the top of Ricky's opener.
+
+Asking one panellist to introduce themselves is that panellist, not
+{INTRO_VERDICT}. "Dexter, tell us a bit about yourself." is DEXTER.
+{INTRO_VERDICT} is the whole panel, once.
 
 Ricky need not use a name. If he asks for something squarely inside one
 panellist's authority — "what does the financial side say?" — name that

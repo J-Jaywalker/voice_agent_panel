@@ -87,9 +87,19 @@ NEW_CAPABILITY: list[tuple[str, str]] = [
     ("Who owns the security question here?", "dex"),
     ("Right, let's do quick introductions.", INTRO_VERDICT),
     ("Could you introduce yourselves for the audience?", INTRO_VERDICT),
+    ("Who have we got with us tonight?", INTRO_VERDICT),
     ("Can we get the slides up?", NO_VERDICT),
     ("She's quite introverted, actually.", NO_VERDICT),
     ("Sorry, can we fix the mic on Dexter?", NO_VERDICT),
+    # A welcome is not a request for introductions. Seen live 21 Sept: "Welcome
+    # to the panel." came back INTRO and ran the whole round over the top of
+    # Ricky's next sentence, "My name is Ricky."
+    ("Welcome to the panel.", NO_VERDICT),
+    ("Good evening, thanks for coming.", NO_VERDICT),
+    ("My name is Ricky.", NO_VERDICT),
+    ("Joining me tonight are Dexter, Melia and Wayne.", NO_VERDICT),
+    # One panellist asked to introduce themselves is that panellist, not a round.
+    ("Dexter, tell us a bit about yourself.", "dex"),
 ]
 
 

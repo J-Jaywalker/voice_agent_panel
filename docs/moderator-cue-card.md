@@ -30,7 +30,7 @@ they invite nobody.
 | | Beat | Say | Elapsed |
 |---|---|---|---|
 | **0** | Introductions | *"Let's start with some quick introductions."* | 0:00 |
-| **1** | Where we are on the curve | *"So Wayne, where are we actually on the adoption curve?"* | ~1:30 |
+| **1** | Where we are on the curve | *"So, where are we actually on the adoption curve?"* | ~1:30 |
 | **2** | Where this could go | *"Dexter, what's actually changed?"* | ~4:00 |
 | | *…and what's in the way* | *"So Melia, what about the things in the way?"* | ~6:00 |
 | **3** | What STT can do now, and next | *"So Dexter, what can speech recognition actually do now?"* | ~7:30 |

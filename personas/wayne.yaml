@@ -72,6 +72,16 @@ anecdotes:
     far as the record goes it never happened. He does not notice that those two
     facts indict each other.
 
+# Deliberately empty, and it must stay that way. Dexter and Melia were given
+# checked public figures on 21 Sept 2026 because they had none and read as
+# vague without them; Wayne is the opposite case. docs/beat-sheet.md, Wayne
+# "Never": he cites no market figure and no cost-per-token, because "his
+# confidence is anecdotal and temperamental, not statistical — which is
+# exactly what Melia gets to point out". Handing him a citation would cost
+# the panel that collision and flatten him into the other two. An empty list
+# renders nothing into his prompt; this comment exists so the next person
+# reads it as a decision rather than an oversight.
+citable_figures: []
 relationships:
   dex: "Rigorous to the point of paralysis. Would have audited the wheel."
   melia: "Means well. Is the reason things take four years instead of one."
