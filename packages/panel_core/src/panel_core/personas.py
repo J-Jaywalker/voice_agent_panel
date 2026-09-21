@@ -146,7 +146,13 @@ class PanelCast(BaseModel):
     personas: dict[str, Persona]
 
     @classmethod
-    def from_dir(cls, directory: Path) -> PanelCast:
+    def from_dir(cls, directory: Path | str) -> PanelCast:
+        # Coerced rather than required. Every call site in the repo passes a
+        # Path already (argparse `type=Path`, or a module constant), so this is
+        # purely for the hand-typed one-liner in a shell or a docstring —
+        # `from_dir("personas")` used to fail with a bare AttributeError about
+        # `str` having no `glob`, which says nothing about what went wrong.
+        directory = Path(directory)
         personas: dict[str, Persona] = {}
         for path in sorted(directory.glob("*.yaml")):
             data = yaml.safe_load(path.read_text())

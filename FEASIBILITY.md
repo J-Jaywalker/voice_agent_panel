@@ -51,7 +51,7 @@ STT client has moved again since the ADR: Agent STT has no multi-channel mode �
 
 ### 3.4 Floor stays deterministic
 
-`floor.py` is pure `reduce(state, event) -> (state, commands)`. No network, no clock reads. Whole acceptance suite (floor, mixer, chunker) runs <1s, can't flake.
+`floor.py` is pure `reduce(state, event) -> (state, commands)`. No network, no clock reads. The whole of `panel_core` — floor, addressing, personas, prompts — is 226 tests in ~2s, with no I/O to flake on. (`uv run pytest` runs everything, 287 tests in ~3min; the slow tail is `panel_runtime`.)
 
 This still holds with the address classifier on (§3.7). A model answers *who did Ricky invite?* out in `panel_runtime`; the answer arrives as an `AddressDetected` event and is reduced like any other. `floor.py` never opens a socket, so a recorded log still replays identically through modified floor logic. What changed is that one input to the floor is now non-deterministic — not the floor itself.
 

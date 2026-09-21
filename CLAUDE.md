@@ -6,7 +6,8 @@ AI voice panel, 3 agents + human moderator, live on stage. 21 Oct 2026.
 
 ```bash
 uv sync
-uv run pytest            # floor + mixer + chunker, <1s
+uv run pytest                     # everything — 287 tests, ~3min
+uv run pytest packages/panel_core # floor logic only — 226 tests, ~2s. The tight loop.
 uv run panel-sim          # text-mode, offline stub brains
 uv run panel-sim --live   # text-mode, real model
 uv run panel              # live pipeline: mic -> STT -> floor -> TTS

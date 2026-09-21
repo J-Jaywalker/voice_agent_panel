@@ -10,8 +10,8 @@ decisions live in [`docs/adr/`](docs/adr/).
 
 ```bash
 uv sync
-uv run pytest              # everything
-uv run pytest packages/panel_core   # floor, mixer, chunker and phrasing criteria, <1s
+uv run pytest              # everything — 287 tests, ~3min
+uv run pytest packages/panel_core   # floor, addressing, personas, prompts — 226 tests, ~2s
 uv run panel-sim           # text-mode panel — no audio, no credentials
 uv run panel               # the live pipeline — mic in, agents out
 uv run barge-in            # interrupt reflex only — headphones required
