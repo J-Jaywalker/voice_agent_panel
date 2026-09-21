@@ -113,8 +113,9 @@ Ricky › /state       # dump floor state
 ```
 
 Edit `personas/*.yaml` and restart. **`/scores` is the feedback loop:** if an
-agent talks too much, look at what it scores itself, then adjust
-`interrupt_tendency` in the persona or the weights in `FloorConfig`.
+agent talks too much, look at what it scores itself, then adjust the weights in
+`FloorConfig` (`w_disagreement`, `w_urgency`, `recency_penalty`) or the
+persona's `topics_of_authority`.
 
 This needs no engineer — content and creative can drive it directly.
 
@@ -199,8 +200,8 @@ a recorded rehearsal replays identically through modified floor logic.
 
 If you need I/O, it goes in `panel_runtime`, not here.
 
-**2. Personas are data, not prose.** The floor controller reads
-`interrupt_tendency` and `topics_of_authority` at runtime.
+**2. Personas are data, not prose.** `topics_of_authority` is rendered into
+every prompt by `prompts.py` and read by the sim's stub brain.
 Editing a persona should never mean editing a prompt string — `prompts.py`
 renders the YAML.
 

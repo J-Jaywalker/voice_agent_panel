@@ -1271,11 +1271,6 @@ def main() -> None:
     parser.add_argument("--block", type=int, default=256)
     parser.add_argument("--no-tts", action="store_true", help="print turns instead of speaking")
     parser.add_argument(
-        "--agent-interrupts",
-        action="store_true",
-        help="let an agent cut off a speaking agent (off by default)",
-    )
-    parser.add_argument(
         "--llm-address",
         action="store_true",
         help=(
@@ -1297,7 +1292,6 @@ def main() -> None:
     runtime = PanelRuntime(
         cast,
         floor_config=FloorConfig(
-            allow_agent_interrupts=args.agent_interrupts,
             # One flag does both halves: the reducer starts reading
             # `AddressDetected`, and `PanelRuntime` builds the classifier that
             # produces it. Off, neither exists.

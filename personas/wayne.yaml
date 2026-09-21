@@ -36,8 +36,6 @@ speech_tics:
   - "Look —"
   - "Come on."
 
-interrupt_tendency: 0.8
-yield_tendency: 0.35
 topics_of_authority:
   - markets
   - cost curves

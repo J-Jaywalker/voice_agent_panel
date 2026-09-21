@@ -122,10 +122,7 @@ class Simulation:
 
             case StopSpeech():
                 name = self.cast[command.agent].name
-                console.print(
-                    f"  [red]⏹ {name} cut off[/] [dim]({command.reason.value}, "
-                    f"overlap {command.overlap_ms}ms)[/]"
-                )
+                console.print(f"  [red]⏹ {name} cut off[/] [dim]({command.reason.value})[/]")
 
             case HandsRaised():
                 hands = "  ".join(
@@ -291,11 +288,6 @@ def main() -> None:
     parser.add_argument("--effort", default="low", choices=["low", "medium", "high"])
     parser.add_argument("--log", type=Path, default=None, help="append an event log for replay")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument(
-        "--agent-interrupts",
-        action="store_true",
-        help="let an agent cut off a speaking agent (off by default)",
-    )
     args = parser.parse_args()
 
     cast = PanelCast.from_dir(args.personas)
@@ -307,12 +299,7 @@ def main() -> None:
     )
     console.print(HELP)
 
-    sim = Simulation(
-        cast,
-        brain,
-        FloorConfig(allow_agent_interrupts=args.agent_interrupts),
-        args.log,
-    )
+    sim = Simulation(cast, brain, FloorConfig(), args.log)
 
     while True:
         try:

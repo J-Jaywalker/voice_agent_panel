@@ -57,7 +57,7 @@ from .prompts import (
     OPEN_VERDICT,
     sanitise,
 )
-from .scoring import FloorConfig, floor_priority, is_backchannel, may_interrupt
+from .scoring import FloorConfig, floor_priority, is_backchannel
 from .state import AgentState, Invitation, InvitationSource, PanelState, Proposal, Utterance
 
 
@@ -526,7 +526,6 @@ class FloorController:
                 StopSpeech(
                     agent=agent,
                     reason=StopReason.HUMAN_INTERRUPT,
-                    overlap_ms=0,  # never talk over Ricky
                     duck_ms=self.config.human_duck_ms,
                 )
             )
@@ -940,40 +939,11 @@ class FloorController:
         if state.awaiting_agent == event.agent:
             state = state.not_awaiting()
 
-        # A proposal arriving while another *agent* is speaking is an
-        # interruption request. Off unless `allow_agent_interrupts` says
-        # otherwise (see `FloorConfig`) — with it off, the proposal is simply
-        # stored and the speaker runs to the end of their turn, which is the
-        # ordinary path below. Humans are never interrupted, and an agent may
-        # only cut in while the panel legitimately holds the floor — an operator
-        # override is not an invitation for everyone else to pile in.
-        if (
-            self.config.allow_agent_interrupts
-            and state.speaking is not None
-            and state.speaking != event.agent
-            and state.invitation is not None
-        ):
-            speaker = state.agents[state.speaking]
-            if may_interrupt(
-                signals=event.signals,
-                persona=self.cast[event.agent],
-                now=event.t,
-                speaker_started_at=speaker.speaking_since,
-                challenger_last_spoke_at=agent.last_spoke_at,
-                config=self.config,
-            ):
-                commands: list[Command] = [
-                    StopSpeech(
-                        agent=state.speaking,
-                        reason=StopReason.AGENT_INTERRUPT,
-                        overlap_ms=self.config.interrupt_overlap_ms,
-                    )
-                ]
-                state = state.with_agent(state.speaking, state=AgentState.IDLE, speaking_since=None)
-                state = replace(state, speaking=None)
-                granted_state, grant_cmds = self._grant(state, event.agent, now=event.t)
-                return granted_state, commands + grant_cmds
-
+        # A proposal arriving while another *agent* is speaking is just stored.
+        # The speaker runs to the end of their turn and the bid waits for the
+        # next arbitration — agents pass turns, they never cut each other off
+        # (scoped out 21 Sept 2026). Nothing is thrown away, which is the whole
+        # difference between this and refusing the proposal.
         return state, []
 
     def _agent_started(
@@ -1010,22 +980,20 @@ class FloorController:
 
         commands: list[Command] = [self._paint(state)]
 
-        if not event.completed and state.speaking is not None:
-            # Cut off by an agent interrupt — the challenger was already
-            # granted the floor synchronously, in the same reduce() call that
-            # issued the StopSpeech. `state.speaking` is that challenger, not
-            # this agent (an interrupted turn always clears its own
-            # `speaking` a few lines up), so there is nothing left to
-            # arbitrate here.
-            #
-            # A human interrupt or a turn-limit hard stop also arrives with
-            # `completed=False`, but both clear `state.speaking` to None
-            # themselves before this event lands — so they fall through to
-            # the same continuation logic as a normal completion. That is
-            # deliberate: nobody else has taken the floor, so the panel (or
-            # the introduction round) must still be given its next turn
-            # rather than stalling silently until Ricky speaks again.
-            return state, commands
+        # An incomplete turn (`completed=False`) needs no special case. Every
+        # path that can cut an agent off — a human interrupt, a turn-limit hard
+        # stop, an operator action, a kill — clears `state.speaking` to None
+        # itself before this event lands, so all of them fall through to the
+        # same continuation logic as a normal completion. That is deliberate:
+        # nobody else has taken the floor, so the panel (or the introduction
+        # round) must still be given its next turn rather than stalling
+        # silently until Ricky speaks again.
+        #
+        # The one case that *did* need a branch here was an agent interrupt,
+        # where the challenger already held the floor by the time the
+        # interrupted agent's own `AgentSpeechEnded` arrived. That path was
+        # removed on 21 Sept 2026; nothing can now leave another agent speaking
+        # at this point.
 
         # A completed agent turn does NOT reopen the floor. The panel continues
         # only if the invitation had turns left on it; otherwise it goes back to

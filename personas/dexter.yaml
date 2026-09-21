@@ -36,8 +36,6 @@ speech_tics:
   - "Right, but —"
   - "Historically,"
 
-interrupt_tendency: 0.3
-yield_tendency: 0.75
 topics_of_authority:
   - security
   - jailbreaking

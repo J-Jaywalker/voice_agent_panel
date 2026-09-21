@@ -42,9 +42,7 @@ from .prompts import (
 from .scoring import (
     FloorConfig,
     floor_priority,
-    interrupt_score,
     is_backchannel,
-    may_interrupt,
 )
 from .state import (
     AgentState,
@@ -97,9 +95,7 @@ __all__ = [
     "build_system_prompt",
     "build_turn_prompt",
     "floor_priority",
-    "interrupt_score",
     "is_backchannel",
-    "may_interrupt",
     "sanitise",
     "stable_prefix",
 ]

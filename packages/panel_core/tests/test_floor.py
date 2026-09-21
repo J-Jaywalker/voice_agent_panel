@@ -55,16 +55,6 @@ def fc(cast: PanelCast) -> FloorController:
 
 
 @pytest.fixture
-def fc_interrupts(cast: PanelCast) -> FloorController:
-    """Agent-interrupts-agent switched back on — off in the shipped default.
-
-    The tuning below it (threshold, grace, cooldown) is still live config, so
-    it still needs covering; it just no longer fires on the `fc` fixture.
-    """
-    return FloorController(cast, FloorConfig(allow_agent_interrupts=True))
-
-
-@pytest.fixture
 def state(cast: PanelCast) -> PanelState:
     return PanelState.for_agents(cast.ids())
 
@@ -163,7 +153,6 @@ def test_sustained_speech_commits_an_interrupt_on_duration(fc, state):
 
     stops = [c for c in cmds if isinstance(c, StopSpeech)]
     assert stops and stops[0].reason is StopReason.HUMAN_INTERRUPT
-    assert stops[0].overlap_ms == 0, "must never talk over the moderator"
     assert state.speaking is None
     assert state.floor_holder == HUMAN
 
@@ -601,17 +590,17 @@ def test_agent_can_hand_off_to_a_better_placed_colleague(fc, state):
     assert [c.agent for c in cmds if isinstance(c, StartSpeech)] == ["wayne"]
 
 
-# --------------------------------------------------------------- interrupting
+# --------------------------------------------------- agents never cut in
 
 
-def test_default_config_does_not_let_an_agent_interrupt_an_agent(fc, state):
-    """The shipped default: a maximal interruption bid is stored, not aired.
+def test_an_agent_never_interrupts_a_speaking_agent(fc, state):
+    """A maximal interruption bid is stored, not aired.
 
-    Same setup as the test below it, on the default `fc` fixture rather than
-    `fc_interrupts`. Wayne keeps the floor, Dexter's proposal stays in
-    `state.proposals` where the next arbitration can find it, and nothing is
-    thrown away — which is the whole difference between disabling this and
-    deleting it.
+    Agents pass turns; they never cut each other off (scoped out 21 Sept 2026,
+    and the config that allowed it is gone). Wayne keeps the floor, Dexter's
+    proposal stays in `state.proposals` where the next arbitration can find it,
+    and nothing is thrown away — storing the bid rather than refusing it is the
+    behaviour worth pinning here.
     """
     state, _ = run(
         fc,
@@ -637,78 +626,14 @@ def test_default_config_does_not_let_an_agent_interrupt_an_agent(fc, state):
     assert "dex" in state.proposals, "the bid is kept for the next arbitration"
 
 
-def test_strong_disagreement_interrupts_a_speaking_agent(fc_interrupts, state):
-    fc = fc_interrupts
-    state, _ = run(
-        fc,
-        state,
-        invite(0.0),
-        AgentProposal(t=0.0, agent="wayne", utterance="Completely useless.", signals=strong()),
-        TurnYielded(t=1.0),
-        AgentSpeechStarted(t=1.1, agent="wayne"),
-    )
+def test_a_speaking_agent_finishes_even_against_a_maximal_bid(fc, state):
+    """No signal strength, and no elapsed time, buys a cut-in.
 
-    state, cmds = fc.reduce(
-        state,
-        AgentProposal(
-            t=5.0,  # past the interrupt grace window
-            agent="dex",
-            utterance="Sorry, I've got to disagree there.",
-            signals=strong(disagreement=0.96, urgency=0.9),
-        ),
-    )
-    stops = [c for c in cmds if isinstance(c, StopSpeech)]
-    starts = [c for c in cmds if isinstance(c, StartSpeech)]
-    assert stops[0].agent == "wayne"
-    assert stops[0].reason is StopReason.AGENT_INTERRUPT
-    assert stops[0].overlap_ms > 0, "brief overlap is what reads as a real argument"
-    assert starts[0].agent == "dex"
-
-
-def test_stale_end_of_an_interrupted_turn_does_not_disturb_the_challenger(
-    fc_interrupts, state
-):
-    """The interrupted agent's own AgentSpeechEnded arrives after the
-    challenger already has the floor. It must not re-trigger continuation
-    logic (extra RequestProposals, popping an introduction queue, etc.) —
-    the challenger, not the arbitrator, owns what happens next.
-
-    This is the `_agent_ended` branch that only agent interrupts can reach,
-    which is most of what `allow_agent_interrupts=False` buys back."""
-    fc = fc_interrupts
-    state, _ = run(
-        fc,
-        state,
-        invite(0.0),
-        AgentProposal(t=0.0, agent="wayne", utterance="Completely useless.", signals=strong()),
-        TurnYielded(t=1.0),
-        AgentSpeechStarted(t=1.1, agent="wayne"),
-    )
-    state, cmds = fc.reduce(
-        state,
-        AgentProposal(
-            t=5.0,
-            agent="dex",
-            utterance="Sorry, I've got to disagree there.",
-            signals=strong(disagreement=0.96, urgency=0.9),
-        ),
-    )
-    assert [c.agent for c in cmds if isinstance(c, StartSpeech)] == ["dex"]
-    state, _ = fc.reduce(state, AgentSpeechStarted(t=5.05, agent="dex"))
-    assert state.speaking == "dex"
-
-    state, cmds = fc.reduce(
-        state,
-        AgentSpeechEnded(t=5.1, agent="wayne", completed=False, utterance="Completely..."),
-    )
-    assert state.speaking == "dex", "the challenger keeps the floor"
-    assert not [c for c in cmds if isinstance(c, RequestProposals)]
-    assert not [c for c in cmds if isinstance(c, CueModerator)]
-
-
-def test_no_interrupt_inside_the_grace_window(fc_interrupts, state):
-    """Cutting in half a second into a turn just looks broken."""
-    fc = fc_interrupts
+    The removed path was gated on disagreement x urgency clearing a threshold
+    once a grace window had passed. Both extremes are pinned here so a future
+    re-introduction has to delete a test rather than quietly flip a default:
+    maximal signals well past any plausible grace window still change nothing.
+    """
     state, _ = run(
         fc,
         state,
@@ -717,32 +642,28 @@ def test_no_interrupt_inside_the_grace_window(fc_interrupts, state):
         TurnYielded(t=1.0),
         AgentSpeechStarted(t=1.1, agent="wayne"),
     )
-    _, cmds = fc.reduce(
-        state,
-        AgentProposal(
-            t=1.5, agent="dex", utterance="No.", signals=strong(disagreement=1.0, urgency=1.0)
-        ),
-    )
-    assert not [c for c in cmds if isinstance(c, StopSpeech)]
+    for t, challenger in ((1.5, "dex"), (6.0, "melia"), (30.0, "dex")):
+        _, cmds = fc.reduce(
+            state,
+            AgentProposal(
+                t=t,
+                agent=challenger,
+                utterance="No.",
+                signals=strong(disagreement=1.0, urgency=1.0),
+            ),
+        )
+        assert not [c for c in cmds if isinstance(c, StopSpeech)], f"cut in at t={t}"
+        assert not [c for c in cmds if isinstance(c, StartSpeech)], f"granted at t={t}"
 
 
-def test_mild_disagreement_does_not_interrupt(fc_interrupts, state):
-    fc = fc_interrupts
-    state, _ = run(
-        fc,
-        state,
-        invite(0.0),
-        AgentProposal(t=0.0, agent="wayne", utterance="Look —", signals=strong()),
-        TurnYielded(t=1.0),
-        AgentSpeechStarted(t=1.1, agent="wayne"),
-    )
-    _, cmds = fc.reduce(
-        state,
-        AgentProposal(
-            t=6.0, agent="melia", utterance="Mm.", signals=strong(disagreement=0.4, urgency=0.4)
-        ),
-    )
-    assert not [c for c in cmds if isinstance(c, StopSpeech)]
+def test_stop_reasons_do_not_include_an_agent_interrupt():
+    """The vocabulary itself is the guarantee.
+
+    `StopReason` is the operator console's and the video wall's vocabulary, so
+    an agent-interrupt value reappearing there is the signal that the path came
+    back with it.
+    """
+    assert {r.value for r in StopReason} == {"human_interrupt", "operator", "kill"}
 
 
 # ------------------------------------------------------------- safety valves

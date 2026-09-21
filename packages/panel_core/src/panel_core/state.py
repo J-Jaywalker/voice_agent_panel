@@ -152,7 +152,9 @@ class PanelState:
 
     floor_holder: str | None = None  # agent id, HUMAN, or None (open)
     speaking: str | None = None  # agent id currently producing audio
-    # The floor is closed unless this is set. See FEASIBILITY.md 3.8.
+    # The floor is closed unless this is set. See FEASIBILITY.md 3.4 for who
+    # decides that it opens (the classifier, or the regex) versus who wins it
+    # once open (scoring), and CLAUDE.md "Floor closed by default".
     invitation: Invitation | None = None
     # Agents that tied for "the one Ricky addressed", when the utterance named
     # more than one in the same grammatical role. Ambiguity is an outcome, not

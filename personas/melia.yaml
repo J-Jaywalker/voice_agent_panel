@@ -41,8 +41,6 @@ speech_tics:
   - "Mm."
   - "Can I just —"
 
-interrupt_tendency: 0.45
-yield_tendency: 0.6
 topics_of_authority:
   - trust
   - oversight

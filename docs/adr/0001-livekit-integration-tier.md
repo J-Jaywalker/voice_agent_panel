@@ -74,9 +74,51 @@ Mechanic 3 is where Tier A collapses: speculation is what takes the post-turn ga
 
 STT client changed from `speechmatics-rt` (released SDK) to **Agent STT**, a preview WebSocket API, spoken directly via `websockets` (no released client yet). Doesn't reopen this ADR — Tier B, "own the mixer," "no `AgentSession`" unaffected. What changes: the end-of-turn silence-threshold tuning this ADR discusses no longer exists — Agent STT emits its own `EndOfTurn` natively, no local knob. Trades a tuning surface we could regression-test in `panel_core` for one we can't — watch in rehearsal, no code-side fix if it's too eager/slow on the venue rig. `speechmatics-rt` is no longer a dependency.
 
+## Addendum — 21 Sept 2026: what "LiveKit as a library" actually came to mean
+
+The decision above says "take audio transport, VAD (Silero), TTS plugins." Only
+the VAD was ever taken. Current usage is exhaustively:
+
+- `silero.VAD.load(...)` — `panel.py`
+- `rtc.AudioFrame(...)` — a container to push PCM into Silero
+- `lkvad.VADEventType` — reading the stream
+
+Audio I/O is `sounddevice`/PortAudio, the mixer is ours, TTS is ElevenLabs over
+raw `websockets`, STT is Agent STT over raw `websockets`. Deps are
+`livekit-agents` and `livekit-plugins-silero`. **LiveKit is a Silero wrapper in
+this codebase.** FEASIBILITY §3.3 already described it correctly; this ADR's
+decision line did not. Recorded so nobody reads "transport" here and assumes a
+room, a track or an SFU exists to build on.
+
+Practical consequence: "should we adopt the framework after all?" is not a
+config change, it is a rewrite of the audio path.
+
+## Addendum — 21 Sept 2026: scope change, and a re-run of the four mechanics
+
+Two changes: agent-to-agent barge-in is no longer wanted (agents pass turns,
+they never cut each other off), and floor *opening* is now decided by a Haiku
+classifier (ADR 0002). Re-running the table:
+
+| # | Mechanic | Still load-bearing? |
+|---|---|---|
+| 1 | Barge-in latency | **Yes.** Human barge-in is unchanged; duck-first-classify-after lives in the reducer. |
+| 2 | Simultaneous speech | **Yes, more so.** More agent-to-agent turn passing (FEASIBILITY §3.8) means one mixer owning one channel matters more, not less. |
+| 3 | Speculation | **Yes, still decisive.** Racing generations, per-round epochs and `written_against_t` staleness (§3.5) are not expressible through `AgentSession`; [livekit/agents#5026](https://github.com/livekit/agents/issues/5026) is unchanged. |
+| 4 | Controlled overlap | **No.** It existed only for agent-to-agent interrupts, and `panel_runtime` never honoured `interrupt_overlap_ms` anyway — `_execute` stops the mixer immediately. Both were deleted on 21 Sept 2026; mechanic 4 no longer argues for anything. |
+
+One of four falls away, and it is the one that was never implemented. **Tier B
+stands.** There is also no latency argument for reversing it: the gains in
+`96cb1da` came from not cancelling generations, per-round epochs, and holding
+`TurnYielded` for the verdict — all three require owning the loop.
+
+ADR 0002 does not reopen this one either. The classifier is a model call in
+`panel_runtime` whose answer enters the reducer as an event; "own the mixer" and
+"no `AgentSession`" are untouched.
+
 ## References
 
-- FEASIBILITY.md §3.1 (echo isolation), §3.2 (VAD vs STT), §3.3 (LiveKit), §3.5 (speculation), §3.6 (overlap), §8.1 (spike)
+- FEASIBILITY.md §3.1 (echo isolation), §3.2 (VAD vs STT), §3.3 (LiveKit), §3.5 (speculation), §3.6 (overlap), §3.7 (classifier), §3.8 (agent-to-agent), §8.1 (spike)
+- ADR 0002 — address detection by classifier
 - `livekit-plugins-speechmatics` 1.7.1 · `speechmatics-voice` 0.2.8
 - Speechmatics Agent STT: preview API, `wss://preview.rt.speechmatics.com/v2/agent`
 - Speechmatics Flow: deprecated, confirmed internally 3 Sept 2026

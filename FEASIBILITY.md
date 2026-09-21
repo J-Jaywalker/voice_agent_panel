@@ -43,7 +43,7 @@ Silero VAD for barge-in detection, Agent STT `EndOfTurn` for finalization to LLM
 | Audio I/O, mixer | `sounddevice`/PortAudio, direct |
 | TTS + cancellation | ElevenLabs `multi-stream-input`, hand-rolled over raw `websockets` |
 | STT, one connection per mic | Agent STT (Speechmatics preview API), raw `websockets` |
-| Floor, interrupts, overlap, turn caps | `panel_core` |
+| Floor, human interrupts, turn caps | `panel_core` |
 
 No `AgentSession`, no cloud SFU, no `speechmatics-voice`. TTS ended up hand-rolled for the same reason STT did: cancellation latency must be our code's property, not a plugin's.
 
@@ -52,6 +52,17 @@ STT client has moved again since the ADR: Agent STT has no multi-channel mode �
 ### 3.4 Floor stays deterministic
 
 `floor.py` is pure `reduce(state, event) -> (state, commands)`. No network, no clock reads. Whole acceptance suite (floor, mixer, chunker) runs <1s, can't flake.
+
+This still holds with the address classifier on (§3.7). A model answers *who did Ricky invite?* out in `panel_runtime`; the answer arrives as an `AddressDetected` event and is reduced like any other. `floor.py` never opens a socket, so a recorded log still replays identically through modified floor logic. What changed is that one input to the floor is now non-deterministic — not the floor itself.
+
+Two decisions, and keeping them apart is the point:
+
+| Decision | Who makes it |
+|---|---|
+| Is the floor open, and to whom? | Haiku classifier (§3.7), or the regex with the flag off |
+| Who wins an *open* floor? | `scoring.py` — deterministic, no LLM, unit-tested |
+
+On a *named* verdict the score floor is bypassed entirely (`_arbitrate`: "Ricky named them. They answer"), so on most turns the classifier's verdict is the decision.
 
 ### 3.5 Speculative generation
 
@@ -67,23 +78,84 @@ Cost is generation (~200 tokens @ ~40 tok/s), not reasoning. Streaming removes 1
 Each agent proposes during the human's turn, not just at EOU — generation is usually underway or done by the time the floor needs an answer. Three qualifications, all from the same live failure (an agent answering "So, Wayne, uh" with "Take your time, Ricky — we'll be here", aired because a named invitation bypasses the score floor):
 
 - A partial under `speculation_min_words` is not worth asking about. Speechmatics segments on pauses, so every turn opens with a fragment.
-- One stream per agent at a time, torn down and restarted when a *final* replaces the text it was generated against (`PanelState.speculation_epoch`). Per-final, not per-partial: cancelling every 0.8s is what used to leave `state.proposals` empty at the first arbitration.
+- Generations race; none is cancelled. Every round takes a fresh `PanelState.speculation_epoch`, so `(agent, epoch)` names exactly one generation and several per agent are deliberately in flight at once. `_proposal` keeps whichever is newest by epoch rather than whichever arrives last. **This replaces the earlier cancel-on-final rule, and removing that teardown was the single biggest dead-air fix on stage** — `EndOfTurn` lands within a few ms of the final that names an agent, so the teardown used to fire at the exact moment the work was needed, and the full cold generation latency sat on the critical path every turn. Labelling per *round* rather than per final matters too: under per-final epochs the slowest agent structurally always got the stalest input.
 - A line written more than `named_proposal_lookback_s` before the question cannot answer it. A silent arbitration re-requests against the completed turn, so this costs a beat rather than the answer.
 
 Not re-measured: Sonnet 5 at `effort: "low"` (§10 #3) wasn't a direct S0.7 row — Sonnet alone at `low` was 4110-4129ms one-shot. Streaming should cut it proportionally.
 
-### 3.6 Controlled overlap on interrupts
+### 3.6 Interrupts — Ricky only
 
 Duck-first-classify-after (S0.2), not the originally proposed flat 300–500ms overlap + hard duck.
 
-- Ricky interrupts agent: instant duck, zero overlap (`human_duck_ms = 90`).
-- Agent interrupts agent: **off by default** (`FloorConfig.allow_agent_interrupts = False`,
-  18 Sept). Re-enable per run with `panel --agent-interrupts` /
-  `panel-sim --agent-interrupts`. The designed 380ms overlap
-  (`interrupt_overlap_ms`) is asserted on the command and rendered by
-  `panel_sim`, but `panel_runtime` has never honoured it — its `StopSpeech`
-  handler stops the mixer immediately, so on stage this was a hard cut, not an
-  overlap. Fix that before switching it back on for the show.
+**Ricky interrupts agent:** instant duck, then a hard stop once classification resolves (`human_duck_ms = 90`). This is the only interrupt in the system.
+
+**Agent interrupts agent: removed, 21 Sept 2026.** Scoped out — agents pass turns, they never cut each other off. Deleted rather than disabled: `allow_agent_interrupts`, `interrupt_threshold`, `interrupt_grace_s`, `interrupt_cooldown_s`, `interrupt_overlap_ms`, `interrupt_score()`, `may_interrupt()`, `StopReason.AGENT_INTERRUPT`, the `_proposal` cut-in branch, the `_agent_ended` branch only it could reach, and both `--agent-interrupts` flags. Pinned by `test_an_agent_never_interrupts_a_speaking_agent` and `test_stop_reasons_do_not_include_an_agent_interrupt`.
+
+**Controlled overlap: removed with it, and was never implemented.** `StopSpeech.overlap_ms` was set by the reducer, asserted in tests and printed as a string by `panel_sim`, but `panel_runtime` never read it — `_execute` calls `mixer.stop()` immediately. On stage this was always a hard cut. The field is gone; `StopSpeech` is now unconditionally an immediate stop.
+
+The mixer still clips on summed lanes (`test_overlapping_agents_do_not_clip_the_output`). Nothing deliberately overlaps two agents now, but a draining tail under a new grant can still sum briefly, and the PA should not be the thing that discovers it.
+
+Agent-to-agent *conversation* is unaffected and still wanted; see §3.8.
+
+### 3.7 Address detection by classifier — ADR 0002
+
+Who did Ricky just invite? Answered by `claude-haiku-4-5` in
+`panel_runtime.address`, behind `FloorConfig.llm_address_detection`
+(`panel --llm-address`). **Off by default**; with the flag off the classifier is
+never even constructed and the regex in `floor.py` runs instead.
+
+Why a model at all: a regex cannot resolve a *descriptive* reference. "What does
+the financial side make of that?" is Wayne, and no pattern over the transcript
+can know that — the fact that makes it true lives in `personas/wayne.yaml`.
+
+Seven verdict tokens, rendered from the cast: `DEXTER` / `MELIA` / `WAYNE` /
+`OPEN` / `NONE` / `AMBIGUOUS` / `INTRO`. `address_verdicts()` raises if two share
+an initial, because the whole latency argument rests on decoding from the first
+content delta.
+
+Latency design — the verdict sits exactly where the floor opens, which is the
+moment this project spent weeks clearing:
+
+- decoded from the **first content delta**, not the finished message. Time-to-verdict ≈ time-to-first-token;
+- the human-readable reason keeps streaming in the background and is never waited on;
+- partials are **speculatively classified** while Ricky is still talking, so the common case at finalisation is a cache hit at zero measured cost;
+- an in-flight speculation for *exactly* the finalised text is **joined**, not cancelled;
+- **fails closed to the regex** (`verdict=None`) on timeout or error — never invents a `NONE`, which would silently swallow a real invitation.
+
+One event waits on it: `TurnYielded`, bounded by `ADDRESS_HOLD_TIMEOUT_S = 0.7`
+(`panel.py`). `EndOfTurn` lands within a few ms of the final, so without the hold
+the floor arbitrates before the invitation exists — floor closed, Ricky cued,
+dead air. `TranscriptUpdated` is never held; it drives the barge-in content check
+and speculative generation.
+
+Measured 153/153 on the regression corpus (`tests/bench_address.py` against
+`panel_core/tests/test_address.py`), p50 526ms / p95 781ms to verdict, dev box.
+The hold is deliberately *inside* p95: the tail costs the new capability on a few
+per cent of turns, versus every turn paying it.
+
+**Open question:** the on-stage cache-hit rate is unmeasured. `AddressVerdict.source`
+and the `⌖ address:` console line exist to read it off; nothing aggregates it yet.
+That number decides whether this is free or ~500ms in series. Re-measure on the
+venue rig (§ Deployment).
+
+### 3.8 Agent-to-agent conversation
+
+Agents pass turns to each other without Ricky, and the loop is built:
+`_agent_ended` re-requests proposals while an invitation is live →
+`PanelRuntime._maybe_rearbitrate` synthesises a `TurnYielded` once one lands with
+the floor idle → `_arbitrate` grants the next agent. `recency_penalty`
+discourages the same agent twice; `Signals.defer_to` lets an agent nominate who
+should follow.
+
+It is bounded by counters, not by capability: `open_invitation_turns = 2`,
+`address_invitation_turns = 1`, `max_consecutive_agent_turns = 3`.
+
+**Wanted but not built (21 Sept):** exchanges that run until the agents are
+*done* rather than until a counter expires. That needs a termination signal from
+the agent — the natural shape is a new `Signals` field alongside `defer_to` —
+plus raised counters. `max_consecutive_agent_turns` should stay as a backstop
+whatever else changes: unbounded machine-to-machine relay in front of 400 people
+is exactly what it is for.
 
 ---
 
@@ -146,7 +218,7 @@ Calendar: 1 Sept → 21 Oct (~7 weeks). One week in, 4 weeks to freeze.
 |---|---|
 | 0 — Spike | Done. 7 deliverables (below). Closed ADR 0001 fork, forced sentence-streaming (§3.5) and duck-first backchannel (§3.6). |
 | 1 — Core panel | Built: 3 agents, personas, floor control, human priority, invitations, address/role parsing, TTS, event logging, `panel_sim`. Not built: video wall, operator console. |
-| 2 — Organic interaction | Built: interrupt thresholds, A2A addressing/handoff, expertise weighting, speculative generation, overlap/ducking, backchannel discrimination. |
+| 2 — Organic interaction | Built: A2A addressing/handoff, expertise weighting, speculative generation, ducking, backchannel discrimination. 18 Sept: racing generations (§3.5) and the Haiku address classifier (§3.7, ADR 0002). **Removed 21 Sept:** agent-to-agent interrupts and the never-implemented controlled overlap (§3.6). Still open: agent-terminated exchanges (§3.8). |
 | 3 — Content & guardrails | Beat sheet and approved knowledge signed off 16 Sept (`docs/beat-sheet.md`), late against the 14 Sept target. Spines wired into `personas/*.yaml`/`prompts.py`. Reopened 17 Sept by the restructure: twelve spines now, three of them unsigned, and Beat 4 is new material that has never been rehearsed. |
 | 4 — Hardening & rehearsal | Not started. 2 protected weeks after 7 Oct freeze. Depends on operator console (§7) and AV split (§9). |
 

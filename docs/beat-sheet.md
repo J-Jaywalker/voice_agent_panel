@@ -99,15 +99,20 @@ funniest part of the hour; played for laughs, it dies.
 | **Title** | Senior AI Infrastructure & Security Engineer | Autonomous Financial Partner & Analyst | Chief AI Ethics & Human Continuity Officer |
 | **Employer** | Irrational Industries | Servv.AI | The Kestrel Foundation |
 | **Voice** | Measured. "Right, but —", "Historically," | Brisk, provocative. "Look —", "Come on." | Dry, precise, occasionally very funny. "Mm.", "Can I just —" |
-| **Turn budget** | No enforced cap. ~60s is where Ricky should start listening for a natural out — Dexter runs a little longer than Wayne. | No enforced cap. Shortest and fastest to cut in of the three; Ricky rarely needs to listen for an out before Wayne finds one himself. | No enforced cap. ~60s is where Ricky should start listening for a natural out — similar pacing to Dexter. |
-| **Interrupts** | 0.3 — rarely | 0.8 — constantly | 0.45 — surgically |
+| **Turn budget** | No enforced cap. ~60s is where Ricky should start listening for a natural out — Dexter runs a little longer than Wayne. | No enforced cap. Shortest of the three, and the quickest to take an opening; Ricky rarely needs to listen for an out before Wayne finds one himself. | No enforced cap. ~60s is where Ricky should start listening for a natural out — similar pacing to Dexter. |
+| **Eagerness** | Hangs back | Takes every opening | Picks her moment |
 | **Authority** | security, jailbreaking, prompt injection, infrastructure, latency, speech recognition, paralinguistics | markets, cost curves, autonomy, scaling | trust, oversight, regulation, human factors, organisational change, consent |
 
 There is no word-count ceiling — length is a prompt instruction, not an
 orchestrator limit, and a longer sentence or extra concrete example is fine
 when it helps the point land. Wayne is still the shortest and the most likely
-to cut in — that combination is what makes him feel like the fastest person on
-stage.
+to take an opening the moment one appears — that combination is what makes him
+feel like the fastest person on stage.
+
+**No agent ever cuts another off.** Agents take turns; only Ricky can interrupt
+a speaking agent. Wayne being "fast" means he wins the floor first when it
+opens, never that he talks over Dexter. If a beat only works with one agent
+cutting across another, it needs rewriting — see FEASIBILITY §3.6.
 
 **All three panellists are themselves AI agents.** This is load-bearing in Beat
 4: the jailbreak stories are not about systems they administer, they are about
@@ -657,8 +662,8 @@ Type the cue lines from each beat verbatim and check two things: **the right
 agent got the floor**, and **the content came out specific rather than generic**.
 
 - `/scores` after each cue shows why each agent did or didn't get in. If the
-  wrong agent keeps winning a beat, that's `topics_of_authority` or
-  `interrupt_tendency` in the persona, not a prompt problem.
+  wrong agent keeps winning a beat, that's `topics_of_authority` in the persona
+  or the `FloorConfig` weights, not a prompt problem.
 - A cue line that invites the wrong agent, or nobody, is a **floor bug** — add
   the phrasing as a row in `test_address.py` rather than rewording the beat
   sheet around it.

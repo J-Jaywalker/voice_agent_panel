@@ -94,7 +94,13 @@ def test_ducking_one_agent_leaves_the_others_alone(mixer):
 
 
 def test_overlapping_agents_do_not_clip_the_output(mixer):
-    """An interrupt deliberately overlaps two voices (FEASIBILITY.md 3.7)."""
+    """Two lanes summing must not clip, however they came to be summing.
+
+    No path deliberately overlaps two agents any more — agent-to-agent
+    interrupts were removed 21 Sept 2026 — but the mixer takes one lane per
+    agent and a tail draining under a new grant can still sum briefly. Clip
+    here rather than let the PA do it.
+    """
     for agent in AGENTS:
         mixer.feed(agent, tone(1.0, amplitude=0.9))
     out = render_ms(mixer, 50)

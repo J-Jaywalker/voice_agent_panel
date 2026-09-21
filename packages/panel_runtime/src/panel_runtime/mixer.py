@@ -147,6 +147,7 @@ class Mixer:
                 if agent_id in self._stopping and voice.envelope.at_target:
                     voice.reset()
                     self._stopping.discard(agent_id)
-        # Three agents rarely overlap, but an interrupt deliberately overlaps two
-        # (FEASIBILITY.md 3.7). Clip rather than let the PA do it for us.
+        # Lanes rarely sum — nothing deliberately overlaps two agents since
+        # agent-to-agent interrupts were removed — but a draining tail under a
+        # new grant can. Clip rather than let the PA do it for us.
         return np.clip(out, -1.0, 1.0)

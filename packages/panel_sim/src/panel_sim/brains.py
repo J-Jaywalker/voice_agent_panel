@@ -28,6 +28,16 @@ class Brain(Protocol):
     def propose(self, persona: Persona, state: PanelState) -> tuple[str, Signals] | None: ...
 
 
+# How often the stub speaks up on a remark that touches none of its
+# `topics_of_authority`, and how far its disagreement signal can swing. These
+# were per-persona (`interrupt_tendency`, removed 21 Sept 2026 with
+# agent-to-agent interrupts); the values here are roughly what the cast
+# averaged, because the stub only has to produce plausible spread for the floor
+# logic to chew on — persona-level colour is the live brain's job.
+STUB_UNPROMPTED_RATE = 0.5
+STUB_MAX_DISAGREEMENT = 0.5
+
+
 class StubBrain:
     """Deterministic offline brain. Runs with no network and no credentials.
 
@@ -47,13 +57,13 @@ class StubBrain:
         # express it, or the sim reads as three agents straining at the leash on
         # every remark — which is not what a real brain does and not what the
         # floor controller should be tuned against.
-        if not hot and self.rng.random() > 0.25 + 0.5 * persona.interrupt_tendency:
+        if not hot and self.rng.random() > STUB_UNPROMPTED_RATE:
             return None
 
         signals = Signals(
             relevance=self.rng.uniform(0.5, 1.0) if hot else self.rng.uniform(0.05, 0.35),
-            urgency=self.rng.uniform(0.2, 0.9) * (0.5 + persona.interrupt_tendency),
-            disagreement=self.rng.uniform(0.0, 1.0) * persona.interrupt_tendency,
+            urgency=self.rng.uniform(0.2, 0.9),
+            disagreement=self.rng.uniform(0.0, STUB_MAX_DISAGREEMENT),
             confidence=self.rng.uniform(0.6, 1.0),
             expertise=0.9 if hot else 0.15,
             novelty=self.rng.uniform(0.2, 0.7),

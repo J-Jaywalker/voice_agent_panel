@@ -35,27 +35,6 @@ class FloorConfig:
     # A proposal below this never gets the floor — silence beats filler.
     min_floor_priority: float = 0.45
 
-    # --- interrupting a *speaking agent* ---
-    # Off by default. An agent cutting another agent off is the one floor
-    # behaviour whose payoff is theatrical rather than structural, and it is
-    # not worth what it costs: `_agent_ended` carries a whole branch that
-    # exists only for the case where a turn ends with someone else already
-    # granted (`floor.py`), and the brief overlap that makes an interruption
-    # read as an argument rather than a dropout is not honoured by the live
-    # runtime at all — `StopSpeech.overlap_ms` is currently only rendered by
-    # `panel_sim`. Ricky interrupting an agent is a separate path
-    # (`_human_started`) and is unaffected by this flag.
-    #
-    # Everything below stays live so the behaviour can be switched back on for
-    # a rehearsal (`panel --agent-interrupts`) without re-deriving the tuning.
-    allow_agent_interrupts: bool = False
-    interrupt_threshold: float = 0.55
-    # Never interrupt inside the opening of a turn; it just looks broken.
-    interrupt_grace_s: float = 2.5
-    # An agent that just spoke may not immediately interrupt someone else.
-    interrupt_cooldown_s: float = 12.0
-    interrupt_overlap_ms: int = 380
-
     # --- humans ---
     # Ricky's mic wins instantly and with no overlap.
     human_duck_ms: int = 90
@@ -229,30 +208,9 @@ def floor_priority(
     return score
 
 
-def interrupt_score(signals: Signals, persona: Persona) -> float:
-    """Whether this is worth cutting another agent off for.
-
-    Multiplicative rather than additive: an interruption needs *both* strong
-    disagreement and urgency, filtered through how interrupt-prone this
-    persona is. Merely having something relevant to say is not enough.
-    """
-    return signals.disagreement * signals.urgency * (0.5 + persona.interrupt_tendency)
-
-
-def may_interrupt(
-    *,
-    signals: Signals,
-    persona: Persona,
-    now: float,
-    speaker_started_at: float | None,
-    challenger_last_spoke_at: float | None,
-    config: FloorConfig,
-) -> bool:
-    if interrupt_score(signals, persona) < config.interrupt_threshold:
-        return False
-    if speaker_started_at is not None and now - speaker_started_at < config.interrupt_grace_s:
-        return False
-    return not (
-        challenger_last_spoke_at is not None
-        and now - challenger_last_spoke_at < config.interrupt_cooldown_s
-    )
+# An agent never cuts off a speaking agent. Scoped out 21 Sept 2026 — agents
+# pass turns, they do not interrupt each other — so `interrupt_score` and
+# `may_interrupt` are gone along with their tuning. A proposal arriving while
+# another agent speaks is stored for the next arbitration and nothing else;
+# see `FloorController._proposal`. Ricky interrupting an agent is a different
+# path entirely (`_human_started`) and is unaffected.

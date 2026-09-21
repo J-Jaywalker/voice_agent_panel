@@ -258,7 +258,6 @@ Event = (
 
 class StopReason(str, Enum):
     HUMAN_INTERRUPT = "human_interrupt"
-    AGENT_INTERRUPT = "agent_interrupt"
     OPERATOR = "operator"
     KILL = "kill"
 
@@ -293,15 +292,15 @@ class StartSpeech:
 class StopSpeech:
     """Stop an agent mid-utterance.
 
-    ``overlap_ms`` lets an interrupting voice ride over the interrupted one
-    briefly before it ducks — that overlap is what reads as a real argument
-    rather than a queue (FEASIBILITY.md 3.7). Zero for a human interrupt: when
-    Ricky speaks, agents get out of the way immediately.
+    Always an immediate stop. There was once an ``overlap_ms`` here, letting an
+    interrupting voice ride briefly over the interrupted one; it only ever
+    applied to agent-interrupts-agent, the live runtime never honoured it, and
+    both were removed on 21 Sept 2026. When Ricky speaks, agents get out of the
+    way immediately — which is the only interrupt this command now serves.
     """
 
     agent: str
     reason: StopReason
-    overlap_ms: int = 0
     duck_ms: int = 150
 
 

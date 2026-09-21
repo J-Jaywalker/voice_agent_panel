@@ -64,10 +64,16 @@ class Persona(BaseModel):
     )
 
     # --- floor behaviour ---
-    interrupt_tendency: float = Field(0.3, ge=0.0, le=1.0)
-    yield_tendency: float = Field(
-        0.7, ge=0.0, le=1.0, description="Modelled separately — not the inverse of interrupting."
-    )
+    # Two knobs lived here until 21 Sept 2026 and both were removed as dead:
+    # `interrupt_tendency`, which only ever fed `interrupt_score()` and went
+    # with agent-to-agent interrupts, and `yield_tendency`, which was set in
+    # every persona file and read by nothing at all. Neither was rendered into
+    # a prompt, so neither could affect a live run. Deleted rather than kept,
+    # so nobody tunes a number expecting an effect it cannot have.
+    #
+    # A persona field earns its place by being read — by `prompts.py`, the
+    # floor, or the sim's stub brain. `topics_of_authority` is the model for
+    # this: rendered into every prompt, so editing it changes the show.
     topics_of_authority: list[str] = Field(default_factory=list)
 
     # --- length discipline ---
