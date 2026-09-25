@@ -192,6 +192,17 @@ class PanelState:
     transcript: tuple[Utterance, ...] = ()
     partial: str = ""
 
+    # The speaking agent's turn so far — the agent-side counterpart of
+    # ``partial``, and a live partial in exactly the same sense: text the room
+    # is in the middle of hearing, not yet part of the record. It becomes an
+    # ``Utterance`` in ``transcript`` when ``AgentSpeechEnded`` lands, which is
+    # why nothing here is ever appended to ``transcript`` and why this must be
+    # cleared at both ends of a turn or the next turn would double-count it.
+    #
+    # Whose it is is not stored, because ``speaking`` already answers that and
+    # only one agent is ever on the PA. Both are cleared together.
+    agent_partial: str = ""
+
     # Set while an agent is ducked pending backchannel classification.
     ducked_agent: str | None = None
     human_speech_started_at: float | None = None
@@ -302,6 +313,11 @@ class PanelState:
 
     def recent_text(self, limit: int = 12) -> str:
         lines = [f"{u.speaker}: {u.text}" for u in self.transcript[-limit:]]
+        if self.agent_partial and self.speaking:
+            # Ahead of the human's, because an agent only holds the floor when
+            # the human is not on it: if both are somehow set, the human is
+            # interrupting and is the later event.
+            lines.append(f"{self.speaking} (speaking): {self.agent_partial}")
         if self.partial:
             lines.append(f"{HUMAN} (speaking): {self.partial}")
         return "\n".join(lines)

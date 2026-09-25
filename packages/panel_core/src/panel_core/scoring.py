@@ -88,6 +88,32 @@ class FloorConfig:
     # question ("Wayne, thoughts?") is a real thing Ricky says and by then
     # detection has run.
     speculation_min_words: int = 5
+    # The same idea during an *agent's* turn, and a separate dial because the
+    # two turns are nothing like the same length. Ricky asks a question in
+    # 5-10s; an agent answers in 20-30s, and until 25 Sept 2026 nothing asked
+    # the other two for a line at any point inside that. The only proposals in
+    # hand at a turn boundary were therefore written before the turn began —
+    # `FloorController._agent_ended` drops exactly those (they answer a
+    # question the speaker has since spent half a minute answering) — so every
+    # agent-to-agent handover paid a full cold generation, about 2.4s of dead
+    # air on a measured run, plus TTS on top.
+    #
+    # Rounds now open through the turn off `AgentUtteranceProgress`, so the
+    # freshest completed proposal at a boundary is at worst this interval plus
+    # one generation old, and the boundary filter starts keeping things
+    # instead of always emptying.
+    #
+    # 2.5s rather than the human path's 0.8s, and the reasoning is generation
+    # latency rather than taste: a proposal takes 2.0-2.9s to reach
+    # `SignalsReady` (`tests/bench_brains.py`, plus the utterance gate in
+    # `StreamingClaudeBrain.stream`), so asking faster than that mostly buys
+    # concurrency rather than freshness. At 2.5s a 30s turn opens about twelve
+    # rounds and each idle agent keeps roughly two generations in flight —
+    # comparable to what a long human turn already produces. Lower it for
+    # fresher answers at the cost of more concurrent generations; spend is not
+    # the constraint (CLAUDE.md), the provider's concurrency limit and TTFB
+    # under load are, and both have to be measured on the venue rig.
+    agent_turn_speculation_interval_s: float = 2.5
     # How far before a direct question an answer to it may have been written.
     # Speculative generation is the whole reason the post-turn gap is short, so
     # a proposal started against a partial of the question must still count —

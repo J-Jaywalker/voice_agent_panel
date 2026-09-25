@@ -321,3 +321,38 @@ def test_stable_prefix_only_ever_grows_by_literal_extension(source: str) -> None
     # utterance in one go, exactly as `StreamingClaudeBrain.stream`'s final
     # resolution pass computes it once no more text is coming.
     assert previous == sanitise(source)
+
+
+def test_being_asked_mid_turn_says_so_and_says_you_are_not_cutting_in() -> None:
+    """The round `FloorController._agent_utterance_progress` opens.
+
+    Told nothing, an agent asked while somebody else is speaking writes as
+    though the floor were open now — either an interruption (which the
+    runtime will never air: agents never interrupt agents) or an answer to
+    Ricky that ignores the thirty seconds in between. It has to know it is
+    writing the *next* turn, against a turn still in progress.
+    """
+    state = replace(
+        PanelState.for_agents(("dex", "wayne", "melia")),
+        speaking="melia",
+        agent_partial="Reported adoption and actual adoption are different curves.",
+        transcript=(Utterance(speaker=HUMAN, text="Where are we?", t=0.0),),
+    )
+    prompt = build_turn_prompt(state, _persona())
+    assert "melia is speaking right now" in prompt
+    assert "nobody here interrupts anybody" in prompt
+    # The running text has to be visible, or there is nothing to write against.
+    assert "melia (speaking): Reported adoption" in prompt
+
+
+def test_the_speaker_is_never_told_it_is_following_itself() -> None:
+    """`idle_agents()` already excludes whoever is on the PA, so this branch
+    should be unreachable from the floor — but `build_turn_prompt` is also
+    called from the sim and the bench, and "you are not going to cut in" is a
+    nonsense instruction to give an agent about its own turn."""
+    state = replace(
+        PanelState.for_agents(("dex", "wayne")),
+        speaking="dex",
+        agent_partial="Something I am part-way through saying.",
+    )
+    assert "is speaking right now" not in build_turn_prompt(state, _persona())

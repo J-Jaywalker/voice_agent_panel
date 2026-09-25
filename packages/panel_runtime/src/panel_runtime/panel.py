@@ -57,6 +57,7 @@ from panel_core import (
     AgentProposal,
     AgentSpeechEnded,
     AgentSpeechStarted,
+    AgentUtteranceProgress,
     CueModerator,
     DuckSpeech,
     FloorConfig,
@@ -963,6 +964,11 @@ class PanelRuntime:
                     async for sentence in candidate.sentences():
                         spoken.append(sentence)
                         self._print(f"  {sentence}")
+                        self.emit(
+                            AgentUtteranceProgress(
+                                t=time.monotonic(), agent=command.agent, text=sentence
+                            )
+                        )
                         # Slept in slices rather than one long sleep so the
                         # heartbeat keeps reporting through a long sentence, and
                         # the watchdog is therefore exercised in --no-tts too.
@@ -996,6 +1002,17 @@ class PanelRuntime:
                         # the agent speaks (`Candidate`). Read these gaps as
                         # generation pace, not as what the room hears.
                         self._print(f"  {sentence}")
+                        # Emitted before the push, not after: `push()` awaits a
+                        # socket and the whole value of this event is lead time
+                        # for the other two agents' generations. The reducer
+                        # only folds it in for whoever is currently `speaking`,
+                        # so a sentence from a turn the floor has already moved
+                        # past is discarded there rather than guarded here.
+                        self.emit(
+                            AgentUtteranceProgress(
+                                t=time.monotonic(), agent=command.agent, text=sentence
+                            )
+                        )
                         await turn.push(sentence)
                     await turn.finish()
                     await audio

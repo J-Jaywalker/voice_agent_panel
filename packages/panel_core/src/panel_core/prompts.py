@@ -163,6 +163,9 @@ def build_turn_prompt(state: PanelState, persona: Persona) -> str:
     else:
         addressed = "\nRicky has opened the floor to the panel.\n"
 
+    # Two cases the branches above cannot see, in precedence order: asked
+    # while another agent is mid-turn, and asked straight after one finished.
+    #
     # Agents pass turns to each other without Ricky re-opening the floor
     # (`FloorController._maybe_rearbitrate`), and every one of those lands in
     # the open-floor branch above, which says nothing about who just spoke.
@@ -174,8 +177,26 @@ def build_turn_prompt(state: PanelState, persona: Persona) -> str:
     # the last final is stale by construction and he is about to be the one
     # being answered.
     last = state.transcript[-1] if state.transcript else None
+    live = state.speaking if state.speaking != persona.id else None
     exchange = ""
-    if (
+    if live is not None and state.agent_partial:
+        # Asked *during* someone else's turn. This is the round
+        # `_agent_utterance_progress` opens, and it exists so the floor has a
+        # line in hand the moment the turn ends rather than paying a cold
+        # generation for one. The agent has to know it is writing the *next*
+        # turn, not competing for this one: told nothing, it writes as though
+        # the floor were open now and produces either an interruption or an
+        # answer to Ricky that ignores the thirty seconds in between.
+        exchange = (
+            f"\n{live} is speaking right now and you are not going to cut in — "
+            "nobody here interrupts anybody. What you write is the line you "
+            "would say when they finish, so write it against what they have "
+            "actually said above, including the part they are still in the "
+            "middle of. Bring something they did not have — a figure, a date, "
+            "a count off your own work, a deployment you were in. If they have "
+            "already made your point, say so in your score and let it go.\n"
+        )
+    elif (
         last is not None
         and not state.partial
         and last.speaker != HUMAN

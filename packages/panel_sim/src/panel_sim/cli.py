@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, is_dataclass
@@ -40,6 +41,7 @@ from panel_core import (
     AgentProposal,
     AgentSpeechEnded,
     AgentSpeechStarted,
+    AgentUtteranceProgress,
     CueModerator,
     FloorConfig,
     FloorController,
@@ -62,6 +64,10 @@ from rich.table import Table
 from .brains import Brain, ClaudeBrain, StubBrain
 
 WORDS_PER_SECOND = 2.8  # rough speaking rate, for the virtual clock
+
+# Sentence boundaries for the virtual speaking clock. Trailing text with no
+# terminator still counts — a turn that ends mid-clause is a turn.
+_SENTENCES = re.compile(r"[^.!?]+(?:[.!?]+|$)")
 
 console = Console()
 
@@ -117,7 +123,27 @@ class Simulation:
                     f"  {command.utterance}"
                 )
                 self.emit(AgentSpeechStarted(t=self.clock, agent=command.agent))
-                self.clock += len(command.utterance.split()) / WORDS_PER_SECOND
+                # Sentence by sentence against the virtual clock, because the
+                # live runtime does (`panel_runtime.panel.speak`) and because
+                # this is what opens the mid-turn speculation rounds that make
+                # an agent-to-agent handover quick. Emitting the turn as one
+                # block would leave the sim the one surface where
+                # `_agent_utterance_progress` never fires — so the mid-turn
+                # branch of `build_turn_prompt` would never be exercised by the
+                # loop personas are actually tuned in.
+                #
+                # The split is deliberately cruder than the runtime's
+                # `SentenceChunker`, which lives in `panel_runtime` and is not
+                # a dependency here. It only has to be right about *where the
+                # pauses are* for the debounce to behave; it is not feeding a
+                # TTS socket.
+                for sentence in _SENTENCES.findall(command.utterance):
+                    self.clock += len(sentence.split()) / WORDS_PER_SECOND
+                    self.emit(
+                        AgentUtteranceProgress(
+                            t=self.clock, agent=command.agent, text=sentence
+                        )
+                    )
                 self.emit(AgentSpeechEnded(t=self.clock, agent=command.agent, completed=True))
 
             case StopSpeech():

@@ -217,6 +217,44 @@ class AgentAudioProgress:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentUtteranceProgress:
+    """One sentence of a turn, as it is handed to TTS.
+
+    The running counterpart of ``AgentSpeechEnded``, and it exists because
+    that event arrives too late to be useful to anyone but the record. A turn
+    runs 20-30s; until it ends, the other two agents' view of the conversation
+    stops at the question the speaker is answering, so nothing generated
+    during the turn is an answer to the turn. That is what made the post-turn
+    gap a full cold generation every time — see ``FloorController._agent_ended``
+    and the note on ``FloorConfig.agent_turn_speculation_interval_s``.
+
+    Emitted from the ``speak()`` loop in ``panel_runtime``, one per sentence,
+    at the moment the sentence is pushed to the provider. That is deliberately
+    *ahead* of the audio — the model writes faster than the agent speaks — and
+    the lead is the point: it buys the idle agents a couple of seconds of
+    warning. It also means this is text the room has not quite heard yet, so
+    it is a live partial and never the record. ``AgentSpeechEnded.utterance``
+    remains the only thing that enters ``PanelState.transcript``.
+
+    Agent speech still never goes near STT (CLAUDE.md). This is the verbatim
+    text we generated, carried as text, exactly as ``AgentSpeechEnded`` does.
+
+    Attributes:
+        t: When the sentence was pushed. The debounce's clock.
+        agent: Who is speaking. Ignored unless it matches ``state.speaking`` —
+            a sentence from a generation the floor has already moved past is
+            not part of the turn anyone is listening to.
+        text: The sentence, already sanitised: this is the same string that
+            goes to the provider, so anything unsafe to speak never reaches
+            the reducer either.
+    """
+
+    t: float
+    agent: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
 class AgentSpeechEnded:
     """An agent's turn is over, carrying what it actually said.
 
@@ -268,6 +306,7 @@ Event = (
     | AgentProposal
     | AgentSpeechStarted
     | AgentAudioProgress
+    | AgentUtteranceProgress
     | AgentSpeechEnded
     | Tick
     | OperatorCommand

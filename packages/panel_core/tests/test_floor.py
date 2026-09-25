@@ -17,6 +17,7 @@ from panel_core import (
     AgentSpeechEnded,
     AgentSpeechStarted,
     AgentState,
+    AgentUtteranceProgress,
     CueModerator,
     DuckSpeech,
     FloorConfig,
@@ -1793,3 +1794,205 @@ def test_a_ducked_agent_that_stalls_does_not_leave_the_duck_behind(fc, state):
     assert [c.agent for c in cmds if isinstance(c, StopSpeech)] == ["wayne"]
     assert state.ducked_agent is None
     assert state.speaking is None
+
+
+# ------------------------------------------------- speculation during a turn
+#
+# Added 25 Sept 2026. The failure these pin down was measured on a live run:
+# Melia finished a 32s turn at 12:59:57.233 and the panel then sat silent for
+# 2.43s while a proposal was generated from cold, even though Dexter and Wayne
+# had both had finished lines in hand since 12:59:26. Two causes, and the
+# second only bites because of the first:
+#
+#   1. Nothing asked for a proposal between `AgentSpeechStarted` and
+#      `AgentSpeechEnded`. Every `_ask_for_proposals` site needed a *human*
+#      event, and agent speech never produces one — it never goes near STT.
+#   2. `_agent_ended` keeps only proposals whose input is newer than
+#      `speaking_since`. The round that opens the floor is always older than
+#      the turn it opens (the classifier hold, arbitration and TTS first audio
+#      sit in between — 632ms on that run), so with (1) in place the filter
+#      could only ever return empty.
+
+
+def _mid_turn(fc, state, speaker="melia", t=1.0):
+    """`speaking_agent`, but with the two idle agents holding nothing."""
+    return speaking_agent(fc, state, agent=speaker, t=t)
+
+
+def test_a_spoken_sentence_asks_the_other_agents_for_a_line(fc, state):
+    """The fix for (1). A turn now generates its own successor."""
+    state = _mid_turn(fc, state)
+    state, cmds = fc.reduce(
+        state,
+        AgentUtteranceProgress(
+            t=1.1 + fc.config.agent_turn_speculation_interval_s,
+            agent="melia",
+            text="Reported adoption and actual adoption are different curves.",
+        ),
+    )
+    requests = [c for c in cmds if isinstance(c, RequestProposals)]
+    assert len(requests) == 1
+    assert requests[0].reason == "agent_turn"
+    # Never the speaker: asking Melia mid-turn is asking her to follow herself.
+    assert set(requests[0].agents) == {"dex", "wayne"}
+
+
+def test_mid_turn_rounds_are_debounced_on_their_own_dial(fc, state):
+    """Sentences arrive faster than a generation completes (2.0-2.9s to
+    `SignalsReady`), so asking per sentence buys concurrency, not freshness.
+    The interval is separate from the human one because the turns are not the
+    same length — see `FloorConfig.agent_turn_speculation_interval_s`."""
+    state = _mid_turn(fc, state)
+    interval = fc.config.agent_turn_speculation_interval_s
+    state, first = fc.reduce(
+        state, AgentUtteranceProgress(t=1.1 + interval, agent="melia", text="One two three four five.")
+    )
+    state, second = fc.reduce(
+        state, AgentUtteranceProgress(t=1.2 + interval, agent="melia", text="Six seven eight nine ten.")
+    )
+    state, third = fc.reduce(
+        state,
+        # +0.5 rather than exactly 2x: (1.1+5.0)-(1.1+2.5) is 2.4999999999999996
+        # in binary floating point, and a debounce test that turns on the last
+        # bit of a float is testing the wrong thing.
+        AgentUtteranceProgress(
+            t=1.6 + 2 * interval, agent="melia", text="Eleven twelve thirteen."
+        ),
+    )
+    assert [isinstance(c, RequestProposals) for c in first] == [True]
+    assert second == []
+    assert [isinstance(c, RequestProposals) for c in third] == [True]
+
+
+def test_a_scrap_of_a_turn_is_not_worth_asking_against(fc, state):
+    """Same reasoning as `speculation_min_words` on the human path: an agent
+    opening with "Mm." is not a question anybody can answer, and a line
+    written against one is a holding line."""
+    state = _mid_turn(fc, state)
+    state, cmds = fc.reduce(
+        state,
+        AgentUtteranceProgress(
+            t=1.1 + fc.config.agent_turn_speculation_interval_s, agent="melia", text="Mm."
+        ),
+    )
+    assert cmds == []
+    assert state.agent_partial == "Mm."
+
+
+def test_a_sentence_from_an_agent_who_is_not_speaking_is_ignored(fc, state):
+    """A cancelled turn's `speak()` task can still be unwinding. Folding its
+    sentences in would attribute the wrong words to the wrong agent in every
+    prompt built for the rest of the exchange."""
+    state = _mid_turn(fc, state)
+    state, cmds = fc.reduce(
+        state,
+        AgentUtteranceProgress(t=9.0, agent="wayne", text="A line from a turn that is over."),
+    )
+    assert cmds == []
+    assert state.agent_partial == ""
+
+
+def test_the_running_text_is_cleared_at_both_ends_of_a_turn(fc, state):
+    """Either end alone leaves a window in which the previous speaker's words
+    are attributed to the current one."""
+    state = _mid_turn(fc, state)
+    state, _ = fc.reduce(
+        state, AgentUtteranceProgress(t=2.0, agent="melia", text="The gap has been measured.")
+    )
+    assert state.agent_partial == "The gap has been measured."
+    assert "melia (speaking): The gap has been measured." in state.recent_text()
+
+    state, _ = fc.reduce(
+        state, AgentSpeechEnded(t=9.0, agent="melia", completed=True, utterance="The gap.")
+    )
+    assert state.agent_partial == ""
+    # ...and the record took over from the partial, without duplicating it.
+    assert state.transcript[-1].text == "The gap."
+    assert "(speaking)" not in state.recent_text()
+
+
+def test_the_introduction_round_never_speculates_mid_turn(fc, state):
+    """Every line in that round is fixed text the model never sees, so a
+    speculative candidate is a 2-4s round trip nobody reads. Same carve-out
+    the human path already has."""
+    state, _ = run(fc, state, invite(0.0, "Right, let's do quick introductions."))
+    assert state.intro_queue is not None
+    state, _ = run(fc, state, AgentSpeechStarted(t=1.0, agent=state.speaking or "dex"))
+    state, cmds = fc.reduce(
+        state,
+        AgentUtteranceProgress(
+            t=1.0 + fc.config.agent_turn_speculation_interval_s,
+            agent=state.speaking,
+            text="I'll go first, I'm Dexter, and I run inference infrastructure.",
+        ),
+    )
+    assert [c for c in cmds if isinstance(c, RequestProposals)] == []
+
+
+def test_a_mid_turn_proposal_survives_the_boundary_and_is_granted(fc, state):
+    """The regression this whole change exists for.
+
+    A proposal written *during* the turn passes `proposals_written_since`, so
+    `_agent_ended` arbitrates it immediately instead of asking from cold. No
+    `RequestProposals` at the boundary at all — that request is the 2.43s of
+    dead air.
+    """
+    state = _mid_turn(fc, state, speaker="melia", t=1.0)
+    state, cmds = fc.reduce(
+        state,
+        AgentUtteranceProgress(
+            t=1.1 + fc.config.agent_turn_speculation_interval_s,
+            agent="melia",
+            text="Reported adoption and actual adoption are different curves.",
+        ),
+    )
+    request = next(c for c in cmds if isinstance(c, RequestProposals))
+    assert request.reason == "agent_turn"
+    written_against = state.last_proposal_request_t
+    assert written_against > state.agents["melia"].speaking_since
+
+    state, _ = fc.reduce(
+        state,
+        AgentProposal(
+            t=written_against + 2.4,
+            agent="dex",
+            utterance="The cost curve is the part nobody argues with.",
+            signals=strong(),
+            epoch=state.speculation_epoch,
+            input_t=written_against,
+        ),
+    )
+    state, cmds = fc.reduce(
+        state, AgentSpeechEnded(t=30.0, agent="melia", completed=True, utterance="…")
+    )
+    assert [c.agent for c in cmds if isinstance(c, StartSpeech)] == ["dex"]
+    assert [c for c in cmds if isinstance(c, RequestProposals)] == []
+
+
+def test_a_pre_turn_proposal_still_does_not_survive_the_boundary(fc, state):
+    """The other half, and the reason the filter is not simply loosened: a
+    line written before the turn began is an answer to a question the speaker
+    has since spent half a minute answering. It goes, and the boundary asks
+    for a fresh one — which is the old behaviour, now correctly the exception
+    rather than every handover."""
+    state, cmds = run(
+        fc,
+        state,
+        invite(0.0),
+        AgentProposal(t=0.5, agent="dex", utterance="Written before.", signals=strong(),
+                      epoch=1, input_t=0.0),
+        AgentProposal(t=0.6, agent="melia", utterance="Also before.", signals=strong(),
+                      epoch=1, input_t=0.0),
+        TurnYielded(t=1.0),
+    )
+    # `_grant` only emits `StartSpeech`; `floor_holder` is not set until the
+    # runtime reports the audio actually started.
+    granted = next(c for c in cmds if isinstance(c, StartSpeech))
+    state, _ = run(fc, state, AgentSpeechStarted(t=1.6, agent=granted.agent))
+    speaker = state.speaking
+    assert speaker == granted.agent
+    state, cmds = fc.reduce(
+        state, AgentSpeechEnded(t=30.0, agent=speaker, completed=True, utterance="…")
+    )
+    assert [c for c in cmds if isinstance(c, StartSpeech)] == []
+    assert [c.reason for c in cmds if isinstance(c, RequestProposals)] == ["agent_turn_ended"]

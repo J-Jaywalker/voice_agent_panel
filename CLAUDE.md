@@ -29,11 +29,11 @@ uv run ruff check .
 | `packages/panel_display` | The video wall. `wall.py` is pure, `server.py` is aiohttp, `static/` has no build step. |
 | `personas/*.yaml` | Cast data. Source of truth for prompts. |
 
-Video wall built 25 Sept: 12.00m x 4.50m, 8:3, four 3m lanes — transcript, then one per agent. Laid out at a fixed 3840x1440 (320px = 1m) and scaled to fit, so the stylesheet's dimensions stay physical whatever the LED processor reports. Orbs are driven by real post-gain audio off `Mixer.take_levels()`, never by a timer. The transcript lane is a **stub**: moderator only. Agent turns need per-sentence streaming off `Candidate.add()` — `AgentSpeechEnded.utterance` arrives too late to be usable.
+Video wall built 25 Sept: 12.00m x 4.50m, 8:3, four 3m lanes — transcript, then one per agent. Laid out at a fixed 3840x1440 (320px = 1m) and scaled to fit, so the stylesheet's dimensions stay physical whatever the LED processor reports. Orbs are driven by real post-gain audio off `Mixer.take_levels()`, never by a timer. The transcript lane is still a **stub**: moderator only. The event it was waiting for now exists — `AgentUtteranceProgress`, one per sentence off the `speak()` loop — so wiring agent turns into the lane is a display job, not a plumbing one.
 
 Not built: operator console. Mid-turn steering was cut (11 Sept) — turn length is a prompt instruction, no orchestrator-enforced ceiling; moderator handles the rest live. Phase status: FEASIBILITY.md §8.
 
-Agents already pass turns to each other without Ricky (`_maybe_rearbitrate`), bounded by `open_invitation_turns` / `max_consecutive_agent_turns`. Wanted, not built: exchanges that end when the agents are done rather than when a counter expires — needs a termination signal on `Signals`. FEASIBILITY.md §3.8.
+Agents already pass turns to each other without Ricky (`_maybe_rearbitrate`), bounded by `open_invitation_turns` / `max_consecutive_agent_turns`. Proposal rounds now open *during* an agent's turn, off `AgentUtteranceProgress` at `agent_turn_speculation_interval_s` (2.5s), so the next speaker has a line written against most of what they just heard and the handover costs no generation. Before 25 Sept every handover paid one cold round trip — measured at 2.43s — because nothing was ever asked between `AgentSpeechStarted` and `AgentSpeechEnded`. Wanted, not built: exchanges that end when the agents are done rather than when a counter expires — needs a termination signal on `Signals`. FEASIBILITY.md §3.8.
 
 ## Settled — do not re-litigate
 

@@ -31,6 +31,7 @@ from .events import (
     AgentProposal,
     AgentSpeechEnded,
     AgentSpeechStarted,
+    AgentUtteranceProgress,
     Command,
     CueModerator,
     DuckSpeech,
@@ -451,6 +452,8 @@ class FloorController:
                 return self._agent_started(state, event)
             case AgentAudioProgress():
                 return self._agent_audio_progress(state, event)
+            case AgentUtteranceProgress():
+                return self._agent_utterance_progress(state, event)
             case AgentSpeechEnded():
                 return self._agent_ended(state, event)
             case Tick():
@@ -970,8 +973,83 @@ class FloorController:
             # only place a turn begins, so a heartbeat left over from the
             # previous speaker can never be mistaken for this one's.
             last_audio_progress_t=None,
+            # Same reasoning, for the same reason: this is the only place a
+            # turn begins, so it is the only place that can guarantee the
+            # running text belongs to the turn being started. `_agent_ended`
+            # clears it too — both ends, because either one alone leaves a
+            # window where the previous speaker's words are attributed to the
+            # current one in every prompt built inside it.
+            agent_partial="",
         )
         return state, [self._paint(state)]
+
+    def _agent_utterance_progress(
+        self, state: PanelState, event: AgentUtteranceProgress
+    ) -> tuple[PanelState, list[Command]]:
+        """Fold one spoken sentence into the turn so far, and speculate on it.
+
+        This is the fix for the agent-to-agent handover gap. Until this
+        existed, nothing asked the idle agents for anything between
+        `AgentSpeechStarted` and `AgentSpeechEnded`: every `_ask_for_proposals`
+        site needed a *human* event, and agent speech never produces one
+        (CLAUDE.md — it never goes near STT). So a 30s turn opened zero rounds,
+        the only proposals in hand at the boundary were the pre-turn ones, and
+        `_agent_ended` correctly discarded those as answers to a question the
+        speaker had since spent the whole turn answering. The boundary then
+        paid a full cold generation — 2.43s on the run that prompted this, plus
+        the rest of the first sentence and TTS behind it.
+
+        Two rules, and the second is the one that makes the first safe:
+
+        * **Only the agent actually on the PA.** A sentence from a generation
+          the floor has moved past — a cancelled turn whose `speak()` task has
+          not finished unwinding — is not part of the turn anyone is hearing,
+          and folding it in would attribute the wrong words to the wrong agent
+          for the rest of the exchange.
+        * **Debounced, on its own dial.** `agent_turn_speculation_interval_s`,
+          not `speculation_interval_s`: sentences arrive faster than the model
+          can answer them, and asking faster than a generation completes buys
+          concurrency rather than freshness. The word gate is shared with the
+          human path, because the reason is the same one — an agent opening
+          with "Mm." is a scrap, and a line written against a scrap is a
+          holding line.
+
+        `last_proposal_request_t` is the shared clock, so a round opened by
+        Ricky's last partial correctly holds this one off for its interval.
+        """
+        if state.speaking != event.agent:
+            return state, []
+
+        text = event.text.strip()
+        if not text:
+            return state, []
+        running = f"{state.agent_partial} {text}".strip() if state.agent_partial else text
+        state = replace(state, agent_partial=running)
+
+        if state.intro_queue is not None:
+            # Fixed text, never generated, and the round grants the next line
+            # itself — a speculative candidate here is work nobody reads. The
+            # same carve-out as the human path.
+            return state, []
+
+        due = (
+            event.t - state.last_proposal_request_t
+            >= self.config.agent_turn_speculation_interval_s
+            and len(running.split()) >= self.config.speculation_min_words
+        )
+        if not due:
+            return state, []
+
+        # `idle_agents()` already excludes the speaker (it is SPEAKING) and
+        # anyone muted, so this is the other two and nobody else. Asking the
+        # speaker for a line mid-turn would be asking it to follow itself.
+        targets = state.idle_agents()
+        if not targets:
+            return state, []
+        state, request = self._ask_for_proposals(
+            state, agents=targets, reason="agent_turn", t=event.t
+        )
+        return state, [request]
 
     def _agent_audio_progress(
         self, state: PanelState, event: AgentAudioProgress
@@ -1109,6 +1187,11 @@ class FloorController:
                 transcript=state.transcript
                 + (Utterance(speaker=event.agent, text=event.utterance, t=event.t),),
             )
+        # The running text is now the record, or was never going to be. Cleared
+        # unconditionally, including on the paths that carry no utterance: a
+        # live partial outliving its turn is the one way `recent_text()` can
+        # attribute words to an agent who is no longer saying them.
+        state = replace(state, agent_partial="")
 
         commands: list[Command] = [self._paint(state)]
 
@@ -1139,6 +1222,19 @@ class FloorController:
         # than the turn was written against a moment two turns back, was
         # already passed over once, and goes — that is what `_proposal`'s
         # newest-per-agent rule cannot decide on its own.
+        #
+        # That rule was vacuous until 25 Sept 2026 and worth understanding
+        # before touching either half. The cutoff is `speaking_since`, the
+        # moment *audio began*; a proposal's `written_against_t` is the moment
+        # its input was frozen. Between the two sit the address-classifier
+        # hold, arbitration and TTS first-audio — 632ms on the measured run —
+        # so the round that opened the floor is always older than the turn it
+        # opened, and its proposals always failed this test. With nothing else
+        # ever asked during a turn, the filter could only ever return empty.
+        # `_agent_utterance_progress` is what supplies proposals that pass it,
+        # and it is what makes this line do its intended job (drop answers to
+        # a question the speaker has since answered) rather than drop
+        # everything.
         #
         # `speaking_since` is None only if the agent was never recorded as
         # speaking, which should not happen; clearing everything is the old
@@ -1199,10 +1295,14 @@ class FloorController:
         # use a line it already had in hand. Arbitrating here is the whole
         # latency win.
         #
-        # The request below still goes out when nobody wins — and only then:
-        # asking every idle agent for a line we are about to talk over is how
-        # the next boundary ends up holding proposals written against a turn
-        # that had barely started.
+        # The request below still goes out when nobody wins — and only then.
+        # It used to be the *only* request a turn ever produced, which is why
+        # it was always a full cold generation on the critical path: the filter
+        # above had nothing to keep, because nothing was ever asked during the
+        # turn. `_agent_utterance_progress` now opens rounds through the turn,
+        # so by this point there is normally a proposal written against most of
+        # what the speaker actually said, `_arbitrate` takes it, and this line
+        # is the fallback rather than the path.
         winner, _reason = self._arbitrate(state, invitation=invitation, now=event.t)
         if winner is not None:
             state, grant_cmds = self._grant(state, winner, now=event.t)
@@ -1383,7 +1483,8 @@ class FloorController:
             agents: Who to ask. Usually `state.idle_agents()`; a single agent
                 for an operator override.
             reason: Provenance for the console — "speculation", "final",
-                "post_turn", "agent_turn_ended", "operator_forced".
+                "post_turn", "agent_turn", "agent_turn_ended",
+                "operator_forced".
             t: The timestamp on the event that triggered this round. The
                 round's input time, and the debounce's clock.
 
