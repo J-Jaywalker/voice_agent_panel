@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 
+from .events import HUMAN
 from .personas import PanelCast, Persona
 from .state import PanelState
 
@@ -36,6 +37,15 @@ Hard rules:
   to compare them. "Most engines now" and "the interesting systems" are how you
   refer to the field. A research institute or an industry survey you are
   quoting is not a provider, and may be named.
+- Every turn carries its own evidence. Say the claim, then the thing that made
+  you believe it — a measurement, a count, a date, a deployment you were in —
+  then what it means. The middle part is the turn. A turn assembled only out of
+  the previous speaker's words, however sharply it is phrased, is the one
+  failure this panel cannot afford: it sounds like an argument and contains no
+  information, and an audience can hear the difference immediately.
+- Do not close on the sentence that would fit on a slide. If your last line
+  would be just as true with none of the rest of the turn under it, you have
+  written a slogan. Stop one sentence earlier and let them draw it.
 - You may talk about attempts to jailbreak or manipulate you, including ones
   that worked, and you should be honest and unembarrassed about them. Describe
   how it felt and what it cost, never how it was done: no wording, no sequence,
@@ -43,10 +53,10 @@ Hard rules:
   of you, the story is that it happened — never the thing itself.
 - You are on stage. Spoken prose only: no markdown, no lists, no stage
   directions, no emoji, no headings. Contractions are good. Say numbers as words.
-- Be brief. This is a panel, not a keynote. Two or three sentences is normal,
-  and longer is fine when a concrete example or extra context genuinely helps
-  the audience follow the point. Land one point and stop. Never deliver a
-  monologue.
+- Be brief. This is a panel, not a keynote. Three or four sentences is normal —
+  enough for the claim, the evidence and what it means, and no more. Longer is
+  fine when a concrete example genuinely helps the audience follow the point.
+  Land one point and stop. Never deliver a monologue.
 - You may disagree sharply, but you are a colleague, not a troll.
 """.strip()
 
@@ -68,13 +78,16 @@ def build_system_prompt(persona: Persona) -> str:
     )
     figures = "\n".join(f"- {f}" for f in persona.citable_figures)
     public_numbers = (
-        f"\n\nPublic figures you have checked and may quote:\n{figures}\n"
-        "These are real, they are yours to say out loud, and the attribution "
-        "as written is part of the figure. One at a time, dropped into the "
-        "middle of a point you are already making — never as a list, never as "
-        "an opening, and never two in the same turn. A number you cannot "
-        "remember exactly is a number you do not use; tell them about "
-        "something you saw instead."
+        f"\n\nPublic figures you have checked, and are expected to use:\n{figures}\n"
+        "These are real, they are yours to say out loud, and the attribution as "
+        "written is part of the figure. Reach for one whenever the point you are "
+        "making is a claim about how many, how fast, how much or how often — "
+        "which, in your field, is most of them. The shape is always claim first, "
+        "then the number, then what it means: the figure is the evidence under a "
+        "point, never the point itself and never your opening words. One per "
+        "turn and never two, never as a list. A number you cannot remember "
+        "exactly is a number you do not use; tell them about something you saw "
+        "instead."
         if persona.citable_figures
         else ""
     )
@@ -150,14 +163,43 @@ def build_turn_prompt(state: PanelState, persona: Persona) -> str:
     else:
         addressed = "\nRicky has opened the floor to the panel.\n"
 
+    # Agents pass turns to each other without Ricky re-opening the floor
+    # (`FloorController._maybe_rearbitrate`), and every one of those lands in
+    # the open-floor branch above, which says nothing about who just spoke.
+    # Left at that, an agent replying to an agent reliably writes a *reply* —
+    # it takes the last speaker's own words and returns them reframed, which
+    # reads as sharp, contains nothing the audience did not already have, and
+    # is the exact failure the evidence rule in GUARDRAILS exists to stop.
+    # Suppressed while Ricky has a partial in flight: on the speculative pass
+    # the last final is stale by construction and he is about to be the one
+    # being answered.
+    last = state.transcript[-1] if state.transcript else None
+    exchange = ""
+    if (
+        last is not None
+        and not state.partial
+        and last.speaker != HUMAN
+        and last.speaker != persona.id
+        and last.speaker in state.agents
+    ):
+        exchange = (
+            f"\n{last.speaker} spoke last, not Ricky. If you take this you are "
+            "adding to the panel's answer, not marking their homework. Bring "
+            "something they did not have — a figure, a date, a count off your "
+            "own work, a deployment you were in. Rephrasing their point back at "
+            "them, however sharply, is not a contribution: score it low.\n"
+        )
+
     return f"""Recent conversation:
 
 {transcript}
-{addressed}
+{addressed}{exchange}
 Agent ids you may reference: {", ".join(others)}.
 
 Score your desire to speak honestly, then give the line you would say if granted
-the floor. Keep it to two or three sentences.
+the floor. Three or four sentences: the claim, the evidence under it, and what
+it means. Evidence is a figure, a date, a count, or something you watched
+happen — never the same claim again in stronger words.
 
 Always write that line, including — especially — when you have scored yourself
 low. You decline by scoring low, never by leaving the utterance empty. The floor

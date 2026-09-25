@@ -25,6 +25,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
+from panel_core.events import HUMAN
 from panel_core.personas import Persona
 from panel_core.prompts import (
     GUARDRAILS,
@@ -33,7 +34,7 @@ from panel_core.prompts import (
     sanitise,
     stable_prefix,
 )
-from panel_core.state import PanelState
+from panel_core.state import PanelState, Utterance
 
 # --------------------------------------------------------------------------
 # Approved knowledge — anecdotes rendered into the system prompt
@@ -73,6 +74,38 @@ def test_anecdotes_render_into_the_system_prompt_and_instruct_reuse() -> None:
     prompt = build_system_prompt(persona)
     assert "The eval that passed." in prompt
     assert "rather than inventing a fresh example each time" in prompt
+
+
+def test_citable_figures_are_rendered_as_an_expectation_not_a_permission() -> None:
+    """The figures block used to read as permission hedged with restrictions
+    ("may quote ... never as a list, never as an opening") while the anecdote
+    block immediately above it read as an instruction ("return to these").
+    Given an ambiguous turn the model resolved that the way it was written and
+    reached for the story, which is most of why two personas carrying checked
+    numbers still came out as atmosphere (director's note, 25 Sept 2026).
+
+    The restrictions are still there and still wanted — one per turn is what
+    keeps a turn from becoming a recital. What changed is which half is the
+    instruction.
+    """
+    prompt = build_system_prompt(_persona(citable_figures=["Eighty-eight per cent."]))
+    assert "Eighty-eight per cent." in prompt
+    assert "expected to use" in prompt
+    assert "claim first, then the number, then what it means" in prompt
+    assert "never two" in prompt
+
+
+def test_the_evidence_rule_is_global_so_it_binds_a_persona_with_no_figures() -> None:
+    """Wayne carries no `citable_figures` by design (docs/beat-sheet.md, Wayne
+    "Never"), so a rule that lived only in the figures block would leave the
+    one persona most prone to arguing from attitude entirely unbound. It is in
+    GUARDRAILS instead, where a deployment, a count or a date all satisfy it.
+    """
+    assert "Every turn carries its own evidence" in GUARDRAILS
+    assert "however sharply it is phrased" in GUARDRAILS
+    prompt = build_system_prompt(_persona())
+    assert "expected to use" not in prompt  # no figures block for this persona
+    assert "Every turn carries its own evidence" in prompt
 
 
 # --------------------------------------------------------------------------
@@ -137,6 +170,51 @@ def test_a_settled_statement_still_gets_the_closed_floor_wording() -> None:
     prompt = build_turn_prompt(PanelState.for_agents(("dex", "wayne")), _persona())
     assert "NOT opened the floor" in prompt
     assert "still mid-sentence" not in prompt
+
+
+# --------------------------------------------------------------------------
+# Agents replying to agents — the exchange, not the question
+# --------------------------------------------------------------------------
+
+
+def _after(speaker: str, text: str, **overrides) -> PanelState:
+    """A settled floor whose most recent final came from `speaker`."""
+    state = PanelState.for_agents(("dex", "wayne"))
+    return replace(state, transcript=(Utterance(speaker=speaker, text=text, t=1.0),), **overrides)
+
+
+def test_replying_to_another_agent_demands_something_they_did_not_have() -> None:
+    """Agents pass turns to each other without Ricky re-opening the floor
+    (`FloorController._maybe_rearbitrate`), and every one of those exchanges
+    lands in the open-floor branch, which says nothing about who just spoke.
+
+    Left at that, the model writes a *reply*: it takes the last speaker's own
+    words and hands them back reframed. That reads as sharp and carries no
+    information, and it is what the whole 25 Sept revision is aimed at — the
+    live failures were all in agent-to-agent exchanges, never in answers to
+    Ricky's questions.
+    """
+    prompt = build_turn_prompt(_after("wayne", "Fix the channel."), _persona())
+    assert "wayne spoke last, not Ricky" in prompt
+    assert "Rephrasing their point back at them" in prompt
+
+
+def test_the_speculative_pass_is_never_treated_as_an_exchange() -> None:
+    """Ricky mid-sentence means the last final is stale by construction and he
+    is about to be the one answered. Telling the agent it is replying to Wayne
+    while Ricky is three words into naming it would put the two instructions
+    in direct contradiction on the one pass where latency matters most."""
+    state = _after("wayne", "Fix the channel.", partial="So Dexter, what changed")
+    prompt = build_turn_prompt(state, _persona())
+    assert "spoke last, not Ricky" not in prompt
+    assert "still mid-sentence" in prompt
+
+
+def test_your_own_last_turn_and_rickys_are_not_exchanges() -> None:
+    """Continuing yourself is not answering somebody, and answering Ricky is
+    what every other branch in this function is already about."""
+    assert "spoke last" not in build_turn_prompt(_after("dex", "Mine."), _persona())
+    assert "spoke last" not in build_turn_prompt(_after(HUMAN, "Ricky's."), _persona())
 
 
 # --------------------------------------------------------------------------
