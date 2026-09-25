@@ -13,7 +13,9 @@ uv run panel-sim --live   # text-mode, real model
 uv run panel              # live pipeline: mic -> STT -> floor -> TTS
 uv run panel --no-tts     # same, printed not spoken
 uv run panel --llm-address # resolve the addressee with Haiku, not the regex
+uv run panel --display    # + the 12m video wall, on http://localhost:8765
 uv run barge-in           # interrupt reflex on live mic
+uv run panel-display --demo # video wall alone, synthetic panel, no mic or keys
 uv run ruff check .
 ```
 
@@ -24,9 +26,12 @@ uv run ruff check .
 | `packages/panel_core` | Pure floor logic — `reduce(state, event) -> (state, commands)` |
 | `packages/panel_runtime` | STT, TTS, VAD, mixer, chunking, sanitisation |
 | `packages/panel_sim` | Text-mode persona harness, no audio |
+| `packages/panel_display` | The video wall. `wall.py` is pure, `server.py` is aiohttp, `static/` has no build step. |
 | `personas/*.yaml` | Cast data. Source of truth for prompts. |
 
-Not built: operator console, video wall. Mid-turn steering was cut (11 Sept) — turn length is a prompt instruction, no orchestrator-enforced ceiling; moderator handles the rest live. Phase status: FEASIBILITY.md §8.
+Video wall built 25 Sept: 12.00m x 4.50m, 8:3, four 3m lanes — transcript, then one per agent. Laid out at a fixed 3840x1440 (320px = 1m) and scaled to fit, so the stylesheet's dimensions stay physical whatever the LED processor reports. Orbs are driven by real post-gain audio off `Mixer.take_levels()`, never by a timer. The transcript lane is a **stub**: moderator only. Agent turns need per-sentence streaming off `Candidate.add()` — `AgentSpeechEnded.utterance` arrives too late to be usable.
+
+Not built: operator console. Mid-turn steering was cut (11 Sept) — turn length is a prompt instruction, no orchestrator-enforced ceiling; moderator handles the rest live. Phase status: FEASIBILITY.md §8.
 
 Agents already pass turns to each other without Ricky (`_maybe_rearbitrate`), bounded by `open_invitation_turns` / `max_consecutive_agent_turns`. Wanted, not built: exchanges that end when the agents are done rather than when a counter expires — needs a termination signal on `Signals`. FEASIBILITY.md §3.8.
 

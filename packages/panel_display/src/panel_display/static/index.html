@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en-GB" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <title>Panel — video wall</title>
+
+    <!--
+      Light is the wall. `?theme=dark` is a load-in escape hatch and nothing
+      more — no toggle, no persistence, no UI — for the case where the room
+      turns out darker than anyone expected and 54m² of Sage 2 is too much
+      light to put behind a lit stage.
+
+      The class is the part that does the work: the vendored Radix dark blocks
+      are scoped to `.dark`, so setting only `data-theme` would flip nothing
+      and leave every step on its light value while looking like it had worked.
+      Both go on together, and this runs before the stylesheets so the wall
+      never paints one theme and then the other in front of an audience.
+    -->
+    <script>
+      if (new URLSearchParams(location.search).get("theme") === "dark") {
+        document.documentElement.classList.add("dark");
+        document.documentElement.setAttribute("data-theme", "dark");
+      }
+    </script>
+
+    <!--
+      No viewport meta and no responsive breakpoints, on purpose. This is not a
+      web page that might be opened on a phone; it is a 12m x 4.5m LED wall with
+      one fixed aspect ratio (8:3). The stage is laid out at a fixed 3840x1440
+      and scaled to whatever the wall's real pixel count turns out to be at
+      load-in — see `fitStage` in js/wall.js. Designing in fixed units and
+      scaling once is what makes "this element is 3m wide" a statement that
+      survives meeting the actual hardware.
+    -->
+    <link rel="stylesheet" href="/static/css/tokens.css" />
+    <link rel="stylesheet" href="/static/css/wall.css" />
+  </head>
+
+  <body>
+    <!--
+      `#stage` is the wall. Everything inside is positioned in stage pixels:
+      3840 across 12m and 1440 down 4.5m, so 320px is exactly one metre and a
+      3m lane is exactly 960px. Those two numbers are the only conversion in
+      the whole stylesheet.
+    -->
+    <div id="stage" class="stage" aria-hidden="true">
+      <!--
+        Transcript, 3m, hard left. A stub: it carries the moderator's live
+        words and nothing else. Agent turns are not in here yet — see the note
+        in wall.css.
+      -->
+      <section class="lane lane--transcript">
+        <header class="lane__eyebrow">
+          <span class="dot" data-role="human-dot"></span>
+          <span data-role="transcript-label">Moderator</span>
+        </header>
+
+        <div class="transcript">
+          <div class="transcript__feed" data-role="lines"></div>
+          <p class="transcript__partial" data-role="partial"></p>
+        </div>
+
+        <footer class="lane__foot">
+          <span class="lane__cue" data-role="cue"></span>
+        </footer>
+      </section>
+
+      <!-- Three agent lanes, 3m each, injected from the cast on connect. -->
+      <div class="lanes" data-role="agents"></div>
+    </div>
+
+    <!-- Shown only while the socket is down. Nothing else ever covers the wall. -->
+    <div class="offline" data-role="offline">
+      <span>waiting for the panel</span>
+    </div>
+
+    <template data-role="agent-template">
+      <section class="lane lane--agent" data-state="idle">
+        <header class="lane__eyebrow">
+          <span class="dot"></span>
+          <span data-role="status"></span>
+        </header>
+
+        <div class="orb">
+          <canvas data-role="canvas"></canvas>
+        </div>
+
+        <div class="plate">
+          <h1 class="plate__name" data-role="name"></h1>
+          <p class="plate__role" data-role="role"></p>
+          <p class="plate__employer" data-role="employer"></p>
+        </div>
+      </section>
+    </template>
+
+    <script type="module" src="/static/js/wall.js"></script>
+  </body>
+</html>

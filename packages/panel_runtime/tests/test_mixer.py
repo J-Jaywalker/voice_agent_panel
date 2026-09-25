@@ -122,3 +122,61 @@ def test_audio_arriving_after_a_stop_is_refused(mixer):
     mixer.feed("dex", tone(1.0))  # a late chunk from the provider
     render_ms(mixer, 100)
     assert np.max(np.abs(render_ms(mixer, 100))) < 1e-3
+
+
+# ------------------------------------------------------------------ metering
+
+# What the video wall's orbs are drawn from. The claim the orb makes is that
+# the ring pulsing on the wall is the audio coming out of the PA, so these
+# test the meter against the same thing the listener hears: post-gain, after
+# ducking, after a stop.
+
+
+def test_a_silent_agent_meters_nothing(mixer):
+    render_ms(mixer, 50)
+    assert mixer.take_levels() == dict.fromkeys(AGENTS, 0.0)
+
+
+def test_the_meter_follows_the_audio(mixer):
+    mixer.feed("dex", tone(1.0, amplitude=0.5))
+    render_ms(mixer, 50)
+    levels = mixer.take_levels()
+    assert levels["dex"] == pytest.approx(0.5, abs=0.02)
+    assert levels["wayne"] == 0.0
+
+
+def test_the_meter_is_taken_after_gain_so_a_ducked_agent_shrinks(mixer):
+    """A duck has to be visible on the wall, not just audible in the room."""
+    mixer.feed("dex", tone(2.0, amplitude=0.5))
+    render_ms(mixer, 50)
+    full = mixer.take_levels()["dex"]
+
+    mixer.duck("dex", -12.0, ramp_ms=10)
+    # The meter is a peak since the last read, so a read taken across the ramp
+    # would report the loudest moment of it rather than where it landed.
+    # Render the ramp out, discard, then measure the destination.
+    render_ms(mixer, 50)
+    mixer.take_levels()
+    render_ms(mixer, 50)
+    ducked = mixer.take_levels()["dex"]
+
+    assert ducked < full
+    assert ducked == pytest.approx(full * 0.25, rel=0.05)  # -12dB
+
+
+def test_reading_the_meter_clears_it(mixer):
+    """Peak-since-last-read, so the 30Hz wall cannot alias against 16ms blocks."""
+    mixer.feed("dex", tone(1.0))
+    render_ms(mixer, 50)
+    assert mixer.take_levels()["dex"] > 0.0
+    assert mixer.take_levels()["dex"] == 0.0
+
+
+def test_a_stopped_agent_meters_back_to_silence(mixer):
+    mixer.feed("dex", tone(1.0))
+    render_ms(mixer, 50)
+    mixer.stop("dex")
+    render_ms(mixer, 100)
+    mixer.take_levels()
+    render_ms(mixer, 50)
+    assert mixer.take_levels()["dex"] == 0.0

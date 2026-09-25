@@ -70,7 +70,9 @@ uv run panel-sim           # offline stub brains, no credentials needed
 uv run panel-sim --live    # real model behind the personas
 uv run panel-sim --live --model claude-sonnet-5 --effort low
 uv run panel-sim --log recordings/run1.jsonl   # record for replay
+uv run panel --llm-address --display --log recordings/$(date +%F-%H%M).jsonl # For the entire god damned thing
 ```
+Then open http://localhost:8765/ and fullscreen it (⌃⌘F, or Chrome with --kiosk).
 
 | Flag | Default | What it changes |
 |---|---|---|

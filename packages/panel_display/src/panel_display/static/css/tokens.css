@@ -1,0 +1,236 @@
+/*
+ * Design tokens for the panel video wall.
+ *
+ * Same architecture as speechmatics.com and the demo playground: Radix Colors
+ * supply every raw value, components only ever read the role tokens declared
+ * here, and no rule anywhere else reads a `--sage-*` / `--jade-*` step
+ * directly. If a component needs a colour, add a role token here.
+ *
+ * Light by default, and light is the state this wall is designed for. Dark
+ * survives behind `?theme=dark` because the vendored Radix files already carry
+ * both scales, so keeping it alive costs a second block rather than a second
+ * design — and nobody knows what the room's ambient light will be until the
+ * rig is in it. `?theme=dark` sets the `.dark` class *and* the attribute: the
+ * vendored dark blocks are scoped to `.dark`, so the attribute on its own
+ * silently leaves every step on its light value. See the head of index.html.
+ *
+ * The light-mode ground is Sage 2, not white. An LED panel at stage brightness
+ * renders #ffffff as a hot rectangle that the people standing in front of it
+ * have to compete with, and Sage 2 is a stop and a half of that back for free.
+ */
+
+@import "./radix/sage.css";
+@import "./radix/sage-dark.css";
+@import "./radix/jade.css";
+@import "./radix/jade-dark.css";
+@import "./radix/cyan.css";
+@import "./radix/cyan-dark.css";
+@import "./radix/amber.css";
+@import "./radix/amber-dark.css";
+@import "./radix/orange.css";
+@import "./radix/orange-dark.css";
+
+/*
+ * PP Telegraf, the Speechmatics display face, self-hosted. Variable 200-900,
+ * so one file covers the hairline eyebrow labels and the heavy agent names
+ * without a second request.
+ *
+ * Self-hosted rather than fetched, and that is a deployment requirement rather
+ * than a preference: this runs on a machine wheeled into a venue (CLAUDE.md
+ * § Deployment) and the wall must paint correctly with the network unplugged.
+ */
+@font-face {
+  font-family: "PP Telegraf";
+  src: url("/static/fonts/PPTelegraf-VariableUpright.woff2") format("woff2");
+  font-weight: 200 900;
+  font-style: normal;
+  font-display: block;
+}
+
+/* ── Theme-independent ─────────────────────────────────────────────────── */
+
+:root {
+  /*
+   * ── Type ────────────────────────────────────────────────────
+   *
+   * One family. No monospace anywhere on this wall: a mono face reads as
+   * telemetry, and everything here is a person's name or a person's words.
+   */
+  --font-display: "PP Telegraf", system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  /*
+   * ── Geometry ────────────────────────────────────────────────
+   *
+   * The wall is 12.00m x 4.50m. Laid out at 3840 x 1440, which makes the
+   * conversion exactly 320px per metre in both axes and keeps the 8:3 aspect
+   * ratio honest. Every size below is written as a multiple of `--m` wherever
+   * the physical dimension is the thing that matters.
+   */
+  --stage-w: 3840px;
+  --stage-h: 1440px;
+  --m: 320px; /* one metre */
+  --lane-w: 960px; /* 3.00m — four of these across */
+
+  /*
+   * The bottom metre is reserved and stays empty.
+   *
+   * On a wall standing behind a stage, the lowest ~1m is the part heads, music
+   * stands and the front row's sightline eat first. Nothing that has to be
+   * read goes there. This is the one layout number most likely to need moving
+   * at load-in, once there is a real room to look down.
+   */
+  --foot-clear: var(--m);
+
+  /*
+   * The agent's permanent identity bar, across the top of their lane.
+   *
+   * The brand's card recipe is `border-top: 3px`, and 3px here is 9mm of LED
+   * seen from 20m — a scratch. Everything on this wall is scaled by roughly
+   * 320px/m, so the bar is too: 12px is 3.75cm, which is the thinnest line
+   * that still reads as a deliberate rule rather than a panel seam.
+   */
+  --lane-bar: 12px;
+
+  /*
+   * ── Motion ──────────────────────────────────────────────────
+   *
+   * One ease for everything that moves. A long tail with no overshoot is what
+   * reads as expensive rather than bouncy, and at this size a bounce is a 2m
+   * object wobbling.
+   */
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 220ms;
+  --dur-slow: 640ms;
+}
+
+/* ── Light (the design) ────────────────────────────────────────────────── */
+
+:root {
+  /*
+   * ── Surfaces ────────────────────────────────────────────────
+   *
+   * Sage 2 rather than Sage 1: the wall is the ground the whole show stands
+   * on, and leaving Sage 1 unspent means the lane washes and the orb bodies
+   * have somewhere lighter to sit against if they ever need it.
+   */
+  --bg-wall: var(--sage-2);
+  --bg-lane: color-mix(in srgb, var(--sage-3) 75%, transparent);
+  --bg-divider: color-mix(in srgb, var(--sage-7) 90%, transparent);
+
+  /*
+   * The stage's centre lift, which in dark mode stops 54m² of flat black
+   * reading as a dead panel. Light mode has no such problem — paper does not
+   * look broken — and a blob of Sage 4 in the middle of a white wall reads as
+   * a dirty mark rather than as depth. Off, and the lane washes do the work
+   * of giving the wall structure instead.
+   */
+  --bg-lift: transparent;
+
+  /* ── Type colours ───────────────────────────────────────────── */
+  --text-primary: var(--sage-12);
+  --text-secondary: var(--sage-11);
+  /*
+   * Sage 10 rather than the 9 dark mode uses. Radix's step 9 is the *solid*
+   * step, tuned to be a fill rather than a label, and on a light ground a
+   * 30px letterspaced eyebrow in Sage 9 is a grey smudge at 20m.
+   */
+  --text-quiet: var(--sage-10);
+
+  /* An unlit dot — the moderator's, before he says anything. */
+  --rest-dim: var(--sage-8);
+
+  /*
+   * ── Accents ─────────────────────────────────────────────────
+   *
+   * Three, one per agent, assigned by cast order in `wall.py`. Three rather
+   * than the brand's usual two-accent restraint because this is categorical
+   * identity — telling Dexter from Melia from Wayne across a room — and not a
+   * chart. The same distinction the playground draws with its `--cat-*`
+   * ladder, and every scale here is one the brand already imports.
+   *
+   * Each agent gets three role tokens, and the split matters:
+   *
+   *   --accent-*        ink. Text, and the colour the orb arrives at when the
+   *                     agent is actually talking. Step 11, which is the step
+   *                     Radix guarantees for text on a light ground — and is
+   *                     exactly the brand rule that Jade 11, never Jade 9, is
+   *                     what you set type in.
+   *   --accent-*-quiet  the identity fill: the lane bar, and the colour the
+   *                     orb sits at when idle. High chroma, because this is
+   *                     the token doing the "which agent is this" work.
+   *   --accent-*-wash   the lane tint. Step 4, used at a fraction of itself.
+   *
+   * Amber breaks the pattern at `quiet` and has to. Radix calls amber a
+   * *bright* scale: its step 9 (#FFC53D) is higher-luminance than its step 8
+   * and is built to carry dark text on top, not to be seen against white. A
+   * 12px amber-9 bar on Sage 2 is invisible from the third row. Step 8 is the
+   * last amber that still has contrast against the ground, so amber's fill is
+   * 8 where jade's and cyan's are 9. No amber fill anywhere on this wall
+   * carries text, so the rule that amber never pairs with light type holds
+   * trivially.
+   */
+  --accent-jade: var(--jade-11);
+  --accent-jade-quiet: var(--jade-9);
+  --accent-jade-wash: var(--jade-4);
+
+  --accent-cyan: var(--cyan-11);
+  --accent-cyan-quiet: var(--cyan-9);
+  --accent-cyan-wash: var(--cyan-4);
+
+  --accent-amber: var(--amber-11);
+  --accent-amber-quiet: var(--amber-8);
+  --accent-amber-wash: var(--amber-4);
+
+  /* Reserved for the kill switch. Orange is negative-only, per the brand. */
+  --accent-alarm: var(--orange-11);
+
+  /*
+   * ── Orb modelling ───────────────────────────────────────────
+   *
+   * The one colour in the orb that is not an agent's: the gradient that gives
+   * the disc a body rather than a flat fill. Sage 12 in both themes, and that
+   * is the whole trick — Sage 12 is near-black on light and near-white on
+   * dark, so "shade the disc" and "light the disc" are the same instruction
+   * and the theme decides which one happens. The direction the modelling
+   * comes *from* still has to flip, and that lives in `ORB` in js/orb.js.
+   */
+  --orb-model: var(--sage-12);
+}
+
+/* ── Dark (`?theme=dark`) ──────────────────────────────────────────────── */
+
+.dark,
+.dark-theme {
+  /*
+   * Near-black rather than Radix sage-1, because an LED panel at stage
+   * brightness renders #101211 as a visibly lit grey rectangle in a dark room.
+   * The sage steps still do all the work above it.
+   */
+  --bg-wall: #070908;
+  --bg-lane: color-mix(in srgb, var(--sage-2) 55%, transparent);
+  --bg-divider: color-mix(in srgb, var(--sage-7) 70%, transparent);
+  --bg-lift: color-mix(in srgb, var(--sage-4) 34%, transparent);
+
+  --text-quiet: var(--sage-9);
+  --rest-dim: var(--sage-6);
+
+  /*
+   * Inverted from light: the ink is the *vivid* step, because on black the
+   * accent arrives by getting brighter, and the resting colour is the dim one
+   * a step below it. Amber needs no exception here — on black, step 9 is the
+   * brightest thing on the scale rather than the least visible.
+   */
+  --accent-jade: var(--jade-9);
+  --accent-jade-quiet: var(--jade-8);
+  --accent-jade-wash: var(--jade-4);
+
+  --accent-cyan: var(--cyan-9);
+  --accent-cyan-quiet: var(--cyan-8);
+  --accent-cyan-wash: var(--cyan-4);
+
+  --accent-amber: var(--amber-9);
+  --accent-amber-quiet: var(--amber-8);
+  --accent-amber-wash: var(--amber-4);
+
+  --accent-alarm: var(--orange-9);
+}

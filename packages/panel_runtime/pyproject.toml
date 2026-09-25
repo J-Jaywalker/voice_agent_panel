@@ -5,6 +5,9 @@ description = "I/O adapters: STT, VAD, TTS, audio mixer. Everything panel_core r
 requires-python = ">=3.12"
 dependencies = [
     "panel-core",
+    # The video wall, behind `--display`. Built only when the flag is on, so
+    # a run without it costs an import and nothing else.
+    "panel-display",
     "sounddevice>=0.4.7",
     "numpy>=1.26",
     # Raw WS for TTS (cancellation semantics are the point, so we own them) and

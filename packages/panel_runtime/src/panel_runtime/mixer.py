@@ -39,6 +39,8 @@ class AgentVoice:
         self.envelope = GainEnvelope(sample_rate, 0.0)
         self._buffer = np.zeros(0, dtype=np.float32)
         self._finished = False  # TTS delivered everything it is going to
+        # Loudest block RMS since the meter was last read. See `take_level`.
+        self._level = 0.0
 
     # ------------------------------------------------------------ loop thread
 
@@ -52,7 +54,25 @@ class AgentVoice:
     def reset(self) -> None:
         self._buffer = np.zeros(0, dtype=np.float32)
         self._finished = False
+        self._level = 0.0
         self.envelope = GainEnvelope(self.sample_rate, 0.0)
+
+    def take_level(self) -> float:
+        """Loudest block since the last call, then reset to zero.
+
+        Peak-and-clear rather than "the level right now", because the two
+        clocks do not line up: blocks arrive every 16ms and the video wall
+        polls every 33ms, so sampling the instantaneous value would alias —
+        reading whichever block happened to land under the poll and dropping
+        the one next to it. Over a syllable that shows as a flicker.
+
+        Clearing is what makes it a peak *since the last read* rather than a
+        peak-hold that has to decay, which would be one more constant to tune
+        and one more thing to get wrong in a room you have not stood in yet.
+        """
+        level = self._level
+        self._level = 0.0
+        return level
 
     @property
     def buffered_seconds(self) -> float:
@@ -73,7 +93,17 @@ class AgentVoice:
         chunk = np.zeros(frames, dtype=np.float32)
         chunk[:take] = self._buffer[:take]
         self._buffer = self._buffer[take:]
-        return chunk * gain
+        out = chunk * gain
+        # Metered *after* gain, so a ducked agent visibly shrinks on the video
+        # wall and a stopped one collapses with the ramp. What the wall shows
+        # is what the room hears — that is the whole claim the orb makes, and
+        # metering pre-gain would quietly break it.
+        #
+        # One sqrt on 256 floats, inside a callback that must not block. It
+        # costs a few microseconds against a 16ms budget; a float store is
+        # atomic enough for a meter that is allowed to miss a block.
+        self._level = max(self._level, float(np.sqrt(np.mean(np.square(out)))))
+        return out
 
 
 class Mixer:
@@ -134,6 +164,16 @@ class Mixer:
         with self._lock:
             voice = self.voices.get(agent_id)
             return voice is None or voice.drained
+
+    def take_levels(self) -> dict[str, float]:
+        """Every voice's peak since the last call. Drives the video wall's orbs.
+
+        Read-and-clear, so calling this from anywhere other than the one
+        display pump will quietly steal frames from it. There is exactly one
+        caller (`PanelRuntime._pump_levels`) and there should stay exactly one.
+        """
+        with self._lock:
+            return {agent_id: voice.take_level() for agent_id, voice in self.voices.items()}
 
     def buffered_seconds(self, agent_id: str) -> float:
         """How much audio is queued but not yet played.

@@ -7,6 +7,7 @@ dependencies = [
     "panel-core",
     "panel-sim",
     "panel-runtime",
+    "panel-display",
 ]
 
 [tool.uv.workspace]
@@ -16,6 +17,7 @@ members = ["packages/*"]
 panel-core = { workspace = true }
 panel-sim = { workspace = true }
 panel-runtime = { workspace = true }
+panel-display = { workspace = true }
 
 [dependency-groups]
 dev = [

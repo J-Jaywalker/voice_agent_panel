@@ -1,0 +1,506 @@
+/*
+ * The wall.
+ *
+ * Layout is fixed, not responsive: 3840 x 1440 stage pixels standing for
+ * 12.00m x 4.50m, scaled once to fit whatever the LED processor actually
+ * reports (`fitStage`, js/wall.js). 320px is one metre. Four 960px lanes:
+ * transcript, then the three agents, left to right.
+ *
+ *   0m ─────────── 3m ─────────── 6m ─────────── 9m ────────── 12m
+ *   │  transcript  │   agent 1    │   agent 2    │   agent 3   │
+ *
+ * Nothing in here animates during the show except opacity and colour on a few
+ * small labels. Every moving pixel — the orbs — is drawn into a canvas by one
+ * requestAnimationFrame loop, which is the difference between a wall that
+ * holds 60fps on a mid-range machine and one that does not.
+ *
+ * Vertical budget per lane, which is tight and worth stating so the next
+ * person editing a font size knows what they are spending:
+ *
+ *     12  identity bar (--lane-bar), agent lanes only
+ *     80  top padding
+ *     44  eyebrow
+ *     28  gap
+ *    720  orb canvas
+ *     36  gap
+ *    194  name plate
+ *    320  reserved foot (--foot-clear), deliberately empty
+ *   ────
+ *   1434  of 1440
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-wall);
+  /* A mouse pointer parked on a 12m wall is a 4cm white arrow. */
+  cursor: none;
+}
+
+body {
+  font-family: var(--font-display);
+  color: var(--text-primary);
+}
+
+/* The wall is viewed from 10-30m; the browser's subpixel hinting is tuned for
+   60cm and makes light type on black look thin at this scale. Dark only —
+   applied in light mode it thins *dark* type on a light ground, which is the
+   same defect the other way up, and there the default is already right. */
+.dark body {
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Stage ─────────────────────────────────────────────────────────────── */
+
+.stage {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: var(--stage-w);
+  height: var(--stage-h);
+  transform-origin: center center;
+  /* `--fit` is written by fitStage(); the translate keeps it centred while it
+     scales, so a browser window of any size letterboxes instead of cropping. */
+  transform: translate(-50%, -50%) scale(var(--fit, 1));
+  display: flex;
+  align-items: stretch;
+
+  /*
+   * A very wide, very shallow lift toward the centre. Two purposes: it stops
+   * 54m² of flat black reading as a dead panel, and it seats the three orbs
+   * on something. Kept under 4% so it never becomes the "dark sci-fi
+   * interface" the brand guidelines rule out.
+   *
+   * `--bg-lift` is transparent in light mode, so this whole layer costs
+   * nothing there — paper does not need rescuing from looking dead, and the
+   * same blob on white reads as a mark rather than as depth.
+   */
+  background: radial-gradient(120% 90% at 62% 46%, var(--bg-lift) 0%, transparent 68%),
+    var(--bg-wall);
+}
+
+/* ── Lanes ─────────────────────────────────────────────────────────────── */
+
+.lane {
+  width: var(--lane-w);
+  flex: 0 0 var(--lane-w);
+  height: 100%;
+  padding: 80px 64px var(--foot-clear);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.lanes {
+  display: flex;
+  flex: 1 1 auto;
+}
+
+.lane--transcript {
+  align-items: stretch;
+  background: linear-gradient(
+    to right,
+    var(--bg-lane) 0%,
+    color-mix(in srgb, var(--bg-lane) 40%, transparent) 100%
+  );
+  /*
+   * The only hard edge on the wall, and it marks the only real structural
+   * boundary: words on the left, people on the right. A 2px rule is 6mm of
+   * LED, so it is faded at both ends rather than ruled — a 6mm hairline
+   * running the full height would alight on the panel seams and shimmer.
+   */
+  border-right: 2px solid transparent;
+  border-image: linear-gradient(
+      to bottom,
+      transparent 0%,
+      var(--bg-divider) 22%,
+      var(--bg-divider) 72%,
+      transparent 100%
+    )
+    1;
+}
+
+/* ── Eyebrow (the small status line at the top of every lane) ──────────── */
+
+.lane__eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  height: 44px;
+  font-size: 30px;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-quiet);
+  transition: color var(--dur-fast) var(--ease);
+}
+
+.lane--agent .lane__eyebrow {
+  justify-content: center;
+  /* Reserved, not hidden. An eyebrow that appears and disappears shifts a 2m
+     orb up and down by 44px every time an agent starts thinking. */
+  min-height: 44px;
+}
+
+.dot {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--rest-dim);
+  flex: 0 0 auto;
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease),
+    opacity var(--dur-fast) var(--ease);
+}
+
+.dot[data-live="true"] {
+  background: var(--accent-jade);
+  box-shadow: 0 0 0 7px color-mix(in srgb, var(--accent-jade) 24%, transparent);
+}
+
+/*
+ * The moderator's dot is written every frame from the mic envelope, so it
+ * must not also be transitioning — a 220ms transition restarted 30 times a
+ * second never arrives anywhere. The agents' dots are set on state changes
+ * only and keep theirs.
+ */
+[data-role="human-dot"] {
+  transition: background-color var(--dur-fast) var(--ease);
+}
+
+/* ── Agent lane ────────────────────────────────────────────────────────── */
+
+/*
+ * The three colour tokens an agent owns, set per lane from the cast (jade /
+ * cyan / amber, by cast order). The canvas reads `--accent`, `--accent-quiet`
+ * and `--orb-model` back through getComputedStyle at init, so this
+ * declaration is the single place an agent's colour is decided on the client.
+ *
+ * Their split — ink, identity fill, lane wash — is documented in tokens.css.
+ */
+.lane--agent[data-accent="jade"] {
+  --accent: var(--accent-jade);
+  --accent-quiet: var(--accent-jade-quiet);
+  --accent-wash: var(--accent-jade-wash);
+}
+.lane--agent[data-accent="cyan"] {
+  --accent: var(--accent-cyan);
+  --accent-quiet: var(--accent-cyan-quiet);
+  --accent-wash: var(--accent-cyan-wash);
+}
+.lane--agent[data-accent="amber"] {
+  --accent: var(--accent-amber);
+  --accent-quiet: var(--accent-amber-quiet);
+  --accent-wash: var(--accent-amber-wash);
+}
+
+/*
+ * The lane *is* the agent, whether or not they are talking.
+ *
+ * The orb used to carry all of this on its own, and it carried it only while
+ * an agent was active — idle was neutral grey. Three metres of wall standing
+ * empty above someone's name is the wall forgetting whose three metres it is,
+ * so identity moved out of the orb and onto the lane: a bar at the top in
+ * their colour, and a wash under the whole thing, both permanent.
+ *
+ * Which frees the orb to spend everything it has on state instead. See the
+ * long note in js/orb.js — once hue stops answering "who", it can stop
+ * answering "what" too, and the two questions get separate surfaces.
+ */
+.lane--agent {
+  position: relative;
+  border-top: var(--lane-bar) solid var(--accent-quiet);
+}
+
+/*
+ * The wash. Very low, and top-weighted so it belongs to the bar rather than
+ * looking like the lane has a different background from its neighbours.
+ *
+ * It also doubles as the largest state cue on the wall: the whole 3m lane
+ * deepens when its agent takes the floor. At 20m that is the change most
+ * likely to be caught out of the corner of an eye, which is how most of this
+ * audience will be watching.
+ *
+ * `z-index: -1` rather than a stack of positioned siblings, because `.stage`
+ * has a transform and therefore a stacking context — the wash lands above the
+ * stage's own background and below everything in the lane, which is exactly
+ * the one layer wanted and costs no rules elsewhere.
+ */
+.lane--agent::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(to bottom, var(--accent-wash) 0%, transparent 64%);
+  /*
+   * 0.3 is as low as this can go and still name the lane from the back of the
+   * room, and it has to stay that low: the speaking lane goes to 1, and the
+   * cue is the *difference*. Started at 0.45 and the three lanes read as three
+   * coloured panels with a barely perceptible change when one took the floor.
+   */
+  opacity: 0.3;
+  transition: opacity var(--dur-slow) var(--ease);
+}
+
+.lane--agent[data-state="speaking"]::before,
+.lane--agent[data-state="ducked"]::before {
+  opacity: 1;
+}
+
+/*
+ * The eyebrow dot is an identity marker first and a status light second — at
+ * idle the label beside it is empty, so the dot is all there is. Hollow at
+ * rest, filled the moment the agent is in play: a ring and a disc read apart
+ * at a distance where two shades of the same colour do not.
+ */
+.lane--agent .lane__eyebrow .dot {
+  opacity: 1;
+  background: transparent;
+  border: 3px solid var(--accent-quiet);
+}
+
+.lane--agent:not([data-state="idle"]) .lane__eyebrow {
+  color: var(--accent);
+}
+
+.lane--agent:not([data-state="idle"]) .lane__eyebrow .dot {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* A spread ring, not a blur. A glow needs a dark ground to glow against; on
+   Sage 2 a 24px box-shadow blur is a smudge and reads as a rendering fault. */
+.lane--agent[data-state="speaking"] .lane__eyebrow .dot,
+.lane--agent[data-state="ducked"] .lane__eyebrow .dot {
+  box-shadow: 0 0 0 7px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+/* Thinking and invited are quieter than speaking — a held breath, not a
+   headline. Speaking gets the full accent from the rule above. */
+.lane--agent[data-state="thinking"] .lane__eyebrow,
+.lane--agent[data-state="invited"] .lane__eyebrow {
+  color: var(--text-secondary);
+}
+
+.orb {
+  flex: 1 1 auto;
+  display: grid;
+  place-items: center;
+  margin: 28px 0 36px;
+}
+
+.orb canvas {
+  width: 720px;
+  height: 720px;
+  display: block;
+}
+
+/* ── Name plate ────────────────────────────────────────────────────────── */
+
+.plate {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.plate__name {
+  margin: 0;
+  font-size: 88px;
+  font-weight: 600;
+  line-height: 1;
+  /* Display type at this size reads loose by default, either polarity. */
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+}
+
+.plate__role {
+  margin: 0;
+  font-size: 36px;
+  font-weight: 400;
+  line-height: 1.25;
+  color: var(--text-secondary);
+  /* Job titles run long — "Chief AI Ethics & Human Continuity Officer" is
+     already close to the 832px of usable lane width at this size — and two
+     lines here would blow the vertical budget above. Kept to one, and the
+     ellipsis is the warning that a longer title needs a smaller size rather
+     than a second line. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.plate__employer {
+  margin: 0;
+  font-size: 32px;
+  font-weight: 400;
+  line-height: 1.3;
+  letter-spacing: 0.08em;
+  color: var(--text-quiet);
+}
+
+/* ── Transcript ────────────────────────────────────────────────────────── */
+
+/*
+ * STUB. This lane carries the moderator's live words and nothing else.
+ *
+ * What is deliberately not here yet: agent turns. The text exists — it is in
+ * `AgentSpeechEnded.utterance` — but it only exists once the turn is over, and
+ * a paragraph that lands on the wall all at once *after* the agent stopped
+ * talking reads as a fault. Doing it properly means streaming from
+ * `Candidate.add()` in panel_runtime/panel.py, sentence by sentence, in step
+ * with what the PA is playing. That is a small piece of work and a real one,
+ * and it is the next thing this lane wants.
+ */
+
+.transcript {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 28px;
+  padding: 36px 0 0;
+}
+
+.transcript__feed {
+  display: flex;
+  flex-direction: column;
+  /*
+   * Bottom-anchored *inside its own box*, and that is load-bearing rather
+   * than cosmetic. The feed is a shrinkable flex item, so once it holds more
+   * than fits it gets squashed — and a squashed box with top-aligned content
+   * clips the newest line off the bottom, which is the one line that matters.
+   * Ending the content at the bottom pushes the overflow off the top instead,
+   * which is where the mask is waiting for it.
+   */
+  justify-content: flex-end;
+  min-height: 0;
+  gap: 22px;
+  overflow: hidden;
+  /*
+   * The mask does the leaving — a line that scrolls off a hard edge on a wall
+   * this size snaps.
+   */
+  mask-image: linear-gradient(to bottom, transparent 0%, #000 26%, #000 100%);
+}
+
+.line {
+  margin: 0;
+  /*
+   * 50px = 15.6cm em box, ~11cm cap height at 320px/m. Comfortable to roughly
+   * 20m and legible to about 27m by the usual cap-height/viewing-distance rule
+   * of thumb. That is a deliberate ceiling rather than a maximum: the audience
+   * is *hearing* these words, so the transcript is a support and an
+   * accessibility surface, not the thing anyone is reading from the back row.
+   * If the room turns out deeper than that, this is the number to raise and
+   * TRANSCRIPT_LINES in wall.py is what pays for it.
+   */
+  font-size: 50px;
+  font-weight: 400;
+  line-height: 1.34;
+  color: var(--text-secondary);
+  animation: line-in var(--dur-slow) var(--ease) both;
+}
+
+/* The most recent finalised line is the one still in play. */
+.line:last-child {
+  color: var(--text-primary);
+}
+
+.transcript__partial {
+  margin: 0;
+  font-size: 50px;
+  font-weight: 400;
+  line-height: 1.34;
+  color: var(--text-quiet);
+  min-height: 67px;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.transcript__partial:empty {
+  opacity: 0;
+}
+
+@keyframes line-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ── Lane foot (moderator cue) ─────────────────────────────────────────── */
+
+.lane__foot {
+  height: 56px;
+  display: flex;
+  align-items: center;
+}
+
+.lane__cue {
+  font-size: 30px;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--accent-jade);
+  opacity: 0;
+  transition: opacity var(--dur-slow) var(--ease);
+}
+
+.lane__cue[data-on="true"] {
+  opacity: 1;
+}
+
+/* ── Kill switch ───────────────────────────────────────────────────────── */
+
+/*
+ * `OperatorAction.KILL_ALL`. Orange, because the brand reserves it for the
+ * negative case and this is the only one on the wall. Restrained on purpose:
+ * the operator already knows, and the audience does not need a siren.
+ */
+.stage[data-killed="true"] .lane--agent .lane__eyebrow {
+  color: var(--accent-alarm);
+}
+
+/* The dot goes with it. The lane bar and wash do not: whose lane this is has
+   not changed, only what is happening in it. */
+.stage[data-killed="true"] .lane--agent .lane__eyebrow .dot {
+  background: var(--accent-alarm);
+  border-color: var(--accent-alarm);
+  box-shadow: none;
+}
+
+/* ── Offline ───────────────────────────────────────────────────────────── */
+
+.offline {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: var(--bg-wall);
+  color: var(--text-quiet);
+  font-size: 44px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-slow) var(--ease);
+}
+
+.offline[data-on="true"] {
+  opacity: 1;
+}

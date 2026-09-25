@@ -76,6 +76,7 @@ from panel_core import (
     TurnYielded,
 )
 from panel_core.prompts import AMBIGUOUS_VERDICT
+from panel_display import DISPLAY_PORT, DisplayServer
 from rich.console import Console
 from rich.live import Live
 from rich.markup import escape
@@ -127,6 +128,16 @@ HEARTBEAT_INTERVAL_S = 0.5
 # § Deployment) — this dial is the first thing to move if the tail is worse
 # there.
 ADDRESS_HOLD_TIMEOUT_S = 0.7
+
+# How often the video wall is handed a fresh set of audio envelopes.
+#
+# Matches `panel_display.server.LEVEL_HZ`. The orb interpolates between these
+# at display rate, so this only has to be fine enough not to miss a syllable —
+# 33ms against syllables of 150-250ms. Raising it does not make the wall
+# smoother, because the smoothing is a filter in the browser rather than a
+# consequence of the sample rate; it only puts more work on the loop that the
+# audio path shares.
+DISPLAY_LEVEL_INTERVAL_S = 1 / 30
 
 # How `AddressVerdict.source` reads on the console. Whether a verdict was
 # already decided before Ricky stopped talking is the open question about this
@@ -242,6 +253,7 @@ class PanelRuntime:
         use_tts: bool = True,
         log_path: Path | None = None,
         address_classifier: AddressClassifier | None = None,
+        display: DisplayServer | None = None,
     ) -> None:
         self.cast = cast
         self.fc = FloorController(cast, floor_config or FloorConfig())
@@ -263,6 +275,16 @@ class PanelRuntime:
         self._address = address_classifier
         if self._address is None and self.fc.config.llm_address_detection:
             self._address = AddressClassifier(cast)
+
+        # The 12m video wall, or None. It is handed every event and every
+        # command and is never asked anything, so nothing on stage depends on
+        # it being up — see `panel_display.server.DisplayServer`.
+        self._display = display
+        # Peak mic RMS since the display last read it, written from the
+        # PortAudio callback. Same peak-and-clear contract as the mixer's
+        # meters (`Mixer.take_levels`) and for the same reason: the audio
+        # blocks and the wall's frames are on different clocks.
+        self._mic_level = 0.0
 
         self.events: asyncio.Queue = asyncio.Queue()
         self._mic: queue.Queue = queue.Queue()
@@ -355,6 +377,9 @@ class PanelRuntime:
         self._mic.put_nowait(mono.copy())
         self.stt.feed("ricky", pcm.tobytes())
 
+        if self._display is not None:
+            self._mic_level = max(self._mic_level, float(np.sqrt(np.mean(np.square(mono)))))
+
         outdata[:, 0] = self.mixer.render(frames)
 
     # ------------------------------------------------------------- event path
@@ -367,6 +392,12 @@ class PanelRuntime:
         while self._running:
             event = await self.events.get()
             self._record(event)
+            if self._display is not None:
+                # Before the reducer, so the wall sees cause then effect in
+                # the order they happened. `_record` is not the hook because
+                # it returns early when there is no log path, and a wall that
+                # only works with `--log` is a trap.
+                self._display.on_event(event)
             self.state, commands = self.fc.reduce(self.state, event)
             for command in commands:
                 await self._execute(command)
@@ -436,6 +467,13 @@ class PanelRuntime:
             fh.write(json.dumps(payload) + "\n")
 
     async def _execute(self, command) -> None:
+        if self._display is not None:
+            # `HandsRaised`, `CueModerator` and `StateChanged` exist for this
+            # surface and nothing else reads them. `DuckSpeech`/`ResumeSpeech`
+            # never reach `PanelState` at all, so the backchannel reflex would
+            # be invisible on a wall built from state alone.
+            self._display.on_command(command)
+
         match command:
             case RequestProposals():
                 self._print(f"  [dim]… gathering proposals ({command.reason})[/]")
@@ -1359,10 +1397,40 @@ class PanelRuntime:
             await asyncio.sleep(TICK_INTERVAL_S)
             self.emit(Tick(t=time.monotonic()))
 
+    async def _pump_levels(self) -> None:
+        """Hand the video wall what each voice is actually doing, 30 times a second.
+
+        Deliberately not an event. Envelopes are not facts about the floor —
+        the reducer has no use for them, they would be 30 entries a second in
+        a log meant for replaying floor decisions, and `panel_core` stays a
+        pure function of things that happened rather than of how loud they
+        were. So this reaches around the event path and talks to the display
+        directly. It is the only thing in the runtime that does.
+        """
+        display = self._display
+        if display is None:
+            return
+        while self._running:
+            await asyncio.sleep(DISPLAY_LEVEL_INTERVAL_S)
+            levels = self.mixer.take_levels()
+            levels[HUMAN] = self._mic_level
+            self._mic_level = 0.0
+            display.set_levels(levels)
+
     # --------------------------------------------------------------------- run
 
     async def run(self, *, input_device=None, output_device=None) -> None:
         self._loop = asyncio.get_running_loop()
+
+        if self._display is not None:
+            url = await self._display.start()
+            if url:
+                self._print(f"[dim]video wall on[/] {url}")
+            else:
+                # Already reported by the server. The panel carries on: a wall
+                # that will not bind is worth a line, not a cancelled show.
+                self._print("[yellow]video wall unavailable — continuing without it[/]")
+                self._display = None
 
         if self.tts is not None:
             voices = [p.voice_id for p in self.cast.personas.values()]
@@ -1388,6 +1456,8 @@ class PanelRuntime:
             asyncio.create_task(self._run_stt(), name="stt"),
             asyncio.create_task(self._run_ticks(), name="ticks"),
         ]
+        if self._display is not None:
+            tasks.append(asyncio.create_task(self._pump_levels(), name="display-levels"))
 
         console.print(
             f"[bold]Panel live.[/] {', '.join(p.name for p in self.cast.personas.values())}\n"
@@ -1410,6 +1480,8 @@ class PanelRuntime:
                     await self.tts.aclose()
                 if self._address is not None:
                     await self._address.close()
+                if self._display is not None:
+                    await self._display.close()
 
 
 def _jsonable(value):
@@ -1439,6 +1511,12 @@ def main() -> None:
     parser.add_argument("--output-device", default=None)
     parser.add_argument("--log", type=Path, default=None, help="event log for replay")
     parser.add_argument("--list-devices", action="store_true")
+    parser.add_argument(
+        "--display",
+        action="store_true",
+        help="serve the 12m video wall (open the printed URL on the wall machine)",
+    )
+    parser.add_argument("--display-port", type=int, default=DISPLAY_PORT)
     args = parser.parse_args()
 
     if args.list_devices:
@@ -1457,6 +1535,7 @@ def main() -> None:
         block_size=args.block,
         use_tts=not args.no_tts,
         log_path=args.log,
+        display=DisplayServer(cast, port=args.display_port) if args.display else None,
     )
 
     with contextlib.suppress(KeyboardInterrupt):
