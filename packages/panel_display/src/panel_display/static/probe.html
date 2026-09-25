@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en-GB" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <title>orb probe</title>
+    <script>
+      if (new URLSearchParams(location.search).get("theme") === "dark") {
+        document.documentElement.classList.add("dark");
+        document.documentElement.setAttribute("data-theme", "dark");
+      }
+    </script>
+    <link rel="stylesheet" href="/static/css/tokens.css" />
+    <link rel="stylesheet" href="/static/css/wall.css" />
+    <style>
+      body { display: grid; grid-template-columns: repeat(5, 720px); }
+      .cell { position: relative; }
+      .cell canvas { width: 720px; height: 720px; display: block; }
+      .cap { position: absolute; top: 12px; left: 24px; font-size: 34px;
+             letter-spacing: 0.2em; text-transform: uppercase;
+             color: var(--text-quiet); }
+    </style>
+  </head>
+  <body>
+    <script type="module">
+      import { Orb } from "/static/js/orb.js";
+
+      const params = new URLSearchParams(location.search);
+      const states = ["idle", "invited", "thinking", "ducked", "speaking"];
+      const accent = params.get("accent") || "jade";
+
+      for (const state of states) {
+        const cell = document.createElement("div");
+        cell.className = "cell lane lane--agent";
+        cell.dataset.accent = accent;
+        cell.dataset.state = state;
+        const canvas = document.createElement("canvas");
+        const cap = document.createElement("span");
+        cap.className = "cap";
+        cap.textContent = state;
+        cell.append(canvas, cap);
+        document.body.appendChild(cell);
+
+        const orb = new Orb(canvas, cell, 1);
+        orb.resize(720, 1);
+        orb.setState(state);
+
+        // Fixed-step, so every screenshot of a given state is the same image.
+        const dt = 1 / 60;
+        const frames = Number(params.get("frames") || 240);
+        for (let i = 0; i < frames; i++) {
+          const t = i * dt;
+          // A synthetic voice at roughly the amplitude the demo emits.
+          const syllable = 0.5 + 0.5 * Math.sin(t * 2 * Math.PI * 4.1);
+          const stress = 0.5 + 0.5 * Math.sin(t * 2 * Math.PI * 1.37 + 1.1);
+          orb.setLevel(0.32 * syllable * (0.4 + 0.6 * stress));
+          orb.frame(dt, t);
+        }
+      }
+      document.title = "ready";
+    </script>
+  </body>
+</html>
