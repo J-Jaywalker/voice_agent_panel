@@ -163,7 +163,7 @@ is exactly what it is for.
 
 §4.1–4.3 done/structural. §4.4–4.5 open, more urgent as 21 Oct nears.
 
-**4.1 Fictional employers** — done. "Irrational Industries", "Servv.AI", "The Kestrel Foundation".
+**4.1 Fictional employers** — done. "Irrational Industries", "Serve AI", "The Kestrel Foundation".
 
 **4.2 Extended persona schema** — built, grew. `verbosity` — target length by prompt (`GUARDRAILS`), no orchestrator-enforced ceiling; agents may hold the floor for a minute or more, moderator handles the rest live. `relationships` is what makes disagreement read as colleagues, not models. See `personas/*.yaml`.
 
