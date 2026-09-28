@@ -80,6 +80,21 @@ class Persona(BaseModel):
 
     # --- voice ---
     voice_id: str
+    # Per-persona overrides merged over `panel_runtime.tts.TTSConfig`'s
+    # defaults for this voice only (see `ElevenLabsTTS`'s `voice_overrides`).
+    # Keys are ElevenLabs `voice_settings` field names — `stability`,
+    # `similarity_boost`, `speed`. Deliberately not `style`: ElevenLabs docs
+    # note it costs an extra generation pass, which is the one thing this
+    # panel's TTS layer is built to avoid (see tts.py's module docstring on
+    # TTFB). An empty dict means "use the engine defaults, no override."
+    voice_settings: dict[str, float] = Field(default_factory=dict)
+    # A fixed output trim applied in the mixer (`panel_runtime.mixer.Mixer`),
+    # not sent to ElevenLabs — `voice_settings` above covers everything the
+    # API takes, and loudness is not one of those knobs. This is this
+    # persona's resting gain: duck and resume ramp relative to it, so a
+    # trimmed voice still ducks for a backchannel and comes back to its own
+    # level rather than everyone else's. 0.0 is unity, i.e. untouched.
+    output_gain_db: float = 0.0
     communication_style: str
     speech_tics: list[str] = Field(
         default_factory=list,

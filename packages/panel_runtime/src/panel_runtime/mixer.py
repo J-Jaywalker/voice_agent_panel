@@ -29,14 +29,43 @@ from .gain import GainEnvelope
 STOP_RAMP_MS = 20.0
 SILENCE_DB = -80.0
 
+def _soft_limit(out: np.ndarray) -> np.ndarray:
+    """Turn a block down, never reshape its waveform.
+
+    A hard `np.clip` here used to be audible as clipping on the rare
+    overlap it was meant to catch. The first fix for that was a per-sample
+    `tanh` knee above a fixed threshold — worse: waveshaping a sample
+    individually is itself a distortion, and any threshold under ~1.0
+    catches an isolated voice's own peaks too, since decoded ElevenLabs
+    audio routinely sits close to full scale on a single voice alone. That
+    read as one agent's voice clipping, not the mixer's.
+
+    A block's peak from a *single* voice can never reach 1.0 — decoded
+    16-bit PCM tops out at 32767/32768 — so scaling the whole block down
+    uniformly, and only when the true summed peak exceeds 1.0, never
+    touches ordinary speech. It only ever fires when two or more lanes are
+    genuinely summing over the top, and it reads as a brief, transparent
+    loudness dip rather than a crunch.
+    """
+    peak = float(np.max(np.abs(out))) if out.size else 0.0
+    if peak <= 1.0:
+        return out
+    return out * (1.0 / peak)
+
 
 class AgentVoice:
     """One agent's audio buffer and gain, on the output bus."""
 
-    def __init__(self, agent_id: str, sample_rate: int) -> None:
+    def __init__(self, agent_id: str, sample_rate: int, unity_db: float = 0.0) -> None:
         self.agent_id = agent_id
         self.sample_rate = sample_rate
-        self.envelope = GainEnvelope(sample_rate, 0.0)
+        # "Unity" here means this voice's resting level, not 0dB — a persona
+        # can carry a fixed output trim (`Persona.output_gain_db`) for voices
+        # that render quiet relative to the others. Duck/resume/stop all ramp
+        # relative to this, never to a hardcoded 0dB, so a trimmed voice still
+        # ducks and recovers to its own resting level.
+        self.unity_db = unity_db
+        self.envelope = GainEnvelope(sample_rate, unity_db)
         self._buffer = np.zeros(0, dtype=np.float32)
         self._finished = False  # TTS delivered everything it is going to
         # Loudest block RMS since the meter was last read. See `take_level`.
@@ -55,7 +84,7 @@ class AgentVoice:
         self._buffer = np.zeros(0, dtype=np.float32)
         self._finished = False
         self._level = 0.0
-        self.envelope = GainEnvelope(self.sample_rate, 0.0)
+        self.envelope = GainEnvelope(self.sample_rate, self.unity_db)
 
     def take_level(self) -> float:
         """Loudest block since the last call, then reset to zero.
@@ -109,9 +138,17 @@ class AgentVoice:
 class Mixer:
     """Sums every agent voice into the output bus."""
 
-    def __init__(self, agent_ids: tuple[str, ...], sample_rate: int) -> None:
+    def __init__(
+        self,
+        agent_ids: tuple[str, ...],
+        sample_rate: int,
+        unity_db: dict[str, float] | None = None,
+    ) -> None:
         self.sample_rate = sample_rate
-        self.voices = {a: AgentVoice(a, sample_rate) for a in agent_ids}
+        gains = unity_db or {}
+        self.voices = {
+            a: AgentVoice(a, sample_rate, gains.get(a, 0.0)) for a in agent_ids
+        }
         self._lock = threading.Lock()
         # Set when a stop is ramping out, so the buffer is dropped only after
         # the ramp has actually been rendered — otherwise the stop clicks.
@@ -141,7 +178,7 @@ class Mixer:
         with self._lock:
             voice = self.voices.get(agent_id)
             if voice is not None:
-                voice.envelope.ramp_to(0.0, ramp_ms)
+                voice.envelope.ramp_to(voice.unity_db, ramp_ms)
 
     def stop(self, agent_id: str, ramp_ms: float = STOP_RAMP_MS) -> None:
         """Silence an agent mid-utterance. The audible half of `StopSpeech`."""
@@ -202,5 +239,7 @@ class Mixer:
                     self._stopping.discard(agent_id)
         # Lanes rarely sum — nothing deliberately overlaps two agents since
         # agent-to-agent interrupts were removed — but a draining tail under a
-        # new grant can. Clip rather than let the PA do it for us.
-        return np.clip(out, -1.0, 1.0)
+        # new grant can. Soft-limit rather than hard-clip: a hard `np.clip`
+        # here was audible as clipping on ordinary single-voice peaks close
+        # to full scale, not just on the rare overlap it was meant to catch.
+        return np.clip(_soft_limit(out), -1.0, 1.0)

@@ -264,10 +264,14 @@ class PanelRuntime:
         self.use_tts = use_tts
         self.log_path = log_path
 
-        self.mixer = Mixer(cast.ids(), VAD_SAMPLE_RATE)
+        unity_db = {p.id: p.output_gain_db for p in cast.personas.values() if p.output_gain_db}
+        self.mixer = Mixer(cast.ids(), VAD_SAMPLE_RATE, unity_db=unity_db)
         self.brain = StreamingClaudeBrain(BrainConfig())
         self.stt = PanelSTT({"ricky": "human"}, config=STTConfig.from_cast(cast))
-        self.tts = ElevenLabsTTS(TTSConfig()) if use_tts else None
+        voice_overrides = {
+            p.voice_id: p.voice_settings for p in cast.personas.values() if p.voice_settings
+        }
+        self.tts = ElevenLabsTTS(TTSConfig(), voice_overrides=voice_overrides) if use_tts else None
 
         # Built only when `FloorConfig.llm_address_detection` is on: it holds an
         # HTTP client and a model choice, and the regex path must cost nothing

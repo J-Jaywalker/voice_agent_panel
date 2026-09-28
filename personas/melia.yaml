@@ -33,11 +33,15 @@ introduction: >-
   ever be given a seat on the company board. I audit deployments before anyone signs
   off on them as safe. Thanks for having me.
 
-voice_id: pFZP5JQG7iQjIQuC4Bku  # Lily — dry, precise, British. PLACEHOLDER: recast before rehearsal.
+voice_id: DbwWo4rVEd5NrejHYUnm  # Jessica — dry, precise, Irish.
+# ~20% quieter (amplitude, not dB) next to Dexter's boosted trim — see
+# panel_runtime.mixer.Mixer's unity_db and dexter.yaml's output_gain_db.
+output_gain_db: -2.24
 communication_style: dry, precise, occasionally very funny
 speech_tics:
   - "Mm."
   - "Can I just —"
+  - "Right,"
 
 topics_of_authority:
   - trust

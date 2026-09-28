@@ -93,6 +93,38 @@ def test_ducking_one_agent_leaves_the_others_alone(mixer):
     assert np.max(np.abs(render_ms(mixer, 50))) > 0.3, "wayne is still talking"
 
 
+def test_a_persona_output_gain_boosts_that_agent_only(mixer):
+    """A per-persona trim (`Persona.output_gain_db`) is a mixer property.
+
+    ElevenLabs' `voice_settings` has no loudness knob, so a voice that
+    renders quiet next to the others is fixed here, not at the TTS layer.
+    """
+    boosted = Mixer(AGENTS, SR, unity_db={"dex": 6.0})
+    boosted.feed("dex", tone(1.0, amplitude=0.3))
+    boosted.feed("wayne", tone(1.0, amplitude=0.3))
+    out = render_ms(boosted, 50)
+    levels = boosted.take_levels()
+
+    assert levels["dex"] == pytest.approx(levels["wayne"] * 2.0, rel=0.05)  # +6dB ~= x2
+    assert np.max(np.abs(out)) <= 1.0
+
+
+def test_resume_returns_to_the_persona_gain_not_zero_db(mixer):
+    """A trimmed voice must duck and recover to its own resting level."""
+    boosted = Mixer(AGENTS, SR, unity_db={"dex": 6.0})
+    boosted.feed("dex", tone(3.0, amplitude=0.3))
+    boosted.duck("dex", -15.0, ramp_ms=120)
+    render_ms(boosted, 200)
+    boosted.resume("dex", ramp_ms=220)
+    render_ms(boosted, 400)
+
+    plain = Mixer(AGENTS, SR)
+    plain.feed("dex", tone(3.0, amplitude=0.3))
+    render_ms(plain, 50)
+
+    assert render_ms(boosted, 50).max() == pytest.approx(render_ms(plain, 50).max() * 2.0, rel=0.1)
+
+
 def test_overlapping_agents_do_not_clip_the_output(mixer):
     """Two lanes summing must not clip, however they came to be summing.
 
@@ -105,6 +137,36 @@ def test_overlapping_agents_do_not_clip_the_output(mixer):
         mixer.feed(agent, tone(1.0, amplitude=0.9))
     out = render_ms(mixer, 50)
     assert np.max(np.abs(out)) <= 1.0
+
+
+def test_a_lone_agent_near_full_scale_is_not_attenuated(mixer):
+    """The overlap limiter must not touch ordinary single-voice peaks.
+
+    ElevenLabs' own output regularly sits close to full scale — a single
+    decoded 16-bit PCM voice never reaches true 1.0 on its own, so a limiter
+    that ever engages for one voice alone would read as that voice's own
+    clipping, not the rare overlap it exists to catch.
+    """
+    mixer.feed("dex", tone(1.0, amplitude=0.999))
+    assert np.max(np.abs(render_ms(mixer, 50))) == pytest.approx(0.999, abs=1e-3)
+
+
+def test_overlap_limiter_scales_the_block_uniformly(mixer):
+    """A genuine overlap should be turned down cleanly, not waveshaped.
+
+    Uniform gain reduction preserves the ratio between samples — a
+    per-sample nonlinearity (an earlier, reverted version of this limiter)
+    would not, and reads as distortion rather than a loudness dip.
+    """
+    for agent in AGENTS:
+        mixer.feed(agent, tone(1.0, amplitude=0.5))  # sums to 1.5, over the ceiling
+    out = render_ms(mixer, 50)
+    peak = np.max(np.abs(out))
+    assert peak == pytest.approx(1.0, abs=1e-6)
+    # Every non-zero sample in a uniformly-scaled flat tone lands at the same
+    # magnitude — a waveshaper would not preserve that.
+    nonzero = out[np.abs(out) > 1e-9]
+    assert np.allclose(np.abs(nonzero), peak, atol=1e-6)
 
 
 def test_drained_reports_when_a_turn_is_finished(mixer):

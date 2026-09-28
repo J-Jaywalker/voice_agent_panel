@@ -42,13 +42,21 @@ import json
 import os
 import time
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Protocol
 
 import websockets
 
 # ElevenLabs streams raw little-endian 16-bit PCM for any pcm_* format. 16kHz
 # matches the VAD and mixer rate, so agent audio is never resampled.
+#
+# A higher rate (pcm_24000) was tried for fidelity and reverted: it required
+# splitting the mic and speakers into two independent PortAudio streams
+# instead of one duplex stream, and opening the same physical device twice at
+# two different rates produced audible crackling on the dev box — the two
+# streams fighting the driver, not a code bug in either one. Revisit only
+# alongside a real two-device setup (separate physical input/output
+# hardware), verified on the target rig — see CLAUDE.md § Deployment.
 PCM_SAMPLE_RATE = 16_000
 _BYTES_PER_SAMPLE = 2
 
@@ -397,18 +405,30 @@ class ElevenLabsTTS:
     behaviour we do not control.
     """
 
-    def __init__(self, config: TTSConfig | None = None, *, api_key: str | None = None) -> None:
+    def __init__(
+        self,
+        config: TTSConfig | None = None,
+        *,
+        api_key: str | None = None,
+        voice_overrides: dict[str, dict[str, float]] | None = None,
+    ) -> None:
         self.config = config or TTSConfig()
         key = api_key or os.environ.get("ELEVENLABS_API_KEY")
         if not key:
             raise RuntimeError("ELEVENLABS_API_KEY is not set")
         self._api_key = key
+        # Per-voice `TTSConfig` field overrides (e.g. a persona's
+        # `voice_settings`), keyed by voice_id. A voice with no entry gets
+        # `self.config` untouched.
+        self._voice_overrides = voice_overrides or {}
         self._channels: dict[str, _VoiceChannel] = {}
 
     def _channel(self, voice_id: str) -> _VoiceChannel:
         channel = self._channels.get(voice_id)
         if channel is None:
-            channel = _VoiceChannel(voice_id, self._api_key, self.config)
+            overrides = self._voice_overrides.get(voice_id)
+            config = replace(self.config, **overrides) if overrides else self.config
+            channel = _VoiceChannel(voice_id, self._api_key, config)
             self._channels[voice_id] = channel
         return channel
 
