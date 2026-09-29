@@ -1,4 +1,4 @@
-"""Who did Ricky actually address? — the moderator phrasing corpus.
+"""Who did James actually address? — the moderator phrasing corpus.
 
 These are acceptance criteria, not unit tests. Every row in `CORPUS` is a real
 thing a moderator says on stage, and the expected column is what the floor is
@@ -24,7 +24,7 @@ Three roles, in strict precedence:
 
 and one non-outcome: two agents at the same top role is **ambiguous**, which
 keeps the floor closed and puts the tie in front of the operator. A missed
-invitation costs one beat. A wrong one puts an agent on the PA over Ricky in
+invitation costs one beat. A wrong one puts an agent on the PA over James in
 front of 400 people.
 """
 
@@ -101,12 +101,12 @@ def weak() -> Signals:
 
 
 def said(text: str, t: float = 0.0) -> TranscriptUpdated:
-    """One final segment off Ricky's mic."""
+    """One final segment off James's mic."""
     return TranscriptUpdated(t=t, speaker=HUMAN, text=text, is_final=True)
 
 
 def resolve(fc: FloorController, state: PanelState, text: str) -> str:
-    """Feed Ricky's words to the reducer and report what the floor opened to."""
+    """Feed James's words to the reducer and report what the floor opened to."""
     state, _ = fc.reduce(state, said(text))
     if state.address_conflict:
         return AMBIGUOUS
@@ -180,7 +180,7 @@ CORPUS: list[tuple[str, str, AddressRole | None]] = [
     ("Are we okay?", CLOSED, None),
     ("Can I just jump in?", CLOSED, None),
     ("Can I just interrupt?", CLOSED, None),
-    # ...but a first-person *frame* around a real request still invites: Ricky
+    # ...but a first-person *frame* around a real request still invites: James
     # asking permission to bring Melia in is a request for Melia.
     ("Can I ask Melia to comment?", "melia", AddressRole.SUBJECT_OF_REQUEST),
     ("Can I hear from Melia?", "melia", AddressRole.SUBJECT_OF_REQUEST),
@@ -221,7 +221,7 @@ def test_moderator_phrasing_resolves_to_the_right_addressee(
 def test_the_original_failure_end_to_end(fc, state):
     """The verbatim trace from the report, all the way to the PA.
 
-    Ricky stands Dexter down and asks Melia to continue. Previously: an
+    James stands Dexter down and asks Melia to continue. Previously: an
     ADDRESS invitation for Dexter, Melia filtered out as inadmissible, two
     `no_candidate`s, and then Dexter granted the floor unconditionally — score
     floor bypassed and his own handoff to Melia discarded.
@@ -271,7 +271,7 @@ def test_a_later_open_question_does_not_downgrade_a_named_invitation(fc, state):
 
 
 def test_an_open_question_supersedes_a_named_invitation_once_the_window_passes(fc, state):
-    """The hold-off is bounded. Ricky moving on is not the same as stammering."""
+    """The hold-off is bounded. James moving on is not the same as stammering."""
     state, _ = fc.reduce(state, said("Sorry Dexter, can Melia speak?", t=0.0))
     later = fc.config.invitation_supersede_window_s + 0.1
     state, _ = fc.reduce(state, said("So what does everyone think?", t=later))
@@ -279,7 +279,7 @@ def test_an_open_question_supersedes_a_named_invitation_once_the_window_passes(f
 
 
 def test_a_fresh_address_always_supersedes(fc, state):
-    """Ricky redirecting mid-turn is the common case, not an edge case."""
+    """James redirecting mid-turn is the common case, not an edge case."""
     state, _ = fc.reduce(state, said("Melia, can you continue?", t=0.0))
     assert state.invitation.agent == "melia"
     state, _ = fc.reduce(state, said("Actually Wayne, what do you think?", t=0.3))
@@ -292,7 +292,7 @@ def test_a_fresh_address_always_supersedes(fc, state):
 def test_two_agents_in_the_same_role_keeps_the_floor_closed(fc, state):
     """We do not guess between them. The operator does.
 
-    Ricky can fix a missed invitation in one beat. He cannot un-say an agent
+    James can fix a missed invitation in one beat. He cannot un-say an agent
     that spoke over him in front of 400 people.
     """
     state, cmds = fc.reduce(state, said("Melia, Dexter, thoughts?"))
@@ -311,13 +311,13 @@ def test_two_agents_in_the_same_role_keeps_the_floor_closed(fc, state):
     assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [
         CueReason.AMBIGUOUS_ADDRESS
     ]
-    assert [c for c in cmds if isinstance(c, HandsRaised)], "Ricky sees who wanted it"
+    assert [c for c in cmds if isinstance(c, HandsRaised)], "James sees who wanted it"
 
 
 def test_a_resolved_tie_does_not_haunt_later_turns(fc, state):
     """Regression: a tie is about one utterance, not about the rest of the show.
 
-    A conflict left standing turns every later "Ricky made a remark" cue into
+    A conflict left standing turns every later "James made a remark" cue into
     a spurious `ambiguous_address`, which would send the operator hunting for
     a tie that no longer exists.
     """
@@ -328,7 +328,7 @@ def test_a_resolved_tie_does_not_haunt_later_turns(fc, state):
     assert state.address_conflict == (), "a clean address resolves the tie"
     assert state.invitation.agent == "melia"
 
-    # ...and so does Ricky simply carrying on talking.
+    # ...and so does James simply carrying on talking.
     state, _ = fc.reduce(state, said("Melia, Dexter, thoughts?", t=2.0))
     assert state.address_conflict
     state, _ = fc.reduce(state, HumanSpeechStarted(t=3.0))
@@ -354,7 +354,7 @@ def test_an_invitation_nobody_acts_on_expires(fc, state):
 
     state, cmds = fc.reduce(state, TurnYielded(t=1.0))
     assert not [c for c in cmds if isinstance(c, CueModerator)], (
-        "a named agent gets a beat to finish answering before Ricky is told to fill"
+        "a named agent gets a beat to finish answering before James is told to fill"
     )
     state, cmds = fc.reduce(state, Tick(t=1.0 + fc.config.invited_agent_grace_s))
     assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [
@@ -454,7 +454,7 @@ def test_no_candidate_is_split_into_distinct_reasons(fc, state):
     """A rehearsal that cannot tell these apart cannot be tuned.
 
     "The panel had nothing", "the panel had something and it was not good
-    enough" and "the one agent Ricky named said nothing" are three different
+    enough" and "the one agent James named said nothing" are three different
     problems with three different fixes.
     """
     # Nobody proposed at all.
@@ -479,7 +479,7 @@ def test_no_candidate_is_split_into_distinct_reasons(fc, state):
     )
     named, cmds = fc.reduce(named, TurnYielded(t=1.0))
     assert not [c for c in cmds if isinstance(c, StartSpeech)]
-    # Deferred, not cancelled: Wayne gets the beat, then Ricky is told.
+    # Deferred, not cancelled: Wayne gets the beat, then James is told.
     _, cmds = fc.reduce(named, Tick(t=1.0 + fc.config.invited_agent_grace_s))
     assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [
         CueReason.INVITED_AGENT_SILENT

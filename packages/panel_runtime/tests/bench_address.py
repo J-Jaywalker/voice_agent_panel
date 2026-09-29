@@ -79,7 +79,7 @@ CORPUS_PATH = REPO_ROOT / "packages" / "panel_core" / "tests" / "test_address.py
 
 # What the regex was never asked to do. The first three are the capability
 # argument for the whole change; the last two are traps that come *with* it —
-# "introverted" must not start the introduction round, and Ricky talking to the
+# "introverted" must not start the introduction round, and James talking to the
 # AV desk must not put an agent on the PA.
 NEW_CAPABILITY: list[tuple[str, str]] = [
     ("What does the financial side make of that?", "wayne"),
@@ -93,10 +93,10 @@ NEW_CAPABILITY: list[tuple[str, str]] = [
     ("Sorry, can we fix the mic on Dexter?", NO_VERDICT),
     # A welcome is not a request for introductions. Seen live 21 Sept: "Welcome
     # to the panel." came back INTRO and ran the whole round over the top of
-    # Ricky's next sentence, "My name is Ricky."
+    # James's next sentence, "My name is James."
     ("Welcome to the panel.", NO_VERDICT),
     ("Good evening, thanks for coming.", NO_VERDICT),
-    ("My name is Ricky.", NO_VERDICT),
+    ("My name is James.", NO_VERDICT),
     ("Joining me tonight are Dexter, Melia and Wayne.", NO_VERDICT),
     # One panellist asked to introduce themselves is that panellist, not a round.
     ("Dexter, tell us a bit about yourself.", "dex"),
@@ -168,7 +168,7 @@ async def classify(
             model=model,
             max_tokens=MAX_TOKENS,
             system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": f'RICKY SAID: "{text}"'}],
+            messages=[{"role": "user", "content": f'James SAID: "{text}"'}],
         ) as stream:
             async for delta in stream.text_stream:
                 buffer += delta

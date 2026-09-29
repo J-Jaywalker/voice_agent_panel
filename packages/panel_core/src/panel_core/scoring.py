@@ -36,7 +36,7 @@ class FloorConfig:
     min_floor_priority: float = 0.45
 
     # --- humans ---
-    # Ricky's mic wins instantly and with no overlap.
+    # James's mic wins instantly and with no overlap.
     human_duck_ms: int = 90
 
     # --- backchannel discrimination (ADR 0001) ---
@@ -55,12 +55,25 @@ class FloorConfig:
     # --- invitation ---
     # The floor is CLOSED by default. Agents propose constantly (speculation is
     # what keeps the post-turn gap short) but may only *take* the floor when
-    # Ricky opens it. A statement invites nobody; a question invites the room.
-    # How many agent turns one open invitation is worth before the floor goes
-    # back to the moderator:
-    open_invitation_turns: int = 2
-    # A named agent always gets exactly one.
-    address_invitation_turns: int = 1
+    # James opens it. A statement invites nobody; a question invites the room.
+    #
+    # How many agent turns one invitation is worth before the floor goes back
+    # to the moderator, at most. Every agent chips in once per prompt
+    # (CLAUDE.md) — `Invitation.admits()` opens the floor to whoever has not
+    # yet spoken once the first agent has, and `FloorController._grant` closes
+    # the invitation outright the moment every live agent has had a turn, so
+    # in ordinary running neither of these numbers is what ends the round.
+    # They are the ceiling for when that mechanism should not apply (an
+    # invitation nobody ever fully uses) or should not run away (a persona
+    # added without updating this), so both default to the current cast size
+    # — three — with headroom rather than exactly matching it. Set lower in a
+    # config or an `OperatorAction.OPEN_FLOOR` to bound a round more tightly;
+    # that override is still respected exactly (see
+    # `test_an_open_invitation_is_spent_and_the_floor_goes_back`).
+    open_invitation_turns: int = 4
+    # A named agent is guaranteed to answer first; the other live agents are
+    # then each owed one turn too — see above.
+    address_invitation_turns: int = 4
     # An invitation nobody ever acts on must not sit on the floor for the rest
     # of the show. `no_candidate` deliberately does NOT clear the invitation —
     # an empty proposal set for two or three seconds is normal — so this is the
@@ -82,14 +95,14 @@ class FloorConfig:
     # Don't ask the panel to answer a scrap. Finals arrive on acoustics, not on
     # sentence boundaries, so a turn routinely opens with "So, Wayne, uh," — and
     # an agent asked to propose against three words writes a holding line ("Take
-    # your time, Ricky") rather than an answer, which a named invitation then
+    # your time, James") rather than an answer, which a named invitation then
     # airs unconditionally because it bypasses `min_floor_priority`. Partials
     # only: a *final* must always ask, however short, because a two-word direct
-    # question ("Wayne, thoughts?") is a real thing Ricky says and by then
+    # question ("Wayne, thoughts?") is a real thing James says and by then
     # detection has run.
     speculation_min_words: int = 5
     # The same idea during an *agent's* turn, and a separate dial because the
-    # two turns are nothing like the same length. Ricky asks a question in
+    # two turns are nothing like the same length. James asks a question in
     # 5-10s; an agent answers in 20-30s, and until 25 Sept 2026 nothing asked
     # the other two for a line at any point inside that. The only proposals in
     # hand at a turn boundary were therefore written before the turn began —
@@ -118,7 +131,7 @@ class FloorConfig:
     # Speculative generation is the whole reason the post-turn gap is short, so
     # a proposal started against a partial of the question must still count —
     # those run 1-3s ahead of the final. A proposal older than this was written
-    # against a different moment (the previous turn, or Ricky's preamble before
+    # against a different moment (the previous turn, or James's preamble before
     # he had asked anything) and must not be aired in answer to a question it
     # never heard. Applies to *named* invitations; `open_proposal_lookback_s`
     # below is the same test for an open floor, and says why one number does
@@ -133,7 +146,7 @@ class FloorConfig:
     # the transcript its generation was started from. Input times are earlier
     # than arrival times by the whole generation latency, so the same window
     # measured this way is far tighter: 6.0 would still admit that line, since
-    # Ricky's entire question only took 3.2s.
+    # James's entire question only took 3.2s.
     #
     # A rehearsal dial, not a derived number, and the floor under it is set by
     # `invited_agent_grace_s`: a generation that lands just inside the beat was
@@ -147,7 +160,7 @@ class FloorConfig:
     # The same test on an open floor. The comment above used to end "only
     # applies to named invitations: an open invitation is already protected by
     # the score floor, which filler loses to" — and that was wrong twice over.
-    # A holding line written against Ricky's preamble ("I'll wait to hear where
+    # A holding line written against James's preamble ("I'll wait to hear where
     # he's actually pointing this") clears `min_floor_priority` comfortably,
     # and took an open floor on stage 21 Sept 2026 one millisecond after the
     # invitation — far sooner than any generation started from the question
@@ -163,20 +176,20 @@ class FloorConfig:
     # Not calibrated to catch that Melia line on its own: her input was frozen
     # roughly 1.9s before the final, inside this window. The fix for the line
     # itself is the speculative branch of `build_turn_prompt`, which asks an
-    # agent to answer a question Ricky has not asked yet. This is the backstop
+    # agent to answer a question James has not asked yet. This is the backstop
     # for the grossly old, and the dial to lower in rehearsal if filler still
     # wins an open floor. Separate from the named window because the trade is
     # different: refusing a named agent leaves a direct question unanswered,
     # refusing here only means the panel does not volunteer for a beat.
     open_proposal_lookback_s: float = 2.0
     # How long a named agent gets to finish writing before the floor gives up on
-    # them and cues Ricky. Speechmatics' `EndOfTurn` lands within a few ms of the
+    # them and cues James. Speechmatics' `EndOfTurn` lands within a few ms of the
     # final that names the agent, so arbitration runs before any generation
     # started against that final could possibly have produced signals — measured
     # 1.7-2.4s to signals (`tests/bench_brains.py`). Without this the cue is
     # certain, not occasional.
     #
-    # A rehearsal dial, not a derived number. Too short and Ricky is told to fill
+    # A rehearsal dial, not a derived number. Too short and James is told to fill
     # a gap the panel was about to fill itself; too long and the audience hears
     # dead air. One second is about a natural beat before an answer; it does not
     # cover a cold 2.4s generation on its own and is not meant to — letting
@@ -184,7 +197,7 @@ class FloorConfig:
     # what closes the rest, and this only has to cover the residue.
     invited_agent_grace_s: float = 1.0
 
-    # --- who did Ricky address? ---
+    # --- who did James address? ---
     # Off by default, and off is the tested path. With this on, the regex
     # detector in `FloorController._detect` no longer runs on a human final:
     # `panel_runtime.address` asks a model the same question and the answer
@@ -228,7 +241,7 @@ class FloorConfig:
     # `AgentSpeechEnded` — and every path that can fail to emit it (a dead TTS
     # socket, a raising `_guard`, a crashed speak task, a hung brain stream, a
     # faulted audio device) pins the floor to an agent who is not speaking for
-    # the rest of the show. The only recovery was Ricky talking, which forces
+    # the rest of the show. The only recovery was James talking, which forces
     # the floor back via `_commit_human_interrupt`. That is a human noticing,
     # not a system recovering.
     #
@@ -268,7 +281,7 @@ def is_backchannel(text: str, *, min_words: int) -> bool:
     Conservative by construction: unknown words count against backchannel, so
     anything substantive interrupts. Being wrong towards 'interrupt' is safe
     (the human wanted the floor anyway); being wrong towards 'backchannel'
-    means talking over Ricky, which is not.
+    means talking over James, which is not.
     """
     tokens = [t for t in _WORD_RE.findall(text.lower()) if t]
     if not tokens:
@@ -307,5 +320,5 @@ def floor_priority(
 # pass turns, they do not interrupt each other — so `interrupt_score` and
 # `may_interrupt` are gone along with their tuning. A proposal arriving while
 # another agent speaks is stored for the next arbitration and nothing else;
-# see `FloorController._proposal`. Ricky interrupting an agent is a different
+# see `FloorController._proposal`. James interrupting an agent is a different
 # path entirely (`_human_started`) and is unaffected.

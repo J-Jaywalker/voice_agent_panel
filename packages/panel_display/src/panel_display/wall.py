@@ -15,9 +15,9 @@ Two reasons the wall reads *commands* and not just events:
 * `HandsRaised` and `CueModerator` are commands and exist for precisely this
   surface — see their docstrings in `panel_core.events`. A raised hand is
   deliberately not self-served by the panel; it is shown so the room can see
-  three agents with something to say and watch Ricky choose.
+  three agents with something to say and watch James choose.
 * `DuckSpeech` / `ResumeSpeech` never touch `PanelState`. They are the
-  backchannel reflex, and an agent dropping its level because Ricky said
+  backchannel reflex, and an agent dropping its level because James said
   "mm-hm" is one of the more legible things this panel does. It would be
   invisible if the wall read state alone.
 """
@@ -32,6 +32,7 @@ from panel_core import (
     HUMAN,
     AgentSpeechEnded,
     AgentSpeechStarted,
+    AgentUtteranceProgress,
     CueModerator,
     DuckSpeech,
     HandsRaised,
@@ -46,13 +47,13 @@ from panel_core import (
     TranscriptUpdated,
 )
 
-# How many finalised moderator lines the transcript lane keeps.
+# How many finalised lines the transcript band keeps — the moderator's and
+# the agents' together, in the order they were said.
 #
-# The lane is 3m wide and roughly 3.4m of it is usable type; at the current
-# size that is about eight lines before the top fade eats them. Keeping a few
-# more than fit means a browser refreshed mid-show repaints a full lane
-# instead of an empty one, which is the entire reason this is bounded rather
-# than either unbounded or exactly what fits.
+# The band shows about five lines before the top fade eats them at current
+# type size. Keeping a few more than fit means a browser refreshed mid-show
+# repaints a full band instead of an empty one, which is the entire reason
+# this is bounded rather than either unbounded or exactly what fits.
 TRANSCRIPT_LINES = 14
 
 # Accent slots, assigned by cast order. Three agents, three hues.
@@ -78,6 +79,23 @@ INVITED = "invited"
 THINKING = "thinking"
 DUCKED = "ducked"
 SPEAKING = "speaking"
+
+
+@dataclass(frozen=True, slots=True)
+class TranscriptLine:
+    """One line in the transcript band, attributed to whoever said it.
+
+    `speaker` is `HUMAN` for the moderator or an agent id. Both share one
+    window and one sequence counter — the band is a single conversation, not
+    a moderator lane with agent asides — so the client can render them in the
+    order they actually happened rather than reconciling two feeds.
+    """
+
+    speaker: str
+    text: str
+
+    def payload(self) -> dict[str, str]:
+        return {"speaker": self.speaker, "text": self.text}
 
 
 @dataclass
@@ -123,7 +141,7 @@ class WallState:
 
     human_speaking: bool = False
     partial: str = ""
-    lines: deque[str] = field(default_factory=lambda: deque(maxlen=TRANSCRIPT_LINES))
+    lines: deque[TranscriptLine] = field(default_factory=lambda: deque(maxlen=TRANSCRIPT_LINES))
     # Total lines ever finalised, not the length of the window above.
     #
     # The window slides, so "the same four lines" and "four new lines that
@@ -132,7 +150,7 @@ class WallState:
     # client *append* rather than rebuild — and a rebuild re-runs the entrance
     # animation on every visible line every time anything on the wall changes.
     line_seq: int = 0
-    # Set when the floor comes back to Ricky and cleared the moment anyone
+    # Set when the floor comes back to James and cleared the moment anyone
     # speaks again. The audience's cue that the panel is done, not stuck.
     cue: str | None = None
     open_floor: bool = False
@@ -174,11 +192,28 @@ class WallState:
                 if event.is_final:
                     text = event.text.strip()
                     if text:
-                        self.lines.append(text)
+                        self.lines.append(TranscriptLine(HUMAN, text))
                         self.line_seq += 1
                     self.partial = ""
                 else:
                     self.partial = event.text
+
+            case AgentUtteranceProgress(agent=agent, text=text):
+                # Guards against the same staleness `FloorController` guards
+                # against in `panel_core` (see the event's own docstring): a
+                # sentence from a generation the floor has already moved past
+                # is not part of the turn anyone is listening to. `SPEAKING`
+                # is set by `AgentSpeechStarted` before `speak()`'s sentence
+                # loop ever runs, so this only ever rejects a late arrival
+                # after the turn the sentence belonged to has already ended.
+                # `DUCKED` still counts — a backchannelled agent keeps talking,
+                # just quieter, and the words are still owed to the band.
+                view = self.agents.get(agent)
+                if view is not None and view.state in (SPEAKING, DUCKED):
+                    stripped = text.strip()
+                    if stripped:
+                        self.lines.append(TranscriptLine(agent, stripped))
+                        self.line_seq += 1
 
             case AgentSpeechStarted(agent=agent):
                 self.cue = None
@@ -304,7 +339,7 @@ class WallState:
             "cue": self.cue,
             "human_speaking": self.human_speaking,
             "partial": self.partial,
-            "lines": list(self.lines),
+            "lines": [line.payload() for line in self.lines],
             "line_seq": self.line_seq,
             "agents": [self.agents[agent_id].payload() for agent_id in self.order],
         }

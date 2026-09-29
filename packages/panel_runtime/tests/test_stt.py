@@ -130,7 +130,7 @@ def test_rejected_vocab_falls_back_to_a_working_session(
             config=config,
             api_key="test-key",
             events=asyncio.Queue(),
-            name="ricky",
+            name="James",
         )
         await session.run()
         return session
@@ -175,7 +175,7 @@ def test_vocab_rejection_when_no_vocab_was_set_is_a_plain_failure(
             config=config,
             api_key="test-key",
             events=asyncio.Queue(),
-            name="ricky",
+            name="James",
         )
         session.stop()  # run() must not reconnect forever inside this test
         try:

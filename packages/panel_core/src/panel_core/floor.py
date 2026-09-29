@@ -7,13 +7,13 @@ every run.
 
 The floor is CLOSED by default. Agents propose continuously — that is what
 keeps the post-turn gap short — but a proposal is a raised hand, not a turn.
-Nothing reaches a speaker until Ricky opens the floor. A panel where agents
+Nothing reaches a speaker until James opens the floor. A panel where agents
 self-elect on every remark is a panel that talks over its moderator.
 
 Floor hierarchy, in strict order:
 
     1. Human moderator          — absolute, immediate, non-negotiable
-    2. Explicitly invited agent — Ricky named them and asked them something
+    2. Explicitly invited agent — James named them and asked them something
     3. Strongest contextual case, but only within an open invitation
     4. Silence — the default, not the failure case
 """
@@ -69,11 +69,11 @@ class CueReason(str, Enum):
     These strings are the operator console's and the video wall's vocabulary,
     so they are an enum rather than scattered literals. The `no_*` family used
     to be a single `no_candidate`, which told a rehearsal that nobody spoke but
-    not why — "nobody proposed" and "the one agent Ricky named had nothing" are
+    not why — "nobody proposed" and "the one agent James named had nothing" are
     completely different problems and want completely different fixes.
     """
 
-    NO_INVITATION = "no_invitation"  # Ricky made a remark, not a request
+    NO_INVITATION = "no_invitation"  # James made a remark, not a request
     AMBIGUOUS_ADDRESS = "ambiguous_address"  # two agents addressed; we do not guess
     NO_PROPOSALS = "no_proposals"  # the panel had nothing queued at all
     INVITED_AGENT_SILENT = "invited_agent_silent"  # the named agent had nothing
@@ -112,7 +112,7 @@ _ROLE_STRENGTH: dict[AddressRole, int] = {
     AddressRole.OBLIQUE: 0,
 }
 
-# Ricky opened the floor if he asked the panel something, or handed over
+# James opened the floor if he asked the panel something, or handed over
 # explicitly. Deliberately conservative: a missed invitation costs one beat and
 # the operator can open the floor by hand, whereas a false one puts an agent on
 # a PA over the moderator in front of 400 people.
@@ -142,7 +142,7 @@ _FIRST_PERSON_RE = re.compile(
 
 # A question aimed at the panel, as opposed to at the moderator's own place in
 # the conversation. A bare "?" is not enough: "is that okay?", "does that
-# work?", "do you mind?" are courtesy tags on the end of Ricky's own sentence
+# work?", "do you mind?" are courtesy tags on the end of James's own sentence
 # and used to open the floor to whoever happened to score best.
 _CONTENT_QUESTION_RE = re.compile(
     r"\b(?:who|what|which|how|why|where|when|whose|anyone|anybody|everyone"
@@ -167,7 +167,7 @@ _COURTESY_TAG_RE = re.compile(
 
 # A request whose subject is the moderator himself. "Sorry, Dexter, can I just
 # interrupt?" is a question, and Dexter is in vocative position, but nobody is
-# being invited to speak — Ricky is asking permission to keep the floor. Blocks
+# being invited to speak — James is asking permission to keep the floor. Blocks
 # the VOCATIVE and OPEN paths only: "can I hear from Melia?" is still a request
 # for Melia.
 _SELF_DIRECTED_RE = re.compile(
@@ -310,7 +310,7 @@ class _Detection:
 _INTRODUCTION_RE = re.compile(r"\bintro(?:duc\w*|s)?\b", re.IGNORECASE)
 
 # Silent beats for `StartSpeech.lead_in_s` in the introduction round only.
-# An instant jump from Ricky's cue straight into Dexter's first word read as
+# An instant jump from James's cue straight into Dexter's first word read as
 # a glitch on stage-adjacent testing, not a panel of people taking a moment
 # to go first. `_INTRO_OPENING_PAUSE_S` covers the first agent, `_INTRO_
 # BEAT_PAUSE_S` the shorter gap between each subsequent agent — both
@@ -472,7 +472,7 @@ class FloorController:
 
         We cannot yet know whether this is a barge-in or a backchannel — the
         transcript is ~300ms behind. Waiting for it costs responsiveness;
-        assuming "interrupt" means an agent stops dead every time Ricky says
+        assuming "interrupt" means an agent stops dead every time James says
         "mm-hm", and the panel stutters. So we duck within one audio buffer and
         decide once evidence arrives. Responsiveness never trades against
         correctness. See ADR 0001.
@@ -489,7 +489,7 @@ class FloorController:
                 address_conflict=(),  # ...and any unresolved tie with it
                 moderator_cued=False,  # ...and the cue latch, with the question
             )
-            # Ricky filling the gap himself is the thing the beat was waiting to
+            # James filling the gap himself is the thing the beat was waiting to
             # avoid, and it has now happened. Cueing him to do what he is
             # already doing would print a stale instruction over live speech.
             state = state.not_awaiting()
@@ -545,7 +545,7 @@ class FloorController:
             consecutive_agent_turns=0,
             last_audio_progress_t=None,
             proposals={},
-            invitation=None,  # Ricky is taking the floor back
+            invitation=None,  # James is taking the floor back
             address_conflict=(),
             # An incomplete introduction round is abandoned, not spent — it
             # has not "been done", so the safety latch does not engage and
@@ -681,7 +681,7 @@ class FloorController:
         invitation — precedence, the supersede window, the cue latch, the
         ambiguity outcome, the one-shot introduction round — is the same code
         in both cases, so flipping `FloorConfig.llm_address_detection` changes
-        who answers "who did Ricky address?" and nothing else about the floor.
+        who answers "who did James address?" and nothing else about the floor.
 
         Ignored outright when the flag is off. That is what makes a recording
         replayable both ways: the same log can be run through the classifier's
@@ -705,7 +705,7 @@ class FloorController:
             return self._apply_detection(state, event.text, t=event.t)
 
         if verdict == NO_VERDICT:
-            # A real answer, not a failure: Ricky invited nobody. A statement
+            # A real answer, not a failure: James invited nobody. A statement
             # invites nobody however interesting it is, and the floor is closed
             # by default, so there is nothing to do.
             return state, []
@@ -789,13 +789,13 @@ class FloorController:
             # currently-granted agent's `AgentSpeechStarted` has come back
             # around the event queue) and reducing it as an ordinary end of
             # turn would either re-grant a turn already in flight or send the
-            # round back to Ricky mid-introduction. Absorbing it here is a
+            # round back to James mid-introduction. Absorbing it here is a
             # no-op, not a lost decision — nothing about this event was ever
             # needed to advance a round that paces itself.
             return state, []
 
         if invitation is None or not invitation.is_live():
-            # Ricky made a remark, not an invitation — or he addressed two
+            # James made a remark, not an invitation — or he addressed two
             # agents at once and we refused to guess between them. Agents may
             # want the floor; wanting it is not taking it. Their interest goes
             # to the operator console and the video wall, and he decides.
@@ -814,7 +814,7 @@ class FloorController:
         winner, reason = self._arbitrate(state, invitation=invitation, now=event.t)
         if winner is None:
             # Invited, but nobody had anything worth the airtime. Silence is a
-            # legitimate outcome — cue Ricky so the beat does not hang, and say
+            # legitimate outcome — cue James so the beat does not hang, and say
             # which rule produced the silence. The invitation deliberately
             # survives: an empty proposal set for two or three seconds is
             # normal, and only the TTL reaps one nobody ever acts on.
@@ -823,13 +823,13 @@ class FloorController:
                 # Give the named agent the beat first. `EndOfTurn` arrives within
                 # a few milliseconds of the final that named them, so "they had
                 # nothing" is not yet a fact — it is a measurement taken before
-                # anyone could have answered. `_tick` cues Ricky if the grace
+                # anyone could have answered. `_tick` cues James if the grace
                 # runs out; a proposal landing first cancels it in `_proposal`.
                 state = replace(state, awaiting_agent=invitation.agent, awaiting_since=event.t)
             elif not state.moderator_cued:
                 # Cue once per invitation, not once per failed arbitration. Every
                 # proposal re-drives arbitration from the runtime, so an
-                # unanswered question used to print `back to Ricky` on each one.
+                # unanswered question used to print `back to James` on each one.
                 state = replace(state, moderator_cued=True)
                 commands.append(CueModerator(reason=reason or CueReason.NO_PROPOSALS))
             # ...and ask again, against the completed turn. Until now recovery
@@ -857,7 +857,7 @@ class FloorController:
     ) -> bool:
         """Is this a silence worth holding a beat for, or one to report at once?
 
-        Only for an agent Ricky named. An open invitation that nobody wants is a
+        Only for an agent James named. An open invitation that nobody wants is a
         real answer — the panel declining as a body — and the score floor
         already decided it; waiting would just delay a decision that was made
         correctly. A named agent is the opposite: a direct question bypasses the
@@ -867,7 +867,7 @@ class FloorController:
         The wait is armed once per invitation. `awaiting_since` is not refreshed
         on a second failed arbitration, and a spent cue is not re-armed, or a
         stream of proposals from the other two agents could hold the beat open
-        indefinitely while the one agent Ricky actually asked stays silent.
+        indefinitely while the one agent James actually asked stays silent.
         """
         if invitation.agent is None or state.moderator_cued:
             return False
@@ -878,7 +878,7 @@ class FloorController:
     def _cue_overdue(
         self, state: PanelState, now: float
     ) -> tuple[PanelState, list[Command]]:
-        """The named agent never answered. Hand the beat to Ricky, once.
+        """The named agent never answered. Hand the beat to James, once.
 
         Evaluated on `Tick` (100ms in this runtime) for the same reason
         `invitation_ttl_s` is: the reducer owns the decision but may not read a
@@ -912,7 +912,7 @@ class FloorController:
         # Arrival order is not generation order any more. Several generations per
         # agent run concurrently — every round starts a fresh one and
         # deliberately leaves the ones already running alive (see
-        # `_ask_for_proposals`) — so a slower stream answering Ricky's preamble
+        # `_ask_for_proposals`) — so a slower stream answering James's preamble
         # can land after a faster one answering his actual question. Keeping the
         # newest by epoch rather than by arrival is what stops the older answer
         # overwriting the better one.
@@ -938,11 +938,11 @@ class FloorController:
         state = state.with_proposal(proposal)
         state = state.with_agent(event.agent, state=AgentState.WANTS_FLOOR)
 
-        # The answer Ricky was waiting for has arrived, so stand the cue down.
+        # The answer James was waiting for has arrived, so stand the cue down.
         # Granting the floor is not this reducer's job — a pure function cannot
         # schedule its own re-arbitration — so the runtime re-drives it on this
         # same event (`PanelRuntime._maybe_rearbitrate`). All that matters here
-        # is that the beat is over and Ricky must not now be told the agent was
+        # is that the beat is over and James must not now be told the agent was
         # silent.
         if state.awaiting_agent == event.agent:
             state = state.not_awaiting()
@@ -1015,7 +1015,7 @@ class FloorController:
           holding line.
 
         `last_proposal_request_t` is the shared clock, so a round opened by
-        Ricky's last partial correctly holds this one off for its interval.
+        James's last partial correctly holds this one off for its interval.
         """
         if state.speaking != event.agent:
             return state, []
@@ -1086,7 +1086,7 @@ class FloorController:
         exception — pinned the floor to a silent agent permanently. `_tick`
         returned `state, []` forever, the invitation TTL could not reap it
         (it only runs with the floor idle) and the show was over. The only
-        recovery was Ricky speaking, which forces the floor back through
+        recovery was James speaking, which forces the floor back through
         `_commit_human_interrupt`: a human noticing, not a system recovering.
 
         Two budgets, picked by whether any audio has been heard yet — see
@@ -1113,7 +1113,7 @@ class FloorController:
         The invitation is dropped rather than continued. A failure in one
         agent's audio path is evidence about the shared path (one provider, one
         device, one mixer), so handing straight to the next agent is as likely
-        to stall again as to recover. Ricky gets the beat and can re-ask, which
+        to stall again as to recover. James gets the beat and can re-ask, which
         regenerates everything cleanly. That costs one turn of the exchange and
         is the predictable choice; keeping the invitation live to save the beat
         is the tempting one, and it is not worth being clever on the failure
@@ -1143,7 +1143,7 @@ class FloorController:
             floor_holder=HUMAN,
             consecutive_agent_turns=0,
             last_audio_progress_t=None,
-            # A stalled agent may also have been ducked — Ricky can say "mm-hm"
+            # A stalled agent may also have been ducked — James can say "mm-hm"
             # over a turn that is already broken — and the duck must not outlive
             # the turn it applied to.
             ducked_agent=None,
@@ -1202,7 +1202,7 @@ class FloorController:
         # same continuation logic as a normal completion. That is deliberate:
         # nobody else has taken the floor, so the panel (or the introduction
         # round) must still be given its next turn rather than stalling
-        # silently until Ricky speaks again.
+        # silently until James speaks again.
         #
         # The one case that *did* need a branch here was an agent interrupt,
         # where the challenger already held the floor by the time the
@@ -1212,7 +1212,7 @@ class FloorController:
 
         # A completed agent turn does NOT reopen the floor. The panel continues
         # only if the invitation had turns left on it; otherwise it goes back to
-        # Ricky, which is what stops three agents relaying to each other.
+        # James, which is what stops three agents relaying to each other.
         #
         # Proposals written *during* the turn survive it. This used to clear
         # them all, which threw away exactly the bids that make a handover
@@ -1410,7 +1410,7 @@ class FloorController:
                 return state, cmds + [self._paint(state)]
 
             case OperatorAction.OPEN_FLOOR:
-                # The backstop for a missed invitation. Ricky phrases something
+                # The backstop for a missed invitation. James phrases something
                 # as a statement, the panel stays quiet, the operator opens it.
                 state = replace(
                     state,
@@ -1471,7 +1471,7 @@ class FloorController:
         shared a label; the runtime skips an agent whose generation for the
         current label is still running, so each agent got at most one in-flight
         generation for the whole turn. An agent slow enough to still be writing
-        when Ricky finished therefore could not be re-asked against anything
+        when James finished therefore could not be re-asked against anything
         newer, and its one answer was necessarily written against the oldest
         input of the three. Structurally, the slowest agent always got the
         stalest input — so the fresher input is worth the extra generation, and
@@ -1552,7 +1552,7 @@ class FloorController:
 
         # A fresh invitation is a fresh question, so the cue latch and any beat
         # left over from the previous one are reset here — otherwise the first
-        # unanswered question of the show would be the only one Ricky is ever
+        # unanswered question of the show would be the only one James is ever
         # told about.
         state = replace(
             state,
@@ -1602,7 +1602,7 @@ class FloorController:
         because it could not arrive at all. Letting generations race removed
         that (deliberately — it was the biggest source of dead air), and left
         this guard measuring nothing. In the run that found it, Wayne's line
-        was written against a partial 3.2s before Ricky's question, finished
+        was written against a partial 3.2s before James's question, finished
         0.77s *after* the invitation, and so scored as maximally fresh.
 
         A proposal whose input is newer than the invitation is never stale,
@@ -1619,7 +1619,7 @@ class FloorController:
         """Pick a winner from within the invitation, or None for silence.
 
         Returns the winner and, when there is none, *why* — "nobody proposed"
-        and "the one agent Ricky named had nothing to say" are different
+        and "the one agent James named had nothing to say" are different
         problems, and a rehearsal that cannot tell them apart cannot be tuned.
 
         Never called with an introduction invitation — `_turn_yielded` routes
@@ -1628,21 +1628,23 @@ class FloorController:
         """
         candidates = self._eligible(state, invitation)
         if not candidates:
-            if invitation.agent is not None:
+            if invitation.agent is not None and not invitation.spoken:
                 return None, CueReason.INVITED_AGENT_SILENT
             return None, CueReason.NO_PROPOSALS
 
-        # Ricky named them. They answer. The score floor exists so that silence
-        # can win an *open* invitation — it has no business overruling a direct
-        # question put to a specific panellist.
-        if invitation.agent is not None:
+        # James named them, and nobody has answered yet. They answer. The
+        # score floor exists so that silence can win an *open* invitation — it
+        # has no business overruling a direct question put to a specific
+        # panellist. Once `invitation.spoken` is non-empty this branch is
+        # skipped entirely — see below.
+        if invitation.agent is not None and not invitation.spoken:
             if invitation.agent not in candidates:
                 return None, CueReason.INVITED_AGENT_SILENT
             # ...but it has to be an answer to *this* question. Speculation runs
             # ahead of the final that opens the floor, so a proposal is normally
             # a second or two older than the invitation and that is exactly what
             # keeps the post-turn gap short. One written well before it is
-            # answering a different moment — Ricky's preamble, or the previous
+            # answering a different moment — James's preamble, or the previous
             # turn, whose proposals survive in `state.proposals` whenever that
             # turn ended without a grant. Silence plus a cue is recoverable;
             # an unrelated line on the PA in answer to a direct question is not.
@@ -1652,7 +1654,7 @@ class FloorController:
             # Both clocks here are deliberate. On the invitation side it is
             # `invitation.t`, not `now`: the gap between the question and
             # `EndOfTurn` is detector latency, not conversation, and charging it
-            # against the proposal would refuse good candidates whenever Ricky
+            # against the proposal would refuse good candidates whenever James
             # trails off slowly. On the proposal side it is the *input*
             # timestamp, not the arrival time, which is the whole subject of
             # `_stale`. ADDRESS only — an OPERATOR
@@ -1685,11 +1687,12 @@ class FloorController:
                 return deferred, None
             return invitation.agent, None
 
-        # An open floor gets the freshness test too. OPEN only — an OPERATOR
-        # invitation is a human at the console deciding the panel should speak
-        # with whatever it has, and second-guessing that breaks the backstop,
-        # exactly as on the named path above.
-        if invitation.source is InvitationSource.OPEN:
+        # Either a genuinely open floor, or a named invitation whose addressee
+        # has already answered. Both get the freshness test — OPERATOR is the
+        # one exception either way: a human at the console deciding the panel
+        # should speak with whatever it has, and second-guessing that breaks
+        # the backstop.
+        if invitation.spoken or invitation.source is InvitationSource.OPEN:
             candidates = {
                 a: p for a, p in candidates.items() if not self._stale_open(p, invitation)
             }
@@ -1702,10 +1705,22 @@ class FloorController:
         )
         best_score, best_agent = scored[0]
 
-        if best_score < self.config.min_floor_priority:
+        # The score floor exists to let silence win a turn nobody was owed.
+        # Once somebody has already spoken this invitation, every other live
+        # agent *is* owed one (CLAUDE.md: "every agent chips in once per
+        # prompt"), so `min_floor_priority` no longer applies — it would let a
+        # deliberately low, declining-but-not-empty score (GUARDRAILS: agents
+        # decline by scoring low, never by an empty utterance) silently skip
+        # the last panellist still waiting their turn. It still governs
+        # whether the *first* speaker on a genuinely open floor gets one at
+        # all — that property is unchanged.
+        if not invitation.spoken and best_score < self.config.min_floor_priority:
             return None, CueReason.BELOW_FLOOR
 
-        # An agent may hand off to a better-placed colleague.
+        # An agent may hand off to a better-placed colleague, as long as that
+        # colleague has not already had their turn — `candidates` already
+        # excludes anyone in `invitation.spoken`, so this can never be used to
+        # skip someone still owed one.
         defer_to = candidates[best_agent].signals.defer_to
         if defer_to and defer_to in candidates:
             return defer_to, None
@@ -1746,7 +1761,7 @@ class FloorController:
     def _detect_invitation(
         self, text: str, *, t: float
     ) -> tuple[Invitation | None, tuple[str, ...]]:
-        """Did Ricky actually open the floor, and to whom?
+        """Did James actually open the floor, and to whom?
 
         A statement invites nobody, however interesting it is — that is the
         whole rule, and it is one a moderator can hold in his head on stage:
@@ -1842,7 +1857,7 @@ class FloorController:
         whichever one the regexes happened to reach first.
         """
         if _COURTESY_TAG_RE.match(clause):
-            # "Is that okay?", "does that work?" — Ricky checking in on his own
+            # "Is that okay?", "does that work?" — James checking in on his own
             # sentence. Nobody is addressed and nobody is invited, even if a
             # name happens to trail off the end of it.
             return []
@@ -1900,7 +1915,7 @@ class FloorController:
             return AddressRole.SUBJECT_OF_REQUEST, "subject_possessive"
 
         if not requested or self_directed:
-            # A name in a statement, or in Ricky's own permission request, is
+            # A name in a statement, or in James's own permission request, is
             # mentioned rather than addressed.
             return None
 
@@ -1924,7 +1939,7 @@ class FloorController:
         through unchanged by `PanelState.for_agents`), fixed and identical on
         every run — alphabetical happens to give Dexter, Melia, Wayne, which
         is also the order each `Persona.introduction` is written to assume
-        ("I'll go first" / "I suppose I can go next" / "saved the best for
+        ("I'll go first" / "I suppose I can go next" / "We've saved the best for
         last"). A fixed opening that ran in a different order each rehearsal
         would only be half of what "fixed" was for, and here it would also
         make the text lie about who just spoke.
@@ -1962,14 +1977,14 @@ class FloorController:
         is exactly what left an agent holding the floor over dead air on
         stage-adjacent testing. Called once when the round starts
         (`_start_introductions`) and again every time one agent's turn ends
-        (`_agent_ended`), so from Ricky's "introduce yourselves" to the last
+        (`_agent_ended`), so from James's "introduce yourselves" to the last
         agent's last word, nothing here ever waits on anything.
         """
         winner = self._next_introduction(state)
         if winner is None:
             if state.intro_queue:
                 # Every agent still owed a turn is muted. The round cannot
-                # finish itself — an unmute, or Ricky abandoning and
+                # finish itself — an unmute, or James abandoning and
                 # re-triggering it, is what resumes it — so it is left
                 # standing rather than quietly marked done. `expires_at`
                 # exempts this source from the TTL for exactly this reason.
@@ -2060,13 +2075,26 @@ class FloorController:
             return state, [request]
 
         state = state.without_proposal(agent_id).not_awaiting()
+        invitation = None
+        if state.invitation is not None:
+            # `now` refreshes the TTL clock: an invitation producing turns is
+            # live conversation and must not age out mid-exchange. `agent_id`
+            # records that this agent has now had their turn, which is what
+            # `admits()` opens the floor on for everyone else.
+            invitation = state.invitation.spent(t=now, agent_id=agent_id)
+            live_agents = {a for a, rt in state.agents.items() if not rt.muted}
+            if set(invitation.spoken) >= live_agents:
+                # Every live agent has now had a turn this invitation — close
+                # it outright rather than let it sit on `turns_remaining` a
+                # config value happens not to have exhausted yet. CLAUDE.md:
+                # "every agent chips in once per prompt," and once they have,
+                # this cue belongs back with James.
+                invitation = replace(invitation, turns_remaining=0)
         state = replace(
             state,
             turn_id=state.turn_id + 1,
             consecutive_agent_turns=state.consecutive_agent_turns + 1,
-            # `now` refreshes the TTL clock: an invitation producing turns is
-            # live conversation and must not age out mid-exchange.
-            invitation=state.invitation.spent(t=now) if state.invitation else None,
+            invitation=invitation,
             address_conflict=(),
         )
         return state, [
@@ -2096,7 +2124,7 @@ class FloorController:
                 "invitation_rule": invitation.rule if invitation else None,
                 "address_conflict": state.address_conflict,
                 # Who the floor is holding a beat for before it gives up and
-                # cues Ricky. Visible because a rehearsal needs to tell "the
+                # cues James. Visible because a rehearsal needs to tell "the
                 # panel is about to answer" from "the panel is not going to",
                 # which from the console used to look identical.
                 "awaiting": state.awaiting_agent,

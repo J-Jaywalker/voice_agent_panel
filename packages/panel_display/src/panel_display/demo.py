@@ -5,15 +5,15 @@
 
 Why this exists rather than "just run the panel": the wall has to be checked
 against the real hardware, and the two things that matter most at load-in —
-does the 8:3 layout actually fill the LED processor's output, and can the back
-row read a name — need a picture on the wall, not a working panel. This needs
+does the 16:9 layout actually fill the display's output, and can the back row
+read a name — need a picture on the wall, not a working panel. This needs
 no mic, no API keys, no speakers and no moderator. Bring up the wall first,
 then bring up the show.
 
 `--demo` drives a loop of the beats the wall has to render: the moderator
 talking, the panel thinking, an agent invited and then speaking, a
 backchannel duck mid-turn, a raised hand nobody took, and the floor going
-back to Ricky. If a state never appears here, nobody will see it before the
+back to James. If a state never appears here, nobody will see it before the
 night.
 
 The envelope is synthesised rather than sampled, and that is the one thing
@@ -36,6 +36,7 @@ from panel_core import (
     HUMAN,
     AgentSpeechEnded,
     AgentSpeechStarted,
+    AgentUtteranceProgress,
     CueModerator,
     DuckSpeech,
     HandsRaised,
@@ -56,6 +57,21 @@ SCRIPT = [
     "Melia, I can see you want to come back on that.",
     "Dexter — is any of this survivable at fleet scale?",
     "Let's take one more before we open it up.",
+]
+
+# What an agent's turn says, sentence by sentence — exercising the same path
+# `AgentUtteranceProgress` takes in the real runtime, so the transcript band's
+# handling of an agent turn is a beat covered here rather than a thing nobody
+# sees before the venue. Not attributed to any one agent; `turn_for` below
+# just draws a handful per turn, same as the real panel draws from whichever
+# candidate won arbitration.
+AGENT_LINES = [
+    "Adoption already happened, and nobody noticed the day it did.",
+    "Every workflow that used to need a sign-off still has one on paper.",
+    "The sign-off is theatre at this point.",
+    "None of that makes it survivable at fleet scale.",
+    "I'd want to see the incident numbers before anyone calls it safe.",
+    "The numbers are the whole argument, not a footnote to it.",
 ]
 
 
@@ -102,7 +118,7 @@ class SyntheticPanel:
                 value = 0.34 * syllable * (0.4 + 0.6 * stress) * breath * gate
                 value *= random.uniform(0.75, 1.0)
                 values[self.speaking] = value * (0.28 if self.ducked else 1.0)
-            # Ricky's mic. Live only while he is mid-question, which is what
+            # James's mic. Live only while he is mid-question, which is what
             # makes the moderator dot worth looking at.
             values[HUMAN] = 0.18 * random.uniform(0.6, 1.0) if self.human else 0.0
             self.server.set_levels(values)
@@ -132,7 +148,7 @@ class SyntheticPanel:
         )
 
     async def moderator(self, line: str) -> None:
-        """Ricky asks something, one word at a time, then it finalises."""
+        """James asks something, one word at a time, then it finalises."""
         self.human = True
         self.server.on_event(HumanSpeechStarted(t=self.t))
         self.paint()
@@ -150,6 +166,24 @@ class SyntheticPanel:
         self.human = False
         self.server.on_event(HumanSpeechEnded(t=self.t))
 
+    async def say(self, agent: str, sentence: str, spoken: list[str]) -> None:
+        """One sentence, pushed the way `speak()` actually pushes it: fast.
+
+        Deliberately *not* paced to speaking rate here. In the real runtime
+        `AgentUtteranceProgress` is emitted the moment a sentence is handed to
+        the TTS provider, so a whole turn's sentences can arrive within a
+        fraction of a second of each other — the gap between them is
+        generation pace and a socket write, nothing more. The reveal pacing
+        lives in `DisplayServer` (see `SPEAKING_WPS`), and pacing it here too
+        would mean `--demo` looked correct whether or not the server's pacing
+        still worked. The short sleep is the model streaming, not the voice.
+        """
+        spoken.append(sentence)
+        self.server.on_event(
+            AgentUtteranceProgress(t=self.t, agent=agent, text=sentence)
+        )
+        await asyncio.sleep(0.12)
+
     async def turn_for(self, agent: str) -> None:
         self.turn += 1
         self.invited = agent
@@ -159,20 +193,41 @@ class SyntheticPanel:
         self.speaking = agent
         self.server.on_event(AgentSpeechStarted(t=self.t, agent=agent))
         self.paint()
-        await asyncio.sleep(random.uniform(3.0, 5.0))
 
-        # A backchannel mid-turn: "mm-hm" ducks but does not stop.
+        sentences = random.sample(AGENT_LINES, k=random.randint(3, 4))
+        spoken: list[str] = []
+        # How long the turn's audio would run for. The sentences are pushed in
+        # a burst well inside this, exactly as they are on the night; the turn
+        # then has to stay open until the room would have heard the last of
+        # them, or `AgentSpeechEnded` would arrive while the band was still
+        # mid-reveal and drop the rest — which is the correct behaviour for a
+        # cut-off turn and the wrong one for a completed one.
+        started = asyncio.get_running_loop().time()
+        audio_s = sum(len(s.split()) / 2.8 for s in sentences)
+
+        await self.say(agent, sentences[0], spoken)
+
+        # A backchannel mid-turn: "mm-hm" ducks but does not stop — and the
+        # agent keeps talking through it, same as `AgentUtteranceProgress`'s
+        # own docstring says a ducked agent must.
         self.ducked = True
         self.server.on_command(DuckSpeech(agent=agent, gain_db=-12.0, ramp_ms=120))
         await asyncio.sleep(1.1)
         self.ducked = False
         self.server.on_command(ResumeSpeech(agent=agent, ramp_ms=180))
-        await asyncio.sleep(random.uniform(2.5, 4.0))
+
+        for sentence in sentences[1:]:
+            await self.say(agent, sentence, spoken)
+
+        elapsed = asyncio.get_running_loop().time() - started
+        await asyncio.sleep(max(0.0, audio_s - elapsed))
 
         self.speaking = None
         self.invited = None
         self.server.on_event(
-            AgentSpeechEnded(t=self.t, agent=agent, completed=True, utterance="…")
+            AgentSpeechEnded(
+                t=self.t, agent=agent, completed=True, utterance=" ".join(spoken)
+            )
         )
         self.paint()
 
@@ -216,7 +271,7 @@ async def main_async(args: argparse.Namespace) -> None:
     if url is None:
         raise SystemExit(f"could not bind port {args.port}")
     print(f"video wall: {url}")
-    print("open it on the wall machine, fullscreen, 8:3.")
+    print("open it on the wall machine, fullscreen, 16:9.")
 
     tasks = []
     if args.demo:

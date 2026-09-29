@@ -17,13 +17,29 @@ from pathlib import Path
 
 import aiohttp
 import pytest
-from panel_core import AgentSpeechStarted, PanelCast
-from panel_display.server import LEVEL_HZ, DisplayServer
+from panel_core import (
+    AgentSpeechEnded,
+    AgentSpeechStarted,
+    AgentUtteranceProgress,
+    PanelCast,
+)
+from panel_display.server import LEVEL_HZ, SPEAKING_WPS, DisplayServer
 
 PERSONAS = Path(__file__).resolve().parents[3] / "personas"
 # Generous against a 30Hz pump: enough frames to have definitely been sent,
 # short enough that a hung socket fails the suite rather than stalling it.
 WINDOW_S = 6 / LEVEL_HZ
+
+# Sentences for the transcript-pacing tests. Four words each, so at the fast
+# rate below every one of them is worth exactly one reveal interval.
+SENTENCE_A = "One two three four"
+SENTENCE_B = "five six seven eight"
+# Twenty times real speaking pace: 0.2s per four-word sentence, which is four
+# flush ticks apart and so provably two separate snapshots, while keeping the
+# whole test inside a fifth of a second. Same discipline as WINDOW_S — tuned
+# off the server's own rates rather than guessed at.
+FAST_WPS = SPEAKING_WPS * 20
+REVEAL_S = len(SENTENCE_A.split()) / FAST_WPS
 
 
 @pytest.fixture(scope="module")
@@ -31,9 +47,9 @@ def cast() -> PanelCast:
     return PanelCast.from_dir(PERSONAS)
 
 
-async def _serve(cast: PanelCast) -> DisplayServer:
+async def _serve(cast: PanelCast, **kwargs) -> DisplayServer:
     """A server on an ephemeral port, so a wall left running never collides."""
-    server = DisplayServer(cast, port=0, host="127.0.0.1")
+    server = DisplayServer(cast, port=0, host="127.0.0.1", **kwargs)
     assert await server.start() is not None
     return server
 
@@ -132,6 +148,75 @@ def test_silence_stops_sending_rather_than_streaming_zeroes(cast: PanelCast):
             await server.close()
 
     assert [m for m in asyncio.run(body()) if m["type"] == "levels"] == []
+
+
+def test_a_turns_sentences_are_revealed_one_at_a_time(cast: PanelCast):
+    """The whole point of the pacing: not "both arrive", but "not together".
+
+    `AgentUtteranceProgress` is emitted when a sentence is handed to TTS, so
+    a turn's sentences can all land inside one tick of the flush pump. If the
+    server forwarded them straight through, the band would get a clump of
+    text and then twenty seconds of nothing while the agent caught up. Two
+    sentences pushed back to back must therefore be seen in two *different*
+    snapshots, with a snapshot showing only the first in between.
+    """
+
+    def push(server: DisplayServer) -> None:
+        server.on_event(AgentSpeechStarted(t=1.0, agent="dex"))
+        for text in (SENTENCE_A, SENTENCE_B):
+            server.on_event(AgentUtteranceProgress(t=1.0, agent="dex", text=text))
+
+    async def body():
+        server = await _serve(cast, words_per_second=FAST_WPS)
+        try:
+            return await _collect(
+                f"http://127.0.0.1:{server.port}/ws",
+                REVEAL_S * 3,
+                after=lambda: push(server),
+            )
+        finally:
+            await server.close()
+
+    counts = [
+        sum(1 for line in m["lines"] if line["speaker"] == "dex")
+        for m in asyncio.run(body())
+        if m["type"] == "state"
+    ]
+    # Not `counts == [0, 1, 2]`: the pump coalesces, so the connect snapshot
+    # and repaints in between are free to repeat a count. What may never
+    # happen is going straight from no sentences to both of them.
+    assert 1 in counts, f"never saw the first sentence alone: {counts}"
+    assert counts[-1] == 2, f"the second sentence never arrived: {counts}"
+    assert counts.index(1) < counts.index(2)
+
+
+def test_a_turn_that_ends_drops_what_it_had_not_said_yet(cast: PanelCast):
+    """A cut-off turn must not keep trickling onto the band afterwards.
+
+    `AgentSpeechEnded` fires on every real ending — completion, interruption,
+    and the exception-recovery arm in `speak()`. Whichever it was, sentences
+    the room will now never hear have no business appearing.
+    """
+
+    async def body():
+        server = await _serve(cast, words_per_second=FAST_WPS)
+        try:
+            server.on_event(AgentSpeechStarted(t=1.0, agent="dex"))
+            for text in (SENTENCE_A, SENTENCE_B):
+                server.on_event(AgentUtteranceProgress(t=1.0, agent="dex", text=text))
+            # Long enough for the first sentence to be revealed, short enough
+            # that the second is still sitting in the queue behind it.
+            await asyncio.sleep(REVEAL_S / 2)
+            server.on_event(
+                AgentSpeechEnded(t=2.0, agent="dex", completed=False, utterance="")
+            )
+            # Well past when the second sentence would have been due.
+            await asyncio.sleep(REVEAL_S * 3)
+            return [(line.speaker, line.text) for line in server.wall.lines]
+        finally:
+            await server.close()
+
+    assert asyncio.run(body()) == [("dex", SENTENCE_A)]
 
 
 def test_the_page_and_its_assets_are_served(cast: PanelCast):

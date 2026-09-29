@@ -2,7 +2,7 @@
 
 **Status:** Accepted, behind a flag. Default off.
 **Date:** 18 September 2026
-**Decides:** who answers *"who did Ricky just invite to speak?"*
+**Decides:** who answers *"who did James just invite to speak?"*
 **Does not reopen:** ADR 0001. No `AgentSession`, we still own the mixer.
 
 ---
@@ -42,7 +42,7 @@ Two decisions that were previously one, and keeping them apart is the point:
 | Is the floor open, and to whom? | **This ADR.** Haiku, or the regex with the flag off |
 | Who wins an *open* floor? | `scoring.py` — deterministic, no LLM, unit-tested |
 
-On a *named* verdict the score floor is bypassed entirely (`_arbitrate`: "Ricky
+On a *named* verdict the score floor is bypassed entirely (`_arbitrate`: "James
 named them. They answer"), so in practice the classifier's verdict is the
 decision on most turns. CLAUDE.md's old "floor arbitration: no LLM" line was
 written before this existed and read as false afterwards; it has been split.
@@ -63,7 +63,7 @@ this.
   to find that out, not the show.
 - **The reason keeps streaming in the background** and is filed against the
   cache entry. Nothing ever waits on prose.
-- **Partials are speculatively classified** while Ricky is still talking, so the
+- **Partials are speculatively classified** while James is still talking, so the
   common case at finalisation is a cache hit at zero measured cost.
 - **An in-flight speculation for exactly the finalised text is joined, not
   cancelled.** Cancelling throws away the head start and pays a fresh round trip.
@@ -77,7 +77,7 @@ this.
 `TurnYielded`, and only `TurnYielded`, is held back for the verdict — bounded by
 `ADDRESS_HOLD_TIMEOUT_S = 0.7` in `panel.py`. Speechmatics' `EndOfTurn` lands
 within a few ms of the final that names an agent, so without the hold the floor
-arbitrates before the invitation exists: floor closed, Ricky cued, dead air —
+arbitrates before the invitation exists: floor closed, James cued, dead air —
 the exact bug removed the week before this was written.
 
 `TranscriptUpdated` is **never** held. It drives the barge-in content check and

@@ -29,7 +29,7 @@ Failure chain: agent TTS → PA → venue mic → Speechmatics → orchestrator 
 
 - **Agent speech never enters STT** — enforced structurally (`panel_runtime.stt`, `panel_runtime.panel`, CLAUDE.md invariant). Done.
 - **Pre-PA mic split** — venue fact, not code. Open, §9.
-- **PA bleed into Ricky's mic** — expect it. Close mic + calibrated VAD gate is the mitigation. `uv run barge-in` on open speakers demonstrates the failure live.
+- **PA bleed into James's mic** — expect it. Close mic + calibrated VAD gate is the mitigation. `uv run barge-in` on open speakers demonstrates the failure live.
 
 ### 3.2 Barge-in — VAD, not transcription
 
@@ -53,7 +53,7 @@ STT client has moved again since the ADR: Agent STT has no multi-channel mode �
 
 `floor.py` is pure `reduce(state, event) -> (state, commands)`. No network, no clock reads. The whole of `panel_core` — floor, addressing, personas, prompts — is 226 tests in ~2s, with no I/O to flake on. (`uv run pytest` runs everything, 287 tests in ~3min; the slow tail is `panel_runtime`.)
 
-This still holds with the address classifier on (§3.7). A model answers *who did Ricky invite?* out in `panel_runtime`; the answer arrives as an `AddressDetected` event and is reduced like any other. `floor.py` never opens a socket, so a recorded log still replays identically through modified floor logic. What changed is that one input to the floor is now non-deterministic — not the floor itself.
+This still holds with the address classifier on (§3.7). A model answers *who did James invite?* out in `panel_runtime`; the answer arrives as an `AddressDetected` event and is reduced like any other. `floor.py` never opens a socket, so a recorded log still replays identically through modified floor logic. What changed is that one input to the floor is now non-deterministic — not the floor itself.
 
 Two decisions, and keeping them apart is the point:
 
@@ -62,7 +62,7 @@ Two decisions, and keeping them apart is the point:
 | Is the floor open, and to whom? | Haiku classifier (§3.7), or the regex with the flag off |
 | Who wins an *open* floor? | `scoring.py` — deterministic, no LLM, unit-tested |
 
-On a *named* verdict the score floor is bypassed entirely (`_arbitrate`: "Ricky named them. They answer"), so on most turns the classifier's verdict is the decision.
+On a *named* verdict the score floor is bypassed entirely (`_arbitrate`: "James named them. They answer"), so on most turns the classifier's verdict is the decision.
 
 ### 3.5 Speculative generation
 
@@ -75,7 +75,7 @@ Budgeted pre-spike at 0.9–1.8s to first audio. Measured (S0.7) worse — hence
 
 Cost is generation (~200 tokens @ ~40 tok/s), not reasoning. Streaming removes 1424ms/turn. Built: `panel_runtime.brains.StreamingClaudeBrain`, `panel_runtime.chunking.SentenceChunker`.
 
-Each agent proposes during the human's turn, not just at EOU — generation is usually underway or done by the time the floor needs an answer. Three qualifications, all from the same live failure (an agent answering "So, Wayne, uh" with "Take your time, Ricky — we'll be here", aired because a named invitation bypasses the score floor):
+Each agent proposes during the human's turn, not just at EOU — generation is usually underway or done by the time the floor needs an answer. Three qualifications, all from the same live failure (an agent answering "So, Wayne, uh" with "Take your time, James — we'll be here", aired because a named invitation bypasses the score floor):
 
 - A partial under `speculation_min_words` is not worth asking about. Speechmatics segments on pauses, so every turn opens with a fragment.
 - Generations race; none is cancelled. Every round takes a fresh `PanelState.speculation_epoch`, so `(agent, epoch)` names exactly one generation and several per agent are deliberately in flight at once. `_proposal` keeps whichever is newest by epoch rather than whichever arrives last. **This replaces the earlier cancel-on-final rule, and removing that teardown was the single biggest dead-air fix on stage** — `EndOfTurn` lands within a few ms of the final that names an agent, so the teardown used to fire at the exact moment the work was needed, and the full cold generation latency sat on the critical path every turn. Labelling per *round* rather than per final matters too: under per-final epochs the slowest agent structurally always got the stalest input.
@@ -83,11 +83,11 @@ Each agent proposes during the human's turn, not just at EOU — generation is u
 
 Not re-measured: Sonnet 5 at `effort: "low"` (§10 #3) wasn't a direct S0.7 row — Sonnet alone at `low` was 4110-4129ms one-shot. Streaming should cut it proportionally.
 
-### 3.6 Interrupts — Ricky only
+### 3.6 Interrupts — James only
 
 Duck-first-classify-after (S0.2), not the originally proposed flat 300–500ms overlap + hard duck.
 
-**Ricky interrupts agent:** instant duck, then a hard stop once classification resolves (`human_duck_ms = 90`). This is the only interrupt in the system.
+**James interrupts agent:** instant duck, then a hard stop once classification resolves (`human_duck_ms = 90`). This is the only interrupt in the system.
 
 **Agent interrupts agent: removed, 21 Sept 2026.** Scoped out — agents pass turns, they never cut each other off. Deleted rather than disabled: `allow_agent_interrupts`, `interrupt_threshold`, `interrupt_grace_s`, `interrupt_cooldown_s`, `interrupt_overlap_ms`, `interrupt_score()`, `may_interrupt()`, `StopReason.AGENT_INTERRUPT`, the `_proposal` cut-in branch, the `_agent_ended` branch only it could reach, and both `--agent-interrupts` flags. Pinned by `test_an_agent_never_interrupts_a_speaking_agent` and `test_stop_reasons_do_not_include_an_agent_interrupt`.
 
@@ -99,7 +99,7 @@ Agent-to-agent *conversation* is unaffected and still wanted; see §3.8.
 
 ### 3.7 Address detection by classifier — ADR 0002
 
-Who did Ricky just invite? Answered by `claude-haiku-4-5` in
+Who did James just invite? Answered by `claude-haiku-4-5` in
 `panel_runtime.address`, behind `FloorConfig.llm_address_detection`
 (`panel --llm-address`). **Off by default**; with the flag off the classifier is
 never even constructed and the regex in `floor.py` runs instead.
@@ -118,13 +118,13 @@ moment this project spent weeks clearing:
 
 - decoded from the **first content delta**, not the finished message. Time-to-verdict ≈ time-to-first-token;
 - the human-readable reason keeps streaming in the background and is never waited on;
-- partials are **speculatively classified** while Ricky is still talking, so the common case at finalisation is a cache hit at zero measured cost;
+- partials are **speculatively classified** while James is still talking, so the common case at finalisation is a cache hit at zero measured cost;
 - an in-flight speculation for *exactly* the finalised text is **joined**, not cancelled;
 - **fails closed to the regex** (`verdict=None`) on timeout or error — never invents a `NONE`, which would silently swallow a real invitation.
 
 One event waits on it: `TurnYielded`, bounded by `ADDRESS_HOLD_TIMEOUT_S = 0.7`
 (`panel.py`). `EndOfTurn` lands within a few ms of the final, so without the hold
-the floor arbitrates before the invitation exists — floor closed, Ricky cued,
+the floor arbitrates before the invitation exists — floor closed, James cued,
 dead air. `TranscriptUpdated` is never held; it drives the barge-in content check
 and speculative generation.
 
@@ -140,7 +140,7 @@ venue rig (§ Deployment).
 
 ### 3.8 Agent-to-agent conversation
 
-Agents pass turns to each other without Ricky, and the loop is built:
+Agents pass turns to each other without James, and the loop is built:
 `_agent_ended` re-requests proposals while an invitation is live →
 `PanelRuntime._maybe_rearbitrate` synthesises a `TurnYielded` once one lands with
 the floor idle → `_arbitrate` grants the next agent. `recency_penalty`
@@ -175,7 +175,7 @@ is exactly what it is for.
 
 Matches what's built: `packages/panel_core`, `panel_runtime`, `panel_sim` (paths in CLAUDE.md). Python for core/runtime, TypeScript for unbuilt operator console/video wall.
 
-**`panel_sim`** — text harness: type as Ricky, agents respond as text, floor decisions/scores print live. Where personas get written, thresholds tuned, without an engineer. Can't rehearse the introduction round.
+**`panel_sim`** — text harness: type as James, agents respond as text, floor decisions/scores print live. Where personas get written, thresholds tuned, without an engineer. Can't rehearse the introduction round.
 
 **Event log** — built. `panel` and `panel-sim` append every event to JSONL (`--log`), replayable.
 
@@ -199,12 +199,12 @@ Matches what's built: `packages/panel_core`, `panel_runtime`, `panel_sim` (paths
 | Failure | Response |
 |---|---|
 | Agent LLM timeout (>2s) | Drop turn silently. Floor returns to moderator. Never dead-air. |
-| Agent LLM error | Pre-rendered stall line ("Sorry Ricky — say again?"). Buys 3s. |
+| Agent LLM error | Pre-rendered stall line ("Sorry James — say again?"). Buys 3s. |
 | TTS failure | Fail to secondary provider; else drop turn. |
 | STT disconnect | Auto-reconnect w/ backoff (built). Red banner (not built, no console). Manual cue mode fallback. |
 | Network loss | Wired venue ethernet primary, 5G failover pre-tested. |
 | Unacceptable agent output | Operator kill switch mutes all agent output <50ms. Physical button/key. |
-| Total system failure | Ricky runs rehearsed solo segment — must actually be rehearsed. |
+| Total system failure | James runs rehearsed solo segment — must actually be rehearsed. |
 
 **Operator console requirements** (needed from Phase 1 to rehearse — none built): kill-all, mute individual agent, force agent to speak now, advance beat, live state + scores, latency/health indicators.
 
@@ -242,8 +242,8 @@ Calendar: 1 Sept → 21 Oct (~7 weeks). One week in, 4 weeks to freeze.
 
 Sent to Boost week 1; confirmed by the venue 16 Sept. All four met:
 
-1. Pre-PA mic split — Ricky's mic only, no PA/agent audio in the mix. Hardest to retrofit, was the one that had to lock first.
-2. Ricky on close mic (headset/lav), not lectern/ambient.
+1. Pre-PA mic split — James's mic only, no PA/agent audio in the mix. Hardest to retrofit, was the one that had to lock first.
+2. James on close mic (headset/lav), not lectern/ambient.
 3. Line input for agent audio, own fader, own kill.
 4. Connector types, levels (mic vs line), can we bring our own interface.
 
@@ -261,7 +261,7 @@ an open risk.
 | 2 | ~~TTS — resolved 7 Sept: ElevenLabs~~ (S0.4 passed vs placeholder voice — redo once cast) | Eng | re-rehearse |
 | 3 | ~~Agent model/effort — resolved 11 Sept: Sonnet 5, `effort: "low"`~~. Opus 5 was chosen 7 Sept against S0.7's own numbers (Opus slowest: 6207-6218ms vs Haiku 2582ms) purely because it supports mid-conversation `role: "system"` messages, the only way `InjectDirective`/operator "wrap up" could work. Mid-turn directives were cut 11 Sept (prompt instruction + hard turn-limit stop instead), removing that justification; reverted to Sonnet 5 (4110-4129ms) for the latency win. `low` mitigates latency; untested combination. | Eng | re-measure before hardening |
 | 4 | ~~Personas/names/employers — done~~: Dexter, Wayne, Melia, fictional employers, schema built (§4.2) | Content | done |
-| 5 | **Reopened 17 Sept.** Beat sheet + approved knowledge were signed off 16 Sept (late against 14 Sept) and wired per option 1 of `docs/beat-sheet.md` "Wiring". The 17 Sept restructure adds three spines — D4 (Dexter was jailbroken by thirty-one polite turns), W4 (Wayne followed instructions hidden in a document), M4 (Melia accidentally produced a proof of a Millennium Prize problem and filed it unread). All three are first-person accounts of an agent being compromised, which is new territory for this panel; D4 and M4 need a second pair of eyes before the show. | Content + Ricky | before 7 Oct freeze |
+| 5 | **Reopened 17 Sept.** Beat sheet + approved knowledge were signed off 16 Sept (late against 14 Sept) and wired per option 1 of `docs/beat-sheet.md` "Wiring". The 17 Sept restructure adds three spines — D4 (Dexter was jailbroken by thirty-one polite turns), W4 (Wayne followed instructions hidden in a document), M4 (Melia accidentally produced a proof of a Millennium Prize problem and filed it unread). All three are first-person accounts of an agent being compromised, which is new territory for this panel; D4 and M4 need a second pair of eyes before the show. | Content + James | before 7 Oct freeze |
 | 6 | ~~One moderator or two — resolved 7 Sept: one~~ | Creative | done |
 | 7 | Video wall visual design | Design | end of week 3 — no code |
 | 8 | Who operates console on the night | — | before rehearsal — console doesn't exist |

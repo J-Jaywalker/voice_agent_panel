@@ -20,8 +20,8 @@ class AgentState(str, Enum):
 
 
 class InvitationSource(str, Enum):
-    ADDRESS = "address"  # Ricky named an agent and asked them something
-    OPEN = "open"  # Ricky asked the room
+    ADDRESS = "address"  # James named an agent and asked them something
+    OPEN = "open"  # James asked the room
     OPERATOR = "operator"  # the console opened the floor by hand
     INTRODUCTION = "introduction"  # the one-shot "introduce yourselves" round
 
@@ -56,7 +56,7 @@ class Invitation:
     agent: str | None  # None = open to the whole panel
     turns_remaining: int
     source: InvitationSource
-    # The moment Ricky opened the floor. This never moves. It is the question a
+    # The moment James opened the floor. This never moves. It is the question a
     # proposal has to be an answer to (``FloorController._stale``) and the
     # anchor for the supersede window, and both of those are about *when the
     # invitation was made*, not about how recently it has been used.
@@ -69,19 +69,34 @@ class Invitation:
     # which meant an invitation that produced turns slid its own freshness and
     # supersede windows forward with it.
     last_active_t: float | None = None
+    # Agents already granted a turn under this invitation, in the order they
+    # spoke. Empty until the first grant. This is what lets a named
+    # invitation open up to the rest of the panel once its addressee has
+    # actually answered (see ``admits()``), and what ``FloorController._grant``
+    # checks to close the invitation the instant every live agent has had a
+    # turn, rather than waiting on ``turns_remaining`` to happen to reach
+    # zero. CLAUDE.md: "every agent chips in once per prompt."
+    spoken: tuple[str, ...] = ()
 
-    def spent(self, *, t: float | None = None) -> Invitation:
-        """Consume one turn.
+    def spent(self, *, t: float | None = None, agent_id: str | None = None) -> Invitation:
+        """Consume one turn, and record who took it.
 
         ``t`` refreshes the *activity* clock, not ``self.t``. An invitation that
         is actually producing turns is live conversation and must not age out
         mid-exchange; the TTL exists for one that never produces a turn at all
         (see ``FloorConfig.invitation_ttl_s``).
+
+        ``agent_id`` is who was just granted the floor. It is appended to
+        ``spoken`` (once — a repeat grant, which should not happen, does not
+        duplicate the entry) so ``admits()`` and the "everyone's had a turn"
+        check both see it. ``None`` is the introduction round's fixed-text
+        grants, which do not participate in this bookkeeping at all.
         """
         remaining = max(0, self.turns_remaining - 1)
+        spoken = self.spoken if agent_id is None or agent_id in self.spoken else self.spoken + (agent_id,)
         if t is None:
-            return replace(self, turns_remaining=remaining)
-        return replace(self, turns_remaining=remaining, last_active_t=t)
+            return replace(self, turns_remaining=remaining, spoken=spoken)
+        return replace(self, turns_remaining=remaining, last_active_t=t, spoken=spoken)
 
     def touched(self, *, t: float) -> Invitation:
         """Record activity without consuming a turn.
@@ -98,7 +113,20 @@ class Invitation:
         return self.turns_remaining > 0
 
     def admits(self, agent_id: str) -> bool:
-        return self.agent is None or self.agent == agent_id
+        """May this agent be granted the floor under this invitation, next?
+
+        Before anyone has spoken, a named invitation admits only its
+        addressee — a direct question is still theirs alone to answer first.
+        Once at least one agent has taken a turn, every other live agent is
+        owed one before this invitation closes, named or not, so the field
+        opens to whoever has not yet spoken. An agent who has already had
+        their turn this invitation is never admitted twice.
+        """
+        if agent_id in self.spoken:
+            return False
+        if not self.spoken:
+            return self.agent is None or self.agent == agent_id
+        return True
 
     def precedence(self) -> int:
         """How specific this invitation is. Higher wins a collision."""
@@ -181,7 +209,7 @@ class PanelState:
     # decides that it opens (the classifier, or the regex) versus who wins it
     # once open (scoring), and CLAUDE.md "Floor closed by default".
     invitation: Invitation | None = None
-    # Agents that tied for "the one Ricky addressed", when the utterance named
+    # Agents that tied for "the one James addressed", when the utterance named
     # more than one in the same grammatical role. Ambiguity is an outcome, not
     # an error: the floor stays CLOSED and the tie is surfaced to the operator
     # rather than guessed at. A missed invitation costs one beat; a wrong one
@@ -246,9 +274,9 @@ class PanelState:
     speculation_epoch: int = 0
     killed: bool = False
 
-    # --- the beat before the floor goes back to Ricky ---
+    # --- the beat before the floor goes back to James ---
     #
-    # Set when arbitration found nothing for an agent Ricky named by name.
+    # Set when arbitration found nothing for an agent James named by name.
     # Rather than telling him to fill the silence in the same millisecond his
     # question landed, the floor waits `FloorConfig.invited_agent_grace_s` for
     # the answer that is almost certainly still being written, and only cues him
@@ -257,8 +285,8 @@ class PanelState:
     #
     # `moderator_cued` latches for the life of one invitation. Every proposal
     # that lands re-opens arbitration (`PanelRuntime._maybe_rearbitrate`), so a
-    # single unanswered question used to cue Ricky once per proposal — three
-    # times over, in the run that prompted this. Ricky needs telling once.
+    # single unanswered question used to cue James once per proposal — three
+    # times over, in the run that prompted this. James needs telling once.
     awaiting_agent: str | None = None
     awaiting_since: float | None = None
     moderator_cued: bool = False
@@ -307,7 +335,7 @@ class PanelState:
         """Stand down the beat before the moderator cue.
 
         Called wherever the wait is over however it ended — the answer arrived,
-        someone took the floor, Ricky spoke again, or the cue finally fired.
+        someone took the floor, James spoke again, or the cue finally fired.
         """
         return replace(self, awaiting_agent=None, awaiting_since=None)
 

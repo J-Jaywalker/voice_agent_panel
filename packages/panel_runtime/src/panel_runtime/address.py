@@ -1,7 +1,7 @@
 """Address detection by model, for the live runtime.
 
 Answers the one question `FloorController._detect` answers with regex: *who did
-Ricky just invite to speak?* The regex is accurate on the phrasings it was
+James just invite to speak?* The regex is accurate on the phrasings it was
 written for — 153/153 of `packages/panel_core/tests/test_address.py`, by
 construction — and structurally incapable of resolving a descriptive reference.
 "What does the financial side make of that?" is Wayne, and no pattern over the
@@ -25,7 +25,7 @@ structure, and it is worth reading before changing any of this:
   time-to-first-token;
 - the human-readable reason keeps streaming in a background task and is filed
   against the cache entry when it lands. Nothing ever waits on prose;
-- interim transcripts are speculatively classified while Ricky is still
+- interim transcripts are speculatively classified while James is still
   talking, so the common case at finalisation is a cache hit at zero measured
   latency. That hit rate is the main open question about this whole approach
   and is why `AddressVerdict.source` exists;
@@ -40,7 +40,7 @@ Two differences from `wake.py`, both deliberate:
 
 **No wake-word gate.** `wake.py`'s first speculation gate requires the wake word
 to plausibly be present, because otherwise every interim from every speaker in
-the room becomes an API call. There is no analogue here: Ricky's mic is the only
+the room becomes an API call. There is no analogue here: James's mic is the only
 input, every word on it is addressed to the panel in some sense, and the whole
 capability being bought is resolving invitations that name *nobody*. So the gate
 is dropped and only the growth and throttle gates remain. Cost is not a
@@ -117,7 +117,7 @@ _WHITESPACE_RE = re.compile(r"\s+")
 _REASON_LEAD_CHARS = "—–-:,. \t"
 
 VerdictSource = Literal[
-    "speculative_hit",  # decided before Ricky stopped talking; zero measured cost
+    "speculative_hit",  # decided before James stopped talking; zero measured cost
     "joined",  # the speculation for this exact text was still running
     "fresh",  # no speculation had been attempted
     "recomputed",  # speculation ran, but against text that was then revised
@@ -187,7 +187,7 @@ def _user_turn(text: str) -> str:
         The user message body.
     """
     segment = (text or "").strip().replace('"', "'")
-    return f'RICKY SAID: "{segment}"'
+    return f'James SAID: "{segment}"'
 
 
 def _extract_reason(buffer: str) -> str:

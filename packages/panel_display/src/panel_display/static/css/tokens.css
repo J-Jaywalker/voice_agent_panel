@@ -61,25 +61,45 @@
   /*
    * ── Geometry ────────────────────────────────────────────────
    *
-   * The wall is 12.00m x 4.50m. Laid out at 3840 x 1440, which makes the
-   * conversion exactly 320px per metre in both axes and keeps the 8:3 aspect
-   * ratio honest. Every size below is written as a multiple of `--m` wherever
-   * the physical dimension is the thing that matters.
+   * 3840 x 2160, an exact 16:9 (3840 x 9/16 = 2160, no rounding), scaled once
+   * to fit whatever display it lands on (`fitStage`, js/wall.js).
+   *
+   * The canvas was 3840 x 1440 — 8:3, standing for a 12.00m x 4.50m LED wall
+   * at 320px per metre. The sneak preview runs on an ordinary 16:9 screen
+   * instead, so the *shape* changed but the horizontal convention did not:
+   * 3840 is still twelve 320px metres across. Vertically 2160 is 6.75m of the
+   * same grid — a number with no physical claim behind it now, just the
+   * height 16:9 hands you.
+   *
+   * Two rows, not four columns: the three agents across the top, the
+   * transcript full-width underneath. `--agent-row-h` + `--transcript-row-h`
+   * is exactly `--stage-h`; the per-row vertical budgets are in wall.css.
    */
   --stage-w: 3840px;
-  --stage-h: 1440px;
-  --m: 320px; /* one metre */
-  --lane-w: 960px; /* 3.00m — four of these across */
+  --stage-h: 2160px;
+  /* One metre, horizontally. Currently unreferenced: the last user was
+     `--foot-clear`, and the reflow made every remaining size a fraction of a
+     row rather than a physical length. Kept because it is the stated
+     conversion — if the show goes back onto the 12m wall, or if anything here
+     ever needs to be a real size again, this is the number it multiplies. */
+  --m: 320px;
+  --lane-w: 1280px; /* 4.00m — three of these across, exactly --stage-w */
+
+  --agent-row-h: 1280px; /* square lanes: the orb row is as tall as it is wide */
+  --transcript-row-h: 880px; /* 2160 - 1280, its 2px divider included */
 
   /*
-   * The bottom metre is reserved and stays empty.
+   * The bottom of the screen is reserved and stays empty.
    *
-   * On a wall standing behind a stage, the lowest ~1m is the part heads, music
-   * stands and the front row's sightline eat first. Nothing that has to be
-   * read goes there. This is the one layout number most likely to need moving
-   * at load-in, once there is a real room to look down.
+   * On a display standing behind a stage, the lowest strip is the part heads,
+   * music stands and the front row's sightline eat first. Nothing that has to
+   * be read goes there. It used to be a full metre of a 4.5m wall; on a
+   * shorter 16:9 screen a metre of reserve is most of the transcript, so it is
+   * now 96px — a proportionate margin rather than a physical claim. This is
+   * still the one layout number most likely to need moving at load-in, once
+   * there is a real room to look down.
    */
-  --foot-clear: var(--m);
+  --foot-clear: 96px;
 
   /*
    * The agent's permanent identity bar, across the top of their lane.

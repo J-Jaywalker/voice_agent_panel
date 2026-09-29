@@ -441,7 +441,7 @@ class PanelSTT:
     ) -> None:
         """`channels` maps a mic channel id to the speaker id used on events.
 
-        For Boost Camp that is `{"ricky": HUMAN}` today, and a second entry the
+        For Boost Camp that is `{"James": HUMAN}` today, and a second entry the
         day an audience mic is added — which is a wiring change, not a code one.
         Each entry is its own connection.
         """

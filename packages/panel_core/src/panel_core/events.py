@@ -165,7 +165,7 @@ class AgentProposal:
 
             This, not ``t``, is what ``FloorController._stale`` measures.
             Arrival time is the wrong clock and measuring it was a live-stage
-            bug: generations race, so a line written against Ricky's preamble
+            bug: generations race, so a line written against James's preamble
             3.2s before his question can finish 0.77s *after* the invitation
             and score as maximally fresh. The freshness of an answer is a
             property of its input, not of when it turned up.
@@ -335,7 +335,7 @@ class StartSpeech:
     ``lead_in_s`` is a silent beat the runtime waits out before the agent's
     first word — zero for an ordinary grant, non-zero only for the
     introduction round (`FloorController._grant_introduction`), where an
-    instantaneous jump from Ricky's cue to Dexter's first word read as a
+    instantaneous jump from James's cue to Dexter's first word read as a
     glitch rather than a person taking a breath. Advisory only: this is data
     on a command, not a clock read or an await, so the reducer stays pure
     (CLAUDE.md `panel_core` invariants) — the runtime decides how to honour
@@ -361,7 +361,7 @@ class StopSpeech:
     Always an immediate stop. There was once an ``overlap_ms`` here, letting an
     interrupting voice ride briefly over the interrupted one; it only ever
     applied to agent-interrupts-agent, the live runtime never honoured it, and
-    both were removed on 21 Sept 2026. When Ricky speaks, agents get out of the
+    both were removed on 21 Sept 2026. When James speaks, agents get out of the
     way immediately — which is the only interrupt this command now serves.
     """
 
@@ -406,7 +406,7 @@ class RequestProposals:
 class HandsRaised:
     """Agents want the floor but have no invitation to take it.
 
-    The panel does not get to act on this — Ricky does. It goes to the operator
+    The panel does not get to act on this — James does. It goes to the operator
     console and the video wall so a raised hand is *visible* rather than
     self-served: the audience sees three agents with something to say, and the
     moderator chooses. That visibility is the comprehension infrastructure the
@@ -418,7 +418,7 @@ class HandsRaised:
 
 @dataclass(frozen=True, slots=True)
 class CueModerator:
-    """Signal the operator/video wall that the floor should return to Ricky."""
+    """Signal the operator/video wall that the floor should return to James."""
 
     reason: str
 

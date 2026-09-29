@@ -1,8 +1,13 @@
 """The video wall.
 
-A 12.00m x 4.50m ultrawide LED panel, 8:3, split into four 3m lanes: a
-transcript on the left, then one lane per agent. Each agent gets a ring that
-pulses with that agent's own audio and lights up in that agent's colour.
+A 16:9 stage display, laid out at 3840 x 2160 and scaled to fit: the three
+agents across the top, a third of the width each, and the transcript in a
+full-width band beneath them. Each agent gets a ring that pulses with that
+agent's own audio and lights up in that agent's colour.
+
+It was drawn for a 12.00m x 4.50m ultrawide LED wall (8:3, four 3m columns,
+transcript hard left) and is being shown first on an ordinary widescreen
+display, which is why the rows used to be columns.
 
     uv run panel --display        # driven by the live panel
     uv run panel-display --demo   # synthetic, no mic and no API keys

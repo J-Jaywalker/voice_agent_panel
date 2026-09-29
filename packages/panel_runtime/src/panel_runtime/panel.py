@@ -114,7 +114,7 @@ HEARTBEAT_INTERVAL_S = 0.5
 #
 # Speechmatics' `EndOfTurn` lands within a few milliseconds of the final that
 # names an agent, so `TurnYielded` normally beats the verdict. Arbitrating first
-# means arbitrating with the floor still closed: Ricky gets cued, the panel says
+# means arbitrating with the floor still closed: James gets cued, the panel says
 # nothing, and the audience hears the dead air this project spent a week
 # removing. So one event — and only that one — waits.
 #
@@ -141,7 +141,7 @@ ADDRESS_HOLD_TIMEOUT_S = 0.7
 DISPLAY_LEVEL_INTERVAL_S = 1 / 30
 
 # How `AddressVerdict.source` reads on the console. Whether a verdict was
-# already decided before Ricky stopped talking is the open question about this
+# already decided before James stopped talking is the open question about this
 # whole approach — free at a cache hit, ~500ms in series with arbitration at a
 # fresh call — and nothing measures it today, so every verdict prints one line.
 _ADDRESS_SOURCE_LABELS = {
@@ -267,7 +267,7 @@ class PanelRuntime:
         unity_db = {p.id: p.output_gain_db for p in cast.personas.values() if p.output_gain_db}
         self.mixer = Mixer(cast.ids(), VAD_SAMPLE_RATE, unity_db=unity_db)
         self.brain = StreamingClaudeBrain(BrainConfig())
-        self.stt = PanelSTT({"ricky": "human"}, config=STTConfig.from_cast(cast))
+        self.stt = PanelSTT({"James": "human"}, config=STTConfig.from_cast(cast))
         voice_overrides = {
             p.voice_id: p.voice_settings for p in cast.personas.values() if p.voice_settings
         }
@@ -296,8 +296,8 @@ class PanelRuntime:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._speaking_task: asyncio.Task | None = None
         self._speaking_turn = None
-        self._ricky_final_text = ""
-        self._ricky_live: Live | None = None
+        self._James_final_text = ""
+        self._James_live: Live | None = None
         # Live candidates filling while the human is still talking. The floor
         # decides *who* speaks; this holds *what* they say.
         #
@@ -380,7 +380,7 @@ class PanelRuntime:
 
         # Mic audio goes to VAD and STT. Agent audio goes to neither, ever.
         self._mic.put_nowait(mono.copy())
-        self.stt.feed("ricky", pcm.tobytes())
+        self.stt.feed("James", pcm.tobytes())
 
         if self._display is not None:
             self._mic_level = max(self._mic_level, float(np.sqrt(np.mean(np.square(mono)))))
@@ -430,7 +430,7 @@ class PanelRuntime:
         schedule anything for itself. The floor is only granted from inside
         `_turn_yielded`, which fires solely on `TurnYielded`, and this
         runtime's only source of that event is Speechmatics' `EndOfTurn`
-        (`stt.py`). With Ricky silent after handing off multiple turns (e.g.
+        (`stt.py`). With James silent after handing off multiple turns (e.g.
         an open invitation worth more than one turn), nothing would otherwise
         re-trigger arbitration and the panel would stall with a live
         invitation and idle proposals forever. The introduction round used to
@@ -529,10 +529,10 @@ class PanelRuntime:
                 # `command.reason` is a `CueReason` — a `str`-mixin `Enum`, so
                 # plain interpolation prints "CueReason.NO_PROPOSALS" rather
                 # than the value. `.value` is what tells "nobody proposed"
-                # apart from "the one agent Ricky named had nothing", which is
+                # apart from "the one agent James named had nothing", which is
                 # the entire point of the enum replacing the old undifferen-
                 # tiated `no_candidate` string.
-                self._print(f"  [magenta]▸ back to Ricky ({command.reason.value})[/]")
+                self._print(f"  [magenta]▸ back to James ({command.reason.value})[/]")
 
             case StateChanged():
                 self._show_state_change(command)
@@ -546,7 +546,7 @@ class PanelRuntime:
         `StateChanged` fires on nearly every transition, so this only prints
         on the fields that changed rather than on every paint. The invitation
         fields are the whole reason this rewrite happened: the original
-        failure printed `▸ back to Ricky (no_candidate)` twice with no way to
+        failure printed `▸ back to James (no_candidate)` twice with no way to
         tell "nobody proposed" from "the invitation was held by the wrong
         agent" — that answer was sitting in `extra["invited"]` all along, just
         never rendered.
@@ -613,7 +613,7 @@ class PanelRuntime:
         agent, so the last teardown of a turn always landed at the exact instant
         the work was needed. Arbitration ran against an empty proposal set on
         every invitation and the full cold generation latency sat on the
-        critical path, which on stage was about six seconds of Ricky covering
+        critical path, which on stage was about six seconds of James covering
         for a panel that had thrown its answer away.
 
         So nothing is cancelled here. Every round starts a *new* generation per
@@ -634,7 +634,7 @@ class PanelRuntime:
         not finished. Each agent therefore got at most *one* in-flight
         generation per human turn. The two fast agents finished in ~2.1s, freed
         their key, and were re-asked against a later partial; the slow one
-        (3967ms, spanning Ricky's entire question) was not, so its single answer
+        (3967ms, spanning James's entire question) was not, so its single answer
         was necessarily written against the oldest input of the three. The
         slower the agent, the staler the input behind its winning line — every
         single time, and always the same agent. `_ask_for_proposals` now takes a
@@ -840,7 +840,7 @@ class PanelRuntime:
         """Dispatch a grant, honouring `command.lead_in_s` if it has one.
 
         A non-zero `lead_in_s` (introduction round only) is a silent beat
-        before this agent's first word — the instant jump from Ricky's cue
+        before this agent's first word — the instant jump from James's cue
         straight to Dexter's opening line read as a glitch on stage-adjacent
         testing, not a person taking a moment to go first. Scheduled as its
         own task rather than an `await` inline here: `_execute` runs on
@@ -876,7 +876,7 @@ class PanelRuntime:
             # This must not defer to a cached candidate, and that is the bug
             # this branch was written wrong for: it used to require
             # `self._candidates.get(...) is None`, which held only in theory.
-            # Ricky's opening sentence arrives as a long run of *partial*
+            # James's opening sentence arrives as a long run of *partial*
             # transcripts, each one re-firing speculation every 0.8s
             # (`scoring.speculation_interval_s`), while the introduction latch
             # in `panel_core.floor` fires only on the *final* transcript. So by
@@ -1182,31 +1182,31 @@ class PanelRuntime:
         finally:
             pump_task.cancel()
 
-    def _ricky_renderable(self, partial: str = "") -> Text:
+    def _James_renderable(self, partial: str = "") -> Text:
         line = Text.from_markup(self._stamp())
         line.append("   ")
-        line.append("Ricky: ", style="bold")
-        line.append(self._ricky_final_text)
+        line.append("James: ", style="bold")
+        line.append(self._James_final_text)
         if partial:
-            if self._ricky_final_text:
+            if self._James_final_text:
                 line.append(" ")
             line.append(partial, style="dim")
         return line
 
-    def _render_ricky_line(self, partial: str = "") -> None:
-        if self._ricky_live is None:
-            self._ricky_live = Live(console=console, auto_refresh=False, transient=False)
-            self._ricky_live.start()
-        self._ricky_live.update(self._ricky_renderable(partial), refresh=True)
+    def _render_James_line(self, partial: str = "") -> None:
+        if self._James_live is None:
+            self._James_live = Live(console=console, auto_refresh=False, transient=False)
+            self._James_live.start()
+        self._James_live.update(self._James_renderable(partial), refresh=True)
 
-    def _close_ricky_line(self) -> None:
-        if self._ricky_live is not None:
+    def _close_James_line(self) -> None:
+        if self._James_live is not None:
             # Repainted once more so the stamp left on screen is `TurnYielded`
-            # — the moment Ricky stopped, not the moment he started.
-            self._ricky_live.update(self._ricky_renderable(), refresh=True)
-            self._ricky_live.stop()
-            self._ricky_live = None
-        self._ricky_final_text = ""
+            # — the moment James stopped, not the moment he started.
+            self._James_live.update(self._James_renderable(), refresh=True)
+            self._James_live.stop()
+            self._James_live = None
+        self._James_final_text = ""
 
     async def _run_stt(self) -> None:
         """Forward Speechmatics events into the single ordered event path.
@@ -1225,15 +1225,15 @@ class PanelRuntime:
             event = await self.stt.events.get()
             if isinstance(event, TranscriptUpdated):
                 if event.is_final:
-                    self._ricky_final_text = f"{self._ricky_final_text} {event.text}".strip()
-                    self._render_ricky_line()
+                    self._James_final_text = f"{self._James_final_text} {event.text}".strip()
+                    self._render_James_line()
                 else:
-                    self._render_ricky_line(event.text)
+                    self._render_James_line(event.text)
                 self.emit(event)
                 self._classify_address_from(event)
                 continue
             if isinstance(event, TurnYielded):
-                self._close_ricky_line()
+                self._close_James_line()
                 if not self._defer_turn_yielded(event):
                     self._end_of_turn(event)
                 continue
@@ -1245,7 +1245,7 @@ class PanelRuntime:
         """Feed one transcript segment to the address classifier.
 
         Partials go to `speculate()`, which is fire-and-forget and gated, so
-        the answer to the question Ricky is still asking is usually already
+        the answer to the question James is still asking is usually already
         cached by the time he finishes it. Finals go to `classify()`, whose
         verdict becomes an `AddressDetected` event.
         """
@@ -1348,7 +1348,7 @@ class PanelRuntime:
 
         Speechmatics' `EndOfTurn` lands within a few milliseconds of the final
         that names an agent, so without this the floor is arbitrated before the
-        invitation exists: floor closed, Ricky cued, dead air — the exact bug
+        invitation exists: floor closed, James cued, dead air — the exact bug
         removed the week before this was written. Only `TurnYielded` ever waits;
         everything else, `TranscriptUpdated` above all, goes straight through.
 
@@ -1396,7 +1396,7 @@ class PanelRuntime:
     def _show_address_verdict(self, detected: AddressDetected) -> None:
         """One dim line per verdict. This is the cache-hit diagnostic.
 
-        Whether the verdict was already decided before Ricky stopped talking is
+        Whether the verdict was already decided before James stopped talking is
         the open question about this whole approach — free at a cache hit,
         ~500ms in series with arbitration at a fresh call — and nothing else
         measures it, on stage or in rehearsal.
@@ -1524,7 +1524,7 @@ def main() -> None:
         "--llm-address",
         action="store_true",
         help=(
-            "resolve who Ricky addressed with a model instead of the regex "
+            "resolve who James addressed with a model instead of the regex "
             "(off by default; needs ANTHROPIC_API_KEY)"
         ),
     )

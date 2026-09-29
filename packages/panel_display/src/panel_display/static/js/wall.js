@@ -15,8 +15,13 @@
 
 import { Orb } from "./orb.js";
 
+// The stage canvas, 16:9. Mirrors --stage-w / --stage-h in tokens.css; the two
+// have to agree or fitStage() letterboxes against the wrong shape.
 const STAGE_W = 3840;
-const STAGE_H = 1440;
+const STAGE_H = 2160;
+// The orb's CSS size, mirroring `.orb canvas` in wall.css. Unchanged by the
+// move to 16:9 — the agent row is 1280 tall and the vertical budget still
+// spends 720 of it here.
 const ORB_CSS = 720;
 
 const RECONNECT_MIN_MS = 400;
@@ -63,11 +68,11 @@ let renderedFrom = -1;
 let pixelScale = 1;
 
 /*
- * The wall is 8:3. The browser window, at load-in, will be whatever someone
- * dragged it to, and the LED processor may report a resolution nobody
- * predicted. Laying out at a fixed 3840x1440 and scaling once means every
- * dimension in the stylesheet keeps meaning what it says — 960px is 3m
- * whatever the hardware does — and the wall letterboxes rather than crops.
+ * The wall is 16:9. The browser window, at load-in, will be whatever someone
+ * dragged it to, and the display may report a resolution nobody predicted.
+ * Laying out at a fixed 3840x2160 and scaling once means every dimension in
+ * the stylesheet keeps meaning what it says — 1280px is a third of the width
+ * whatever the hardware does — and the stage letterboxes rather than crops.
  */
 function fitStage() {
   const scale = Math.min(window.innerWidth / STAGE_W, window.innerHeight / STAGE_H);
@@ -98,6 +103,12 @@ function buildLanes(list) {
       orb: new Orb(canvas, lane, GAIN),
       status: lane.querySelector("[data-role=status]"),
       state: "idle",
+      // Carried for the transcript band: a line attributed to this agent
+      // needs its name and colour, and re-deriving both from the DOM on
+      // every appended line is needless when they arrived on this same
+      // snapshot payload.
+      name: agent.name,
+      accent: agent.accent,
     });
   }
   fitStage();
@@ -107,13 +118,13 @@ function buildLanes(list) {
  * What the orb should actually show.
  *
  * `state` and `invited` are independent on the wire — an agent can hold the
- * invitation and be idle, which is the beat between Ricky naming someone and
+ * invitation and be idle, which is the beat between James naming someone and
  * that person's first word, and it is worth seeing.
  *
  * Precedence, strongest first: speaking, ducked, invited, thinking, idle.
  * Audible always wins — whoever is on the PA is what the wall is about. And
  * invited beats thinking, which is not obvious: after any question every
- * agent is thinking, so "thinking" is nearly free information, while "Ricky
+ * agent is thinking, so "thinking" is nearly free information, while "James
  * named this one" is the fact the audience needs to follow the floor.
  */
 function visualState(agent) {
@@ -159,10 +170,34 @@ function renderLines(lines, from) {
   }
 }
 
-function lineNode(text) {
+/**
+ * One line in the band. `line.speaker` is `HUMAN` or an agent id — both share
+ * one feed now, in the order they were said (see `TranscriptLine` in
+ * `wall.py`). Every line gets a name tag ahead of it: four voices sharing one
+ * feed are only tellable apart by who is named on them once they are off
+ * their own lane, and the moderator is one of the four. Only the three agents
+ * are accent-coloured — James does not hold one of the three accent seats, so
+ * his tag takes the band's quiet default rather than borrowing a colour that
+ * already means a specific agent.
+ */
+function lineNode(line) {
   const p = document.createElement("p");
   p.className = "line";
-  p.textContent = text;
+  const tag = document.createElement("span");
+  tag.className = "line__speaker";
+  if (line.speaker === HUMAN) {
+    // Hardcoded, like `PanelSTT({"James": "human"})` in panel_runtime. The
+    // moderator is not cast data — there is no persona behind him.
+    tag.textContent = "James";
+  } else {
+    const view = agents.get(line.speaker);
+    // `data-accent` drives colour in wall.css off the same `--accent-*` tokens
+    // the agent's own lane reads — one set of tokens naming one agent,
+    // wherever on the stage they show up.
+    p.dataset.accent = view ? view.accent : "";
+    tag.textContent = view ? view.name : line.speaker;
+  }
+  p.append(tag, " " + line.text);
   return p;
 }
 
@@ -189,13 +224,13 @@ function applyState(message) {
   partial.textContent = message.partial || "";
 
   cue.dataset.on = String(Boolean(message.cue));
-  cue.textContent = message.cue ? "over to Ricky" : "";
+  cue.textContent = message.cue ? "over to James" : "";
 }
 
-// Ricky's mic, smoothed in the frame loop below. Not an orb — he is a person
+// James's mic, smoothed in the frame loop below. Not an orb — he is a person
 // standing in the room and does not need one — but the dot beside "moderator"
-// following his voice is what tells the audience the left lane is live rather
-// than a caption track running on a delay.
+// following his voice is what tells the audience the band along the bottom is
+// live rather than a caption track running on a delay.
 let humanTarget = 0;
 let humanLevel = 0;
 
@@ -258,7 +293,7 @@ function frame(now) {
   for (const { orb } of agents.values()) orb.frame(dt, t);
 
   // Same filter shape as the orbs, one tenth of the code: the dot swells and
-  // brightens with Ricky's voice instead of blinking on a VAD boolean.
+  // brightens with James's voice instead of blinking on a VAD boolean.
   humanLevel += (humanTarget - humanLevel) * (1 - Math.exp(-dt / 0.12));
   humanDot.style.transform = `scale(${(1 + 0.55 * humanLevel).toFixed(3)})`;
   humanDot.style.opacity = (0.45 + 0.55 * humanLevel).toFixed(3);
