@@ -1,4 +1,4 @@
-"""Speechmatics Agent STT, one WebSocket per human mic.
+"""Speechmatics Agent STT, one WebSocket per voice.
 
 The preview Agent STT endpoint (`/v2/agent`, model `linden-1`) spoken directly
 over raw `websockets` — there is no SDK for it yet, so the protocol is
@@ -6,8 +6,8 @@ hand-rolled here the same way `tts.py` hand-rolls ElevenLabs.
 
 Two things this layer is responsible for and the floor controller is not:
 
-**Channel identity.** Agent STT has no multi-channel mode, so each human mic is
-its own connection. That is the stronger form of the same property the
+**Channel identity.** Agent STT has no multi-channel mode, so each voice is its
+own connection. That is the stronger form of the same property the
 multi-channel client gave us: speaker attribution is a fact about the wiring,
 not a diarisation result (FEASIBILITY.md 3.3). Diarisation is therefore off —
 there is one speaker on the far end of each socket and we already know who.
@@ -19,9 +19,20 @@ the critical path for interrupting an agent — which is why the endpoint's own
 `SpeechStarted`/`SpeechEnded` messages are logged and dropped rather than
 turned into `HumanSpeechStarted`/`HumanSpeechEnded`.
 
-Agent speech never enters this path. Ever. That is the feedback loop that ends
-the show — agent turns enter conversation state as text, because we generated
-them and already know them verbatim.
+**Agent speech never reaches `panel_core` through this module.** Agent turns
+enter conversation state as text, because we generated them and already know
+them verbatim — routing a lossy, latent transcription of our own voices into
+the reducer is the feedback loop that ends the show.
+
+That is a rule about the *reducer*, not about this class, and the distinction
+is now load-bearing: `PanelRuntime` runs a second `PanelSTT` over each agent's
+own played audio purely so the video wall's transcript band can be timed off
+real speech instead of an assumed words-per-second (see
+`PanelRuntime._run_agent_stt`). Nothing in that session is emitted; its
+`TranscriptUpdated` events go straight to `panel_display` and its `TurnYielded`
+is dropped on the floor. `PanelSTT` itself is, and has always been, generic
+over `speaker` — it knows who is on the far end of a socket because the wiring
+says so, and it does not care whether that is a person.
 
 **`additional_vocab` on this endpoint is unverified.** The documented
 `content`/`sounds_like` schema (confirmed at
@@ -262,7 +273,7 @@ class _VocabRejected(RuntimeError):
 
 
 class _AgentSTTSession:
-    """One mic, one socket, reconnected for as long as the show is running."""
+    """One voice, one socket, reconnected for as long as the show is running."""
 
     def __init__(
         self,
@@ -425,11 +436,15 @@ class _AgentSTTSession:
 
 
 class PanelSTT:
-    """Transcription for every human mic, as `panel_core` events.
+    """Transcription for a set of channels, as `panel_core` event objects.
 
     Events are pushed onto a queue rather than dispatched directly, so the
-    runtime keeps a single ordered path into the reducer and a rehearsal log
-    records exactly what the floor controller saw.
+    consumer decides what they mean. For the human mics that consumer is
+    `PanelRuntime._run_stt`, which emits them into the reducer; for the
+    display-only pass over the agents' own audio it is
+    `PanelRuntime._run_agent_stt`, which emits nothing at all. Same class,
+    same protocol, two different sinks — the isolation is the *caller's*
+    property, not this class's (see the module docstring).
     """
 
     def __init__(
@@ -439,10 +454,11 @@ class PanelSTT:
         config: STTConfig | None = None,
         api_key: str | None = None,
     ) -> None:
-        """`channels` maps a mic channel id to the speaker id used on events.
+        """`channels` maps a channel id to the speaker id used on events.
 
-        For Boost Camp that is `{"James": HUMAN}` today, and a second entry the
-        day an audience mic is added — which is a wiring change, not a code one.
+        For the human mics that is `{"James": HUMAN}` today, and a second
+        entry the day an audience mic is added — which is a wiring change, not
+        a code one. The display's agent pass maps each agent id to itself.
         Each entry is its own connection.
         """
         if not channels:
@@ -479,7 +495,7 @@ class PanelSTT:
             )
 
     def feed(self, channel: str, pcm: bytes) -> None:
-        """Push one mic block. Safe to call from the PortAudio callback."""
+        """Push one block of audio. Safe to call from the PortAudio callback."""
         source = self.sources.get(channel)
         if source is not None:
             source.feed(pcm)

@@ -16,7 +16,6 @@ from panel_core import (
     HUMAN,
     AgentSpeechEnded,
     AgentSpeechStarted,
-    AgentUtteranceProgress,
     CueModerator,
     DuckSpeech,
     HandsRaised,
@@ -240,28 +239,38 @@ def line(speaker: str, text: str) -> dict:
     return {"speaker": speaker, "text": text}
 
 
+def partial(speaker: str, text: str) -> dict:
+    return {"speaker": speaker, "text": text}
+
+
 def test_partials_replace_and_finals_append(wall: WallState):
     wall.apply_event(TranscriptUpdated(t=1.0, speaker=HUMAN, text="so let's", is_final=False))
-    assert wall.snapshot()["partial"] == "so let's"
+    assert wall.snapshot()["partials"] == [partial(HUMAN, "so let's")]
 
     wall.apply_event(TranscriptUpdated(t=1.2, speaker=HUMAN, text="so let's start", is_final=False))
-    assert wall.snapshot()["partial"] == "so let's start"
+    assert wall.snapshot()["partials"] == [partial(HUMAN, "so let's start")]
     assert wall.snapshot()["lines"] == []
 
     wall.apply_event(TranscriptUpdated(t=1.5, speaker=HUMAN, text="So let's start.", is_final=True))
-    assert wall.snapshot()["partial"] == ""
+    assert wall.snapshot()["partials"] == []
     assert wall.snapshot()["lines"] == [line(HUMAN, "So let's start.")]
 
 
-def test_agent_speech_never_enters_the_transcript_via_stt(wall: WallState):
-    """`TranscriptUpdated` is STT's event, and agent speech never enters STT
-    (CLAUDE.md) — so a `TranscriptUpdated` naming an agent is not a real
-    message, only ever a bug upstream, and must not paint a line.
+def test_an_agent_transcript_before_it_ever_held_the_floor_is_dropped(wall: WallState):
+    """Agent lines now come from a real transcription session over that
+    agent's own played audio — but only audio that was actually played.
 
-    Agent lines reach the band a different way: `AgentUtteranceProgress`,
-    below.
+    An agent that has never been put on the PA has produced no sound, so a
+    `TranscriptUpdated` naming it is not a real line and must not paint one.
+    `last_on_air` is what makes that distinguishable without a clock.
     """
     wall.apply_event(TranscriptUpdated(t=1.0, speaker="wayne", text="Look —", is_final=True))
+    assert wall.snapshot()["lines"] == []
+    assert wall.snapshot()["partials"] == []
+
+
+def test_a_transcript_for_an_unknown_speaker_is_dropped(wall: WallState):
+    wall.apply_event(TranscriptUpdated(t=1.0, speaker="nobody", text="Hello.", is_final=True))
     assert wall.snapshot()["lines"] == []
 
 
@@ -290,11 +299,27 @@ def test_the_window_slides_and_the_sequence_keeps_counting(wall: WallState):
     assert snapshot["lines"][-1] == line(HUMAN, f"line {total - 1}")
 
 
-def test_an_agent_speaking_puts_its_sentences_in_the_band(wall: WallState):
+def test_an_agents_own_transcription_paints_its_lines(wall: WallState):
+    """Partials show live and finals append, exactly as James's do — same
+    event, same protocol, a different socket."""
     wall.apply_event(AgentSpeechStarted(t=1.0, agent="wayne"))
-    wall.apply_event(AgentUtteranceProgress(t=1.1, agent="wayne", text="Adoption already happened."))
-    wall.apply_event(AgentUtteranceProgress(t=1.4, agent="wayne", text="Nobody noticed."))
 
+    wall.apply_event(
+        TranscriptUpdated(t=1.1, speaker="wayne", text="adoption already", is_final=False)
+    )
+    assert wall.snapshot()["partials"] == [partial("wayne", "adoption already")]
+    assert wall.snapshot()["lines"] == []
+
+    wall.apply_event(
+        TranscriptUpdated(
+            t=1.4, speaker="wayne", text="Adoption already happened.", is_final=True
+        )
+    )
+    wall.apply_event(
+        TranscriptUpdated(t=1.9, speaker="wayne", text="Nobody noticed.", is_final=True)
+    )
+
+    assert wall.snapshot()["partials"] == []
     assert wall.snapshot()["lines"] == [
         line("wayne", "Adoption already happened."),
         line("wayne", "Nobody noticed."),
@@ -302,30 +327,92 @@ def test_an_agent_speaking_puts_its_sentences_in_the_band(wall: WallState):
     assert wall.snapshot()["line_seq"] == 2
 
 
-def test_a_sentence_from_an_agent_not_speaking_is_dropped(wall: WallState):
-    """The staleness guard `AgentUtteranceProgress` documents for the floor
-    reducer applies here too: a sentence from a generation the turn has
-    already moved past is not part of the turn anyone is listening to."""
-    wall.apply_event(AgentUtteranceProgress(t=1.0, agent="wayne", text="Never granted the floor."))
+def test_the_last_line_of_a_turn_arrives_after_the_turn_ends(wall: WallState):
+    """The reason the guard is `last_on_air` and not `state == SPEAKING`.
+
+    An agent's session finalises the tail of its audio only once that audio
+    has run out, so `AgentSpeechEnded` *always* beats the final carrying the
+    last sentence. A state test would therefore drop the closing line of every
+    single turn on the wall.
+    """
+    wall.apply_event(AgentSpeechStarted(t=1.0, agent="wayne"))
+    wall.apply_event(AgentSpeechEnded(t=3.0, agent="wayne", completed=True))
+    wall.apply_event(
+        TranscriptUpdated(t=3.4, speaker="wayne", text="…and that is the point.", is_final=True)
+    )
+    assert wall.snapshot()["lines"] == [line("wayne", "…and that is the point.")]
+
+
+def test_a_straggler_is_dropped_once_another_agent_is_on_air(wall: WallState):
+    """What the guard actually exists to prevent: misattribution.
+
+    A late final from the previous speaker appearing underneath the current
+    one's lines would read as the wrong agent saying it, in the wrong order.
+    """
+    wall.apply_event(AgentSpeechStarted(t=1.0, agent="wayne"))
+    wall.apply_event(AgentSpeechEnded(t=2.0, agent="wayne", completed=False))
+    wall.apply_event(AgentSpeechStarted(t=2.1, agent="dex"))
+    wall.apply_event(
+        TranscriptUpdated(t=2.3, speaker="wayne", text="Cut off mid-thought.", is_final=True)
+    )
     assert wall.snapshot()["lines"] == []
 
-    wall.apply_event(AgentSpeechStarted(t=2.0, agent="wayne"))
-    wall.apply_event(AgentSpeechEnded(t=3.0, agent="wayne", completed=True))
-    wall.apply_event(AgentUtteranceProgress(t=3.1, agent="wayne", text="Arrived after the turn ended."))
-    assert wall.snapshot()["lines"] == []
+
+def test_a_handover_clears_the_previous_speakers_partial(wall: WallState):
+    """A socket that drops mid-sentence would otherwise leave its half-line
+    under the band for the rest of the show."""
+    wall.apply_event(AgentSpeechStarted(t=1.0, agent="wayne"))
+    wall.apply_event(
+        TranscriptUpdated(t=1.1, speaker="wayne", text="never finished", is_final=False)
+    )
+    assert wall.snapshot()["partials"] == [partial("wayne", "never finished")]
+
+    wall.apply_event(AgentSpeechStarted(t=2.0, agent="dex"))
+    assert wall.snapshot()["partials"] == []
 
 
 def test_a_ducked_agent_still_writes_to_the_band(wall: WallState):
     wall.apply_event(AgentSpeechStarted(t=1.0, agent="wayne"))
     wall.apply_command(DuckSpeech(agent="wayne", gain_db=-18.0, ramp_ms=80))
-    wall.apply_event(AgentUtteranceProgress(t=1.1, agent="wayne", text="Still talking, just quieter."))
+    wall.apply_event(
+        TranscriptUpdated(
+            t=1.1, speaker="wayne", text="Still talking, just quieter.", is_final=True
+        )
+    )
     assert wall.snapshot()["lines"] == [line("wayne", "Still talking, just quieter.")]
+
+
+def test_two_voices_mid_sentence_both_show(wall: WallState):
+    """The barge-in beat, and the reason `partials` is keyed by speaker.
+
+    James's first partials land while the interrupted agent's socket is still
+    returning partials for audio the room has already heard. One shared string
+    would flicker between them; two rows read the way the room sounds. Agents
+    come first and the moderator last, so his in-progress line sits closest to
+    where the finals land.
+    """
+    wall.apply_event(AgentSpeechStarted(t=1.0, agent="wayne"))
+    wall.apply_event(
+        TranscriptUpdated(t=1.1, speaker="wayne", text="the sign-off is", is_final=False)
+    )
+    wall.apply_event(TranscriptUpdated(t=1.2, speaker=HUMAN, text="hold on", is_final=False))
+
+    assert wall.snapshot()["partials"] == [
+        partial("wayne", "the sign-off is"),
+        partial(HUMAN, "hold on"),
+    ]
+
+    wall.apply_event(
+        TranscriptUpdated(t=1.3, speaker="wayne", text="The sign-off is theatre.", is_final=True)
+    )
+    assert wall.snapshot()["partials"] == [partial(HUMAN, "hold on")]
+    assert wall.snapshot()["lines"] == [line("wayne", "The sign-off is theatre.")]
 
 
 def test_moderator_and_agent_lines_interleave_in_speaking_order(wall: WallState):
     wall.apply_event(TranscriptUpdated(t=1.0, speaker=HUMAN, text="Wayne, go.", is_final=True))
     wall.apply_event(AgentSpeechStarted(t=2.0, agent="wayne"))
-    wall.apply_event(AgentUtteranceProgress(t=2.1, agent="wayne", text="Happy to."))
+    wall.apply_event(TranscriptUpdated(t=2.1, speaker="wayne", text="Happy to.", is_final=True))
     wall.apply_event(AgentSpeechEnded(t=3.0, agent="wayne", completed=True))
     wall.apply_event(TranscriptUpdated(t=4.0, speaker=HUMAN, text="Thanks.", is_final=True))
 

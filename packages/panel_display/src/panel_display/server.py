@@ -24,17 +24,11 @@ import asyncio
 import contextlib
 import json
 import logging
-from collections import deque
 from pathlib import Path
 from typing import Any
 
 from aiohttp import WSMsgType, web
-from panel_core import (
-    AgentSpeechEnded,
-    AgentSpeechStarted,
-    AgentUtteranceProgress,
-    PanelCast,
-)
+from panel_core import PanelCast
 
 from .wall import WallState
 
@@ -57,24 +51,21 @@ FLUSH_HZ = 20
 # consequence of the sample rate.
 LEVEL_HZ = 30
 
-# Words per second an agent is assumed to speak at, used only to decide when
-# the *next* sentence of a turn is allowed onto the transcript band.
+# There is deliberately no words-per-second constant here any more.
 #
-# `AgentUtteranceProgress` is emitted when a sentence is pushed to the TTS
-# provider, not when it is heard — its own docstring is explicit that the lead
-# is the point. A whole turn's sentences can therefore be emitted inside a
-# fraction of a second, twenty-odd seconds before the room has heard the last
-# of them. Applied straight to the wall that lands as one clump of text
-# followed by a long dead band, so the server holds them and reveals them at
-# something near speaking pace instead.
+# This server used to hold each `AgentUtteranceProgress` in a per-agent queue
+# and pay it out at an assumed 2.8 words/sec, because that event is emitted
+# when a sentence is handed to the TTS provider rather than when it is heard,
+# and applied straight to the wall a whole turn landed as one clump of text
+# followed by a long dead band. The estimate was the problem: real pacing
+# varies by sentence, by pause and by provider, so the band drifted against
+# the audio over a turn and the error was cumulative.
 #
-# 2.8 mirrors the rate `panel_runtime` already paces a turn against in
-# `--no-tts` mode (`len(sentence.split()) / 2.8`, twice in `speak()` in
-# `panel_runtime/panel.py`). Duplicated rather than imported: `panel_display`
-# does not depend on `panel_runtime`, and one float is not worth an edge in
-# the dependency graph. Same convention as `wall.js` mirroring `panel_core.HUMAN`
-# as a literal.
-SPEAKING_WPS = 2.8
+# Agent lines now arrive as `TranscriptUpdated` off a real transcription
+# session over the agent's own played audio (`PanelRuntime._run_agent_stt`),
+# tapped at `Mixer.render` and therefore paced by the output device. Timing is
+# measured rather than assumed, this hook has nothing left to do, and the
+# queue, the drain tasks and the constant are gone rather than left dead.
 
 
 class DisplayServer:
@@ -86,10 +77,6 @@ class DisplayServer:
         host: Interface to bind. Defaults to every interface, because the
             wall is routinely a second machine on the venue's switch rather
             than a second window on this one.
-        words_per_second: Rate the transcript band reveals an agent's
-            sentences at. A seam for the tests, which would otherwise have to
-            sleep for realistic multi-second sentences to observe the pacing
-            at all. Leave it alone in production.
     """
 
     def __init__(
@@ -101,7 +88,6 @@ class DisplayServer:
         # machine on the venue's switch rather than a second window on this
         # one, and the socket carries no control channel in either direction.
         host: str = "0.0.0.0",
-        words_per_second: float = SPEAKING_WPS,
     ) -> None:
         self.wall = WallState.for_cast(cast)
         self.port = port
@@ -119,12 +105,6 @@ class DisplayServer:
         # trailing frame of zeroes and then stops rather than streaming zeroes
         # through every gap in the conversation.
         self._levels_live = False
-
-        # Sentences an agent has generated but the room has not caught up to
-        # yet, and the one task per agent paying them out. See SPEAKING_WPS.
-        self._wps = words_per_second
-        self._pending: dict[str, deque[AgentUtteranceProgress]] = {}
-        self._drains: dict[str, asyncio.Task] = {}
 
     # -------------------------------------------------------------- lifecycle
 
@@ -167,12 +147,6 @@ class DisplayServer:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._flush
             self._flush = None
-        for task in list(self._drains.values()):
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        self._drains.clear()
-        self._pending.clear()
         for client in list(self._clients):
             with contextlib.suppress(Exception):
                 await client.close()
@@ -189,25 +163,23 @@ class DisplayServer:
     # broken wall may cost is the picture.
 
     def on_event(self, event: Any) -> None:
-        """Hook for every event the reducer sees. Never raises at the caller."""
+        """Hook for every event the wall is shown. Never raises at the caller.
+
+        Straight through to `WallState` now, with no queue in front of it.
+        Every event on this hook is a fact whose arrival time means something:
+        `TranscriptUpdated` — the only source of transcript text, James's mic
+        or an agent's own played audio — is paced by the speech it came from,
+        and needs no help from here.
+
+        Two callers, and the second is the whole safety property of the agent
+        transcripts: `PanelRuntime._drain_events` passes everything the
+        reducer sees, while `PanelRuntime._run_agent_stt` passes the agents'
+        `TranscriptUpdated` events *only* here and nowhere else. This hook is
+        therefore not a mirror of the event log, and must not be treated as
+        one.
+        """
         try:
-            match event:
-                case AgentUtteranceProgress(agent=agent):
-                    # Held, not shown. The only event on this hook whose
-                    # arrival time says nothing about when the room hears it.
-                    self._enqueue(agent, event)
-                case AgentSpeechStarted(agent=agent) | AgentSpeechEnded(agent=agent):
-                    # A turn's boundaries are the truth about what is still
-                    # owed to the band. On started: drop anything left over
-                    # from a turn that ended badly, before this turn's first
-                    # sentence lands behind it. On ended — normal completion,
-                    # interruption, or the exception-recovery arm, all three
-                    # of which emit it — drop what has not been said, because
-                    # it now never will be.
-                    self._discard(agent)
-                    self._dirty |= self.wall.apply_event(event)
-                case _:
-                    self._dirty |= self.wall.apply_event(event)
+            self._dirty |= self.wall.apply_event(event)
         except Exception:
             log.exception("display: event %r", type(event).__name__)
 
@@ -226,61 +198,6 @@ class DisplayServer:
         behind it.
         """
         self._levels = levels
-
-    # ------------------------------------------------------- transcript pacing
-
-    def _enqueue(self, agent: str, event: AgentUtteranceProgress) -> None:
-        """Queue one sentence and make sure someone is paying it out."""
-        queue = self._pending.setdefault(agent, deque())
-        queue.append(event)
-        task = self._drains.get(agent)
-        if task is not None and not task.done():
-            return
-        try:
-            self._drains[agent] = asyncio.create_task(
-                self._drain(agent), name=f"display-band-{agent}"
-            )
-        except RuntimeError:
-            # No running loop — `panel-display` always has one, but this hook
-            # is public and a caller without a loop should still see its text
-            # rather than silently lose it. Unpaced is worse than nothing only
-            # on a wall; here it is the safe degradation.
-            queue.clear()
-            self._dirty |= self.wall.apply_event(event)
-
-    def _discard(self, agent: str) -> None:
-        """Forget whatever that agent still owed the band, and stop paying."""
-        self._pending.pop(agent, None)
-        task = self._drains.pop(agent, None)
-        if task is not None:
-            task.cancel()
-
-    async def _drain(self, agent: str) -> None:
-        """Reveal one agent's sentences at roughly the pace they are spoken.
-
-        Each sentence is shown, then slept over for as long as it takes to
-        say. `wall.py` still does the deciding — a sentence from a turn the
-        floor has moved past is rejected there, exactly as before; all this
-        changes is *when* it is offered.
-        """
-        try:
-            queue = self._pending.get(agent)
-            while queue:
-                event = queue.popleft()
-                self._dirty |= self.wall.apply_event(event)
-                await asyncio.sleep(len(event.text.split()) / self._wps)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            # Same bargain as `on_event`: this task is nobody's to await, and
-            # a traceback swallowed at GC time would leave the band frozen
-            # with no explanation anywhere.
-            log.exception("display: band drain for %r", agent)
-        finally:
-            # Only if this is still the live task. A cancelled one can reach
-            # here after `_discard` has already installed its successor.
-            if self._drains.get(agent) is asyncio.current_task():
-                del self._drains[agent]
 
     # ------------------------------------------------------------------ HTTP
 

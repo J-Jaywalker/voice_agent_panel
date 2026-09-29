@@ -55,13 +55,15 @@ const offline = document.querySelector("[data-role=offline]");
 const humanDot = document.querySelector("[data-role=human-dot]");
 const transcriptLabel = document.querySelector("[data-role=transcript-label]");
 const feed = document.querySelector("[data-role=lines]");
-const partial = document.querySelector("[data-role=partial]");
+const partials = document.querySelector("[data-role=partials]");
 const cue = document.querySelector("[data-role=cue]");
 
 /** agent id -> { lane, orb, status, state } */
 const agents = new Map();
 /** Absolute index of the oldest transcript line currently in the DOM. */
 let renderedFrom = -1;
+/** speaker -> the <p> currently showing that voice's in-progress line. */
+const partialNodes = new Map();
 
 // ── Stage fit ─────────────────────────────────────────────────────────────
 
@@ -89,6 +91,11 @@ window.addEventListener("resize", fitStage);
 function buildLanes(list) {
   laneHost.replaceChildren();
   agents.clear();
+  // The cast is what an accent is read off, so any partial built against the
+  // previous one is holding a stale colour. Cheaper to rebuild them than to
+  // re-attribute in place, and this runs once per connection.
+  partials.replaceChildren();
+  partialNodes.clear();
   for (const agent of list) {
     const lane = template.content.firstElementChild.cloneNode(true);
     lane.dataset.accent = agent.accent;
@@ -171,34 +178,79 @@ function renderLines(lines, from) {
 }
 
 /**
- * One line in the band. `line.speaker` is `HUMAN` or an agent id — both share
- * one feed now, in the order they were said (see `TranscriptLine` in
- * `wall.py`). Every line gets a name tag ahead of it: four voices sharing one
- * feed are only tellable apart by who is named on them once they are off
- * their own lane, and the moderator is one of the four. Only the three agents
- * are accent-coloured — James does not hold one of the three accent seats, so
- * his tag takes the band's quiet default rather than borrowing a colour that
- * already means a specific agent.
+ * Attribute a <p> to a speaker: name tag ahead of the text, accent on the tag.
+ *
+ * Four voices sharing one band are only tellable apart by who is named on
+ * them once they are off their own lane, and the moderator is one of the four.
+ * Only the three agents are accent-coloured — James does not hold one of the
+ * three accent seats, so his tag takes the band's quiet default rather than
+ * borrowing a colour that already means a specific agent.
+ *
+ * Shared by finalised lines and in-progress ones, because both now come from
+ * the same place: a real transcription session, one per voice.
  */
-function lineNode(line) {
-  const p = document.createElement("p");
-  p.className = "line";
+function attribute(p, speaker) {
   const tag = document.createElement("span");
   tag.className = "line__speaker";
-  if (line.speaker === HUMAN) {
+  if (speaker === HUMAN) {
     // Hardcoded, like `PanelSTT({"James": "human"})` in panel_runtime. The
     // moderator is not cast data — there is no persona behind him.
     tag.textContent = "James";
   } else {
-    const view = agents.get(line.speaker);
+    const view = agents.get(speaker);
     // `data-accent` drives colour in wall.css off the same `--accent-*` tokens
     // the agent's own lane reads — one set of tokens naming one agent,
     // wherever on the stage they show up.
     p.dataset.accent = view ? view.accent : "";
-    tag.textContent = view ? view.name : line.speaker;
+    tag.textContent = view ? view.name : speaker;
   }
-  p.append(tag, " " + line.text);
+  p.appendChild(tag);
+  return tag;
+}
+
+/**
+ * One finalised line in the band. `line.speaker` is `HUMAN` or an agent id —
+ * all four share one feed, in the order they were said (see `TranscriptLine`
+ * in `wall.py`).
+ */
+function lineNode(line) {
+  const p = document.createElement("p");
+  p.className = "line";
+  attribute(p, line.speaker);
+  p.append(" " + line.text);
   return p;
+}
+
+/**
+ * The in-progress lines, one per voice still mid-sentence.
+ *
+ * Reconciled by speaker rather than rebuilt, and that is not an
+ * optimisation: a partial is replaced on every word, so recreating the node
+ * would re-run `line-in` forty times a sentence and the band would strobe.
+ * Only the text after the name tag is rewritten.
+ */
+function renderPartials(rows) {
+  const seen = new Set();
+  for (const row of rows) {
+    seen.add(row.speaker);
+    let p = partialNodes.get(row.speaker);
+    if (!p) {
+      p = document.createElement("p");
+      p.className = "line line--partial";
+      attribute(p, row.speaker);
+      p.appendChild(document.createTextNode(""));
+      partialNodes.set(row.speaker, p);
+    }
+    p.lastChild.nodeValue = " " + row.text;
+    // Re-appended every pass, so the server's ordering (agents in stage
+    // order, James last) survives a voice dropping out and coming back.
+    partials.appendChild(p);
+  }
+  for (const [speaker, node] of partialNodes) {
+    if (seen.has(speaker)) continue;
+    node.remove();
+    partialNodes.delete(speaker);
+  }
 }
 
 // ── Snapshots ─────────────────────────────────────────────────────────────
@@ -221,7 +273,7 @@ function applyState(message) {
   transcriptLabel.textContent = message.human_speaking ? "Moderator — live" : "Moderator";
 
   renderLines(message.lines, message.line_seq - message.lines.length);
-  partial.textContent = message.partial || "";
+  renderPartials(message.partials || []);
 
   cue.dataset.on = String(Boolean(message.cue));
   cue.textContent = message.cue ? "over to James" : "";

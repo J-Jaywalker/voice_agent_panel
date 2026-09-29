@@ -20,26 +20,18 @@ import pytest
 from panel_core import (
     AgentSpeechEnded,
     AgentSpeechStarted,
-    AgentUtteranceProgress,
     PanelCast,
+    TranscriptUpdated,
 )
-from panel_display.server import LEVEL_HZ, SPEAKING_WPS, DisplayServer
+from panel_display.server import LEVEL_HZ, DisplayServer
 
 PERSONAS = Path(__file__).resolve().parents[3] / "personas"
 # Generous against a 30Hz pump: enough frames to have definitely been sent,
 # short enough that a hung socket fails the suite rather than stalling it.
 WINDOW_S = 6 / LEVEL_HZ
 
-# Sentences for the transcript-pacing tests. Four words each, so at the fast
-# rate below every one of them is worth exactly one reveal interval.
 SENTENCE_A = "One two three four"
 SENTENCE_B = "five six seven eight"
-# Twenty times real speaking pace: 0.2s per four-word sentence, which is four
-# flush ticks apart and so provably two separate snapshots, while keeping the
-# whole test inside a fifth of a second. Same discipline as WINDOW_S — tuned
-# off the server's own rates rather than guessed at.
-FAST_WPS = SPEAKING_WPS * 20
-REVEAL_S = len(SENTENCE_A.split()) / FAST_WPS
 
 
 @pytest.fixture(scope="module")
@@ -150,68 +142,91 @@ def test_silence_stops_sending_rather_than_streaming_zeroes(cast: PanelCast):
     assert [m for m in asyncio.run(body()) if m["type"] == "levels"] == []
 
 
-def test_a_turns_sentences_are_revealed_one_at_a_time(cast: PanelCast):
-    """The whole point of the pacing: not "both arrive", but "not together".
+def test_an_agents_transcript_reaches_the_client_tagged_to_that_agent(cast: PanelCast):
+    """The band's agent lines, end to end over the socket.
 
-    `AgentUtteranceProgress` is emitted when a sentence is handed to TTS, so
-    a turn's sentences can all land inside one tick of the flush pump. If the
-    server forwarded them straight through, the band would get a clump of
-    text and then twenty seconds of nothing while the agent caught up. Two
-    sentences pushed back to back must therefore be seen in two *different*
-    snapshots, with a snapshot showing only the first in between.
+    This is the event `PanelRuntime._run_agent_stt` hands to `on_event` and to
+    nothing else, and it has to arrive at the browser attributed to the agent
+    whose socket produced it — the client reads `speaker` to pick the name and
+    the accent.
     """
 
     def push(server: DisplayServer) -> None:
         server.on_event(AgentSpeechStarted(t=1.0, agent="dex"))
-        for text in (SENTENCE_A, SENTENCE_B):
-            server.on_event(AgentUtteranceProgress(t=1.0, agent="dex", text=text))
+        server.on_event(
+            TranscriptUpdated(t=1.1, speaker="dex", text=SENTENCE_A, is_final=False)
+        )
+        server.on_event(
+            TranscriptUpdated(t=1.4, speaker="dex", text=SENTENCE_A, is_final=True)
+        )
 
     async def body():
-        server = await _serve(cast, words_per_second=FAST_WPS)
+        server = await _serve(cast)
         try:
             return await _collect(
                 f"http://127.0.0.1:{server.port}/ws",
-                REVEAL_S * 3,
+                WINDOW_S,
                 after=lambda: push(server),
             )
         finally:
             await server.close()
 
-    counts = [
-        sum(1 for line in m["lines"] if line["speaker"] == "dex")
-        for m in asyncio.run(body())
-        if m["type"] == "state"
-    ]
-    # Not `counts == [0, 1, 2]`: the pump coalesces, so the connect snapshot
-    # and repaints in between are free to repeat a count. What may never
-    # happen is going straight from no sentences to both of them.
-    assert 1 in counts, f"never saw the first sentence alone: {counts}"
-    assert counts[-1] == 2, f"the second sentence never arrived: {counts}"
-    assert counts.index(1) < counts.index(2)
+    states = [m for m in asyncio.run(body()) if m["type"] == "state"]
+    assert states[-1]["lines"] == [{"speaker": "dex", "text": SENTENCE_A}]
+    assert states[-1]["partials"] == []
 
 
-def test_a_turn_that_ends_drops_what_it_had_not_said_yet(cast: PanelCast):
-    """A cut-off turn must not keep trickling onto the band afterwards.
+def test_transcripts_are_not_held_back_by_the_server(cast: PanelCast):
+    """The pacing hack is gone, and its absence is the fix.
 
-    `AgentSpeechEnded` fires on every real ending — completion, interruption,
-    and the exception-recovery arm in `speak()`. Whichever it was, sentences
-    the room will now never hear have no business appearing.
+    The server used to queue agent sentences and pay them out at an assumed
+    2.8 words/sec, because `AgentUtteranceProgress` arrives when a sentence is
+    handed to TTS rather than when it is heard. Agent lines now arrive already
+    paced by the audio they were transcribed from, so two finals landing back
+    to back must both be on the wall immediately — anything that delays one of
+    them is re-introducing an estimate on top of a measurement.
     """
 
     async def body():
-        server = await _serve(cast, words_per_second=FAST_WPS)
+        server = await _serve(cast)
         try:
             server.on_event(AgentSpeechStarted(t=1.0, agent="dex"))
             for text in (SENTENCE_A, SENTENCE_B):
-                server.on_event(AgentUtteranceProgress(t=1.0, agent="dex", text=text))
-            # Long enough for the first sentence to be revealed, short enough
-            # that the second is still sitting in the queue behind it.
-            await asyncio.sleep(REVEAL_S / 2)
+                server.on_event(
+                    TranscriptUpdated(t=1.0, speaker="dex", text=text, is_final=True)
+                )
+            # No sleep at all: `on_event` is synchronous through to `WallState`.
+            return [(line.speaker, line.text) for line in server.wall.lines]
+        finally:
+            await server.close()
+
+    assert asyncio.run(body()) == [("dex", SENTENCE_A), ("dex", SENTENCE_B)]
+
+
+def test_a_straggler_after_the_next_speaker_never_reaches_the_band(cast: PanelCast):
+    """A cut-off turn's tail must not land under the agent that replaced it.
+
+    `AgentSpeechEnded` fires on every real ending — completion, interruption,
+    and the exception-recovery arm in `speak()` — but a transcription session
+    finalises a few hundred milliseconds behind the audio either way, so the
+    guard cannot be "the turn has ended". It is "somebody else is on air now",
+    and this is the case it protects.
+    """
+
+    async def body():
+        server = await _serve(cast)
+        try:
+            server.on_event(AgentSpeechStarted(t=1.0, agent="dex"))
+            server.on_event(
+                TranscriptUpdated(t=1.1, speaker="dex", text=SENTENCE_A, is_final=True)
+            )
             server.on_event(
                 AgentSpeechEnded(t=2.0, agent="dex", completed=False, utterance="")
             )
-            # Well past when the second sentence would have been due.
-            await asyncio.sleep(REVEAL_S * 3)
+            server.on_event(AgentSpeechStarted(t=2.1, agent="melia"))
+            server.on_event(
+                TranscriptUpdated(t=2.2, speaker="dex", text=SENTENCE_B, is_final=True)
+            )
             return [(line.speaker, line.text) for line in server.wall.lines]
         finally:
             await server.close()

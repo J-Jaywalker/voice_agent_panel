@@ -6,14 +6,15 @@ AI voice panel, 3 agents + human moderator, live on stage. 21 Oct 2026.
 
 ```bash
 uv sync
-uv run pytest                     # everything — 287 tests, ~3min
-uv run pytest packages/panel_core # floor logic only — 226 tests, ~2s. The tight loop.
+uv run pytest                     # everything — 378 tests, ~2min
+uv run pytest packages/panel_core # floor logic only — 258 tests, ~4s. The tight loop.
 uv run panel-sim          # text-mode, offline stub brains
 uv run panel-sim --live   # text-mode, real model
 uv run panel              # live pipeline: mic -> STT -> floor -> TTS
 uv run panel --no-tts     # same, printed not spoken
 uv run panel --llm-address # resolve the addressee with Haiku, not the regex
 uv run panel --display    # + the 12m video wall, on http://localhost:8765
+                          # also opens one display-only STT socket per agent
 uv run barge-in           # interrupt reflex on live mic
 uv run panel-display --demo # video wall alone, synthetic panel, no mic or keys
 uv run ruff check .
@@ -29,7 +30,7 @@ uv run ruff check .
 | `packages/panel_display` | The video wall. `wall.py` is pure, `server.py` is aiohttp, `static/` has no build step. |
 | `personas/*.yaml` | Cast data. Source of truth for prompts. |
 
-Video wall built 25 Sept: 12.00m x 4.50m, 8:3, four 3m lanes — transcript, then one per agent. Laid out at a fixed 3840x1440 (320px = 1m) and scaled to fit, so the stylesheet's dimensions stay physical whatever the LED processor reports. Orbs are driven by real post-gain audio off `Mixer.take_levels()`, never by a timer. The transcript lane is still a **stub**: moderator only. The event it was waiting for now exists — `AgentUtteranceProgress`, one per sentence off the `speak()` loop — so wiring agent turns into the lane is a display job, not a plumbing one.
+Video wall built 25 Sept: 12.00m x 6.75m, 16:9 — a row of three 4m agent lanes over a full-width transcript band. Laid out at a fixed 3840x2160 (320px = 1m, `--m` in tokens.css) and scaled to fit, so the stylesheet's dimensions stay physical whatever the LED processor reports. Orbs are driven by real post-gain audio off `Mixer.take_levels()`, never by a timer. The transcript band carries all four voices, and every line on it is real STT: James's mic, plus one **display-only** Speechmatics session per agent over that agent's own audio, tapped at `Mixer.render` and drained by `PanelRuntime._run_agent_stt` (29 Sept). Timing is measured, not estimated. It was estimated until 29 Sept — agent lines came from `AgentUtteranceProgress` (emitted when a sentence is handed to TTS, so seconds ahead of the room) and `DisplayServer` paid them out at an assumed 2.8 words/sec; the estimate drifted against real pacing and the error was cumulative over a turn. That queue, its drain tasks and `SPEAKING_WPS` are deleted, not disabled. The tap is at `Mixer.render` and not at `mixer.feed()` for the same reason: `feed()` concatenates onto an unbounded buffer and TTS generates faster than anyone speaks, so anything timed off arrival is timed off generation. `--display` is what turns any of this on; `uv run panel` alone opens no extra sockets and leaves the audio callback untouched.
 
 Not built: operator console. Mid-turn steering was cut (11 Sept) — turn length is a prompt instruction, no orchestrator-enforced ceiling; moderator handles the rest live. Phase status: FEASIBILITY.md §8.
 
@@ -40,7 +41,7 @@ Agents already pass turns to each other without James (`_maybe_rearbitrate`), bo
 | Decision | Note |
 |---|---|
 | LiveKit as library, not framework | No `AgentSession`. ADR 0001. In practice this is now **Silero VAD only** — `silero.VAD`, `rtc.AudioFrame`, `lkvad.VADEventType`, nothing else. Audio I/O is `sounddevice`, the mixer is ours. Re-litigating this means rewriting the audio path, not changing a config. |
-| STT: Agent STT (Speechmatics preview API), raw `websockets`, one client per mic | Not `speechmatics-voice`/`speechmatics-rt`/LiveKit STT plugin. No local end-of-turn tuning — native `EndOfTurn`. |
+| STT: Agent STT (Speechmatics preview API), raw `websockets`, one client per voice | Not `speechmatics-voice`/`speechmatics-rt`/LiveKit STT plugin. No local end-of-turn tuning — native `EndOfTurn`. Two `PanelSTT` instances: `self.stt` (James's mic) feeds the floor; `self.agent_stt` (one channel per agent, `--display` only) feeds the video wall and *only* the video wall. Same class, generic over `speaker` — identity is a fact about the wiring, so diarisation stays off on both. |
 | TTS: ElevenLabs, hand-rolled over raw `websockets` | Not a LiveKit plugin — cancellation latency must be our code's property. |
 | Model: Claude Sonnet 5, `effort: "low"` | Chosen for speed. (Opus 5 was used briefly for mid-turn `role: "system"` support; reverted when mid-turn steering was cut.) |
 | Speechmatics Flow is deprecated | Never propose it. |
@@ -61,7 +62,7 @@ Cost is not a constraint — Speechmatics employee, STT/LLM spend is not a valid
 
 - `panel_core`: no I/O, no `await`, no clock reads. Timestamps arrive on events.
 - Never send raw model output to TTS — always `sanitise()` first.
-- Agent speech never enters the STT path — text only, verbatim.
+- Agent speech never reaches `panel_core` through STT — the floor learns a turn as text, verbatim, off `AgentSpeechEnded.utterance` / `AgentUtteranceProgress`. A transcription round-trip of our own voices arriving where the verbatim text already is, is the feedback loop that ends the show. The `--display` pass over agent audio does not breach this and must not start to: `_run_agent_stt` never calls `emit()`, drops `TurnYielded`, and its output reaches `panel_display` and nothing else — not `self.events`, not `fc.reduce()`, not the rehearsal log. It changes what the audience reads, never what the panel knows. Guarded by `packages/panel_runtime/tests/test_agent_stt_isolation.py`; that file is the whole safety property.
 - VAD owns stopping; STT owns understanding. No transcription round-trip in barge-in.
 - Personas are data. `prompts.py` renders YAML — never edit a prompt string directly.
 - A proposal is not a floor claim. Scoring alone never puts an agent on the PA.

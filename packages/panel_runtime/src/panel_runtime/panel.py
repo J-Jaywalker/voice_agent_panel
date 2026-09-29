@@ -17,15 +17,26 @@ Shape of it:
                                   TurnYielded ─────────┘                            │
                                                                                     v
         speakers <── Mixer <── TTS <── StartSpeech ·  DuckSpeech · StopSpeech · ResumeSpeech
-                                       ^
-                                       └── brains (speculative, during the human's turn)
+                       │               ^
+                       │               └── brains (speculative, during the human's turn)
+                       │
+                       └─> Agent STT (display only) ──> video wall transcript band
+                           played audio, never the floor — see `_run_agent_stt`
 
 Two rules the wiring exists to enforce, both from CLAUDE.md:
 
-**Agent speech never enters the STT path.** Only mic audio is fed to
-Speechmatics. Agent turns enter conversation state as text, because we generated
-them and know them verbatim. Anything else is the feedback loop that ends the
-show.
+**Agent speech never reaches the floor through STT.** Agent turns enter
+conversation state as text, because we generated them and know them verbatim.
+A lossy, latent transcription of our own voices arriving where the verbatim
+text already is, is the feedback loop that ends the show.
+
+With `--display` there is a *second* `PanelSTT` (`self.agent_stt`) over each
+agent's played audio, and it exists so the video wall's transcript band can be
+timed off real speech rather than an assumed words-per-second. It is wired to
+exactly one sink — `panel_display` — by `_run_agent_stt`, which never calls
+`emit()`. Nothing on it reaches `self.events`, `self.fc.reduce()`, or the
+rehearsal log. It changes what the audience *reads*, never what the panel
+*knows*. Without `--display` it is not constructed and no socket is opened.
 
 **VAD owns stopping, STT owns understanding.** The barge-in reflex fires off
 Silero, never off a transcript. Transcripts only ever *refine* a decision the
@@ -264,10 +275,57 @@ class PanelRuntime:
         self.use_tts = use_tts
         self.log_path = log_path
 
-        unity_db = {p.id: p.output_gain_db for p in cast.personas.values() if p.output_gain_db}
-        self.mixer = Mixer(cast.ids(), VAD_SAMPLE_RATE, unity_db=unity_db)
         self.brain = StreamingClaudeBrain(BrainConfig())
         self.stt = PanelSTT({"James": "human"}, config=STTConfig.from_cast(cast))
+
+        # A second transcription pass, over the agents' *own* played audio,
+        # built only when there is a wall to render it on.
+        #
+        # This is display-only and the isolation is enforced in exactly one
+        # place: `_run_agent_stt` drains this queue and never calls `emit()`.
+        # Nothing here reaches `self.events`, the reducer, or the log — see
+        # this module's docstring and `stt.py`'s. It replaces a pacing
+        # estimate the wall used to apply to `AgentUtteranceProgress`, which
+        # is emitted when a sentence is handed to the TTS provider and so runs
+        # seconds ahead of the room.
+        #
+        # Channels map each agent id to itself, so `TranscriptUpdated.speaker`
+        # is the agent id the band attributes the line to — the same "identity
+        # is a fact about the wiring" property that lets James's socket run
+        # with diarisation off. Only one agent is ever on the PA
+        # (`AgentSpeechStarted`/`Ended`), so there is nothing to diarise here
+        # either.
+        #
+        # Three extra sockets for a surface nobody is looking at is pure
+        # waste, so `uv run panel` without `--display` is unchanged: no
+        # `PanelSTT`, no mixer tap, no drain task.
+        self.agent_stt = (
+            PanelSTT(
+                {agent_id: agent_id for agent_id in cast.ids()},
+                config=STTConfig.from_cast(cast),
+            )
+            if display is not None
+            else None
+        )
+
+        unity_db = {p.id: p.output_gain_db for p in cast.personas.values() if p.output_gain_db}
+        self.mixer = Mixer(
+            cast.ids(),
+            VAD_SAMPLE_RATE,
+            unity_db=unity_db,
+            # The tap is taken at `Mixer.render`, not where chunks arrive from
+            # ElevenLabs, and that is the entire point of this change. TTS
+            # generates far faster than anyone speaks, so `mixer.feed()`
+            # accumulates — `Mixer.buffered_seconds` is seconds deep by the
+            # middle of a long turn — and a recogniser fed at arrival time
+            # would be transcribing the generation clock, which is the same
+            # class of error as the words-per-second estimate this replaces,
+            # just with the sign flipped. `render` runs at the output device's
+            # rate and is the only clock in this process that matches the
+            # room. Same reasoning the orb's post-gain meter already documents
+            # in `mixer.py`.
+            on_played=self.agent_stt.feed if self.agent_stt is not None else None,
+        )
         voice_overrides = {
             p.voice_id: p.voice_settings for p in cast.personas.values() if p.voice_settings
         }
@@ -378,13 +436,19 @@ class PanelRuntime:
         mono = indata[:, 0]
         pcm = (np.clip(mono, -1.0, 1.0) * 32767).astype(np.int16)
 
-        # Mic audio goes to VAD and STT. Agent audio goes to neither, ever.
+        # Mic audio goes to VAD and to the STT that feeds the floor. Agent
+        # audio goes to neither, ever.
         self._mic.put_nowait(mono.copy())
         self.stt.feed("James", pcm.tobytes())
 
         if self._display is not None:
             self._mic_level = max(self._mic_level, float(np.sqrt(np.mean(np.square(mono)))))
 
+        # `render` also drives `Mixer.on_played`, which with `--display` hands
+        # each agent's block to `self.agent_stt` — a transcription session
+        # whose output only ever reaches the video wall (`_run_agent_stt`).
+        # That is not the path above: nothing off it is emitted, so no agent's
+        # voice can arrive at the reducer through a microphone-shaped hole.
         outdata[:, 0] = self.mixer.render(frames)
 
     # ------------------------------------------------------------- event path
@@ -1239,6 +1303,38 @@ class PanelRuntime:
                 continue
             self.emit(event)
 
+    async def _run_agent_stt(self) -> None:
+        """Drain the agents' own transcription straight onto the video wall.
+
+        The one loop in this file that deliberately does not `emit()`, and the
+        safety property of this whole feature is that single omission. Agent
+        speech reaching `FloorController.reduce()` through a transcript is the
+        feedback loop CLAUDE.md forbids; agent speech reaching the *audience*
+        through a transcript is the only way the band can be timed off real
+        speech rather than an assumed words-per-second. So this hands
+        `TranscriptUpdated` to `panel_display` and to nothing else.
+
+        `TurnYielded` is dropped, not forwarded and not logged. It is
+        Speechmatics' `EndOfTurn` on an agent's own voice — the agent stopping
+        talking, which the floor already knows from `AgentSpeechEnded` with the
+        verbatim text attached, and which arrives here later and less reliably.
+        Treating it as a floor signal would let an agent end its own turn by
+        pausing, and would race a real `EndOfTurn` from James's mic.
+        `SpeechStarted`/`SpeechEnded` are already inert one layer down in
+        `_AgentSTTSession` (barge-in belongs to the local VAD), so there is
+        nothing left that could reach the reducer even by accident.
+        """
+        stt = self.agent_stt
+        if stt is None:
+            return
+        while self._running:
+            event = await stt.events.get()
+            if not isinstance(event, TranscriptUpdated):
+                continue
+            display = self._display
+            if display is not None:
+                display.on_event(event)
+
     # ----------------------------------------------------------- addressing
 
     def _classify_address_from(self, event: TranscriptUpdated) -> None:
@@ -1453,6 +1549,15 @@ class PanelRuntime:
                 self._print("[yellow]video wall unavailable — continuing without it[/]")
                 self._display = None
 
+        if self._display is None and self.agent_stt is not None:
+            # The wall did not come up, so the only consumer of the agents'
+            # transcription is gone. Drop it — and drop the mixer's tap with
+            # it, so the audio callback is exactly what it is without
+            # `--display`. Done here rather than left running because three
+            # sockets nobody reads is spend with no picture to show for it.
+            self.agent_stt = None
+            self.mixer.on_played = None
+
         if self.tts is not None:
             voices = [p.voice_id for p in self.cast.personas.values()]
             self._print("[dim]pre-warming TTS connections…[/]")
@@ -1461,6 +1566,8 @@ class PanelRuntime:
             self._print(f"[dim]  {1000 * (time.monotonic() - t0):.0f}ms (paid once)[/]")
 
         await self.stt.start()
+        if self.agent_stt is not None:
+            await self.agent_stt.start()
 
         stream = sd.Stream(
             samplerate=VAD_SAMPLE_RATE,
@@ -1479,6 +1586,8 @@ class PanelRuntime:
         ]
         if self._display is not None:
             tasks.append(asyncio.create_task(self._pump_levels(), name="display-levels"))
+        if self.agent_stt is not None:
+            tasks.append(asyncio.create_task(self._run_agent_stt(), name="agent-stt"))
 
         console.print(
             f"[bold]Panel live.[/] {', '.join(p.name for p in self.cast.personas.values())}\n"
@@ -1496,7 +1605,12 @@ class PanelRuntime:
                 self._running = False
                 for task in tasks:
                     task.cancel()
+                # The tap runs on the audio thread and the sessions it feeds
+                # are about to go away, so drop it before closing them.
+                self.mixer.on_played = None
                 await self.stt.stop()
+                if self.agent_stt is not None:
+                    await self.agent_stt.stop()
                 if self.tts is not None:
                     await self.tts.aclose()
                 if self._address is not None:

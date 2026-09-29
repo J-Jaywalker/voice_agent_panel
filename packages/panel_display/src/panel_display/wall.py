@@ -10,6 +10,18 @@ That purity is not decoration. It is the only reason this can be tested at
 all — a video wall is otherwise a thing you can only check by looking at it,
 in a venue, once, on the night.
 
+Every line in the transcript band — James's and the agents' alike — arrives as
+a `TranscriptUpdated`, off a real Speechmatics session. James's comes from his
+mic; an agent's comes from a second, display-only session over that agent's own
+played audio (`PanelRuntime._run_agent_stt`). So the band is timed by speech in
+both cases rather than by an assumed words-per-second, and this file needs no
+notion of pace at all. The agent lines used to come from
+`AgentUtteranceProgress` instead, which is emitted when a sentence is handed to
+the TTS provider and therefore runs ahead of the room by however deep the
+mixer's buffer happens to be; that case is gone from here, and the event is
+still emitted and still read by the floor for speculation timing — the wall
+just no longer listens to it.
+
 Two reasons the wall reads *commands* and not just events:
 
 * `HandsRaised` and `CueModerator` are commands and exist for precisely this
@@ -32,7 +44,6 @@ from panel_core import (
     HUMAN,
     AgentSpeechEnded,
     AgentSpeechStarted,
-    AgentUtteranceProgress,
     CueModerator,
     DuckSpeech,
     HandsRaised,
@@ -140,7 +151,16 @@ class WallState:
     order: tuple[str, ...]
 
     human_speaking: bool = False
-    partial: str = ""
+    # In-progress lines, keyed by speaker. Per-speaker rather than the single
+    # global string this used to be, because there are now four transcription
+    # sessions feeding this class instead of one, and two of them are
+    # genuinely live at once in the beat the show is built around: James
+    # barging in over an agent. His first partials land while the agent's
+    # socket is still returning partials for audio the room has already heard
+    # — a few hundred milliseconds of network, unavoidable — so one string
+    # would flicker between two voices at exactly the moment the band matters
+    # most. Keyed, both are shown, and the wall reads the way the room sounds.
+    partials: dict[str, str] = field(default_factory=dict)
     lines: deque[TranscriptLine] = field(default_factory=lambda: deque(maxlen=TRANSCRIPT_LINES))
     # Total lines ever finalised, not the length of the window above.
     #
@@ -159,6 +179,18 @@ class WallState:
     # Monotonically increasing, sent with every snapshot. A client that has
     # reconnected can tell a stale frame from a fresh one without a clock.
     revision: int = 0
+    # The last agent handed the PA, or None before the first turn. This is the
+    # attribution guard for agent transcripts and it replaces the old
+    # `state in (SPEAKING, DUCKED)` test, which cannot be used here: an
+    # agent's STT session finalises its last sentence *after* the audio has
+    # finished, so `AgentSpeechEnded` always beats the final that carries the
+    # end of the turn, and a state test would drop the closing line of every
+    # single turn. What actually has to be prevented is *misattribution* — a
+    # straggler landing under a later speaker's lines — and the agent last put
+    # on air is exactly that test, with no clock and no timeout: the moment
+    # another agent starts, the previous one's stragglers stop counting.
+    # Never painted on its own, so deliberately absent from `_fingerprint`.
+    last_on_air: str | None = None
 
     @classmethod
     def for_cast(cls, cast: PanelCast) -> WallState:
@@ -188,32 +220,8 @@ class WallState:
             case HumanSpeechEnded():
                 self.human_speaking = False
 
-            case TranscriptUpdated(speaker=speaker) if speaker == HUMAN:
-                if event.is_final:
-                    text = event.text.strip()
-                    if text:
-                        self.lines.append(TranscriptLine(HUMAN, text))
-                        self.line_seq += 1
-                    self.partial = ""
-                else:
-                    self.partial = event.text
-
-            case AgentUtteranceProgress(agent=agent, text=text):
-                # Guards against the same staleness `FloorController` guards
-                # against in `panel_core` (see the event's own docstring): a
-                # sentence from a generation the floor has already moved past
-                # is not part of the turn anyone is listening to. `SPEAKING`
-                # is set by `AgentSpeechStarted` before `speak()`'s sentence
-                # loop ever runs, so this only ever rejects a late arrival
-                # after the turn the sentence belonged to has already ended.
-                # `DUCKED` still counts — a backchannelled agent keeps talking,
-                # just quieter, and the words are still owed to the band.
-                view = self.agents.get(agent)
-                if view is not None and view.state in (SPEAKING, DUCKED):
-                    stripped = text.strip()
-                    if stripped:
-                        self.lines.append(TranscriptLine(agent, stripped))
-                        self.line_seq += 1
+            case TranscriptUpdated(speaker=speaker):
+                self._transcript(speaker, event.text, is_final=event.is_final)
 
             case AgentSpeechStarted(agent=agent):
                 self.cue = None
@@ -221,12 +229,23 @@ class WallState:
                 if view is not None:
                     view.state = SPEAKING
                     view.hand = None
+                    # Whoever was last on air is no longer, so their in-flight
+                    # words stop counting from here: see `last_on_air`.
+                    self.last_on_air = agent
                 # Only one agent is ever on the PA. Anyone else still showing
                 # as speaking is a dropped `AgentSpeechEnded`, and on a wall
                 # that reads as two agents talking at once.
                 for other_id, other in self.agents.items():
                     if other_id != agent and other.state in (SPEAKING, DUCKED):
                         other.state = IDLE
+                    if other_id != agent:
+                        # And a partial the previous speaker never finalised —
+                        # a socket that dropped mid-sentence — would otherwise
+                        # sit under the band for the rest of the show. The
+                        # handover is the natural place to bound its life:
+                        # nothing that agent still owes the band can be
+                        # accepted after this point anyway.
+                        self.partials.pop(other_id, None)
 
             case AgentSpeechEnded(agent=agent):
                 view = self.agents.get(agent)
@@ -236,6 +255,55 @@ class WallState:
             case _:
                 pass
         return self._bump(before)
+
+    def _transcript(self, speaker: str, text: str, *, is_final: bool) -> None:
+        """Fold one transcript segment into the band, whoever said it.
+
+        One path for all four voices, because they are all now real STT. The
+        only difference is the attribution guard: James's mic is authoritative
+        about James unconditionally, whereas an agent's session is only
+        believed for the agent last put on air (see `last_on_air`). A
+        `TranscriptUpdated` naming an agent that has never held the floor is
+        not a real line — there is no audio it could have come from — and is
+        dropped rather than painted.
+
+        Args:
+            speaker: `HUMAN`, or the agent id the session is wired to.
+            text: The segment. Partials replace, finals append.
+            is_final: Whether Speechmatics called this segment done.
+        """
+        if speaker != HUMAN and speaker != self.last_on_air:
+            return
+        if speaker != HUMAN and speaker not in self.agents:
+            return
+        if is_final:
+            stripped = text.strip()
+            if stripped:
+                self.lines.append(TranscriptLine(speaker, stripped))
+                self.line_seq += 1
+            self.partials.pop(speaker, None)
+        elif text.strip():
+            self.partials[speaker] = text
+        else:
+            self.partials.pop(speaker, None)
+
+    def _partials(self) -> list[dict[str, str]]:
+        """In-progress lines, agents in stage order and James last.
+
+        Ordered rather than a map so the client can append without sorting,
+        and James last because the band's finals land at its bottom edge —
+        putting the moderator's in-progress words closest to them keeps his
+        line reading as the newest thing on the wall, which during a barge-in
+        is exactly what it is.
+        """
+        rows = [
+            {"speaker": agent_id, "text": self.partials[agent_id]}
+            for agent_id in self.order
+            if self.partials.get(agent_id)
+        ]
+        if self.partials.get(HUMAN):
+            rows.append({"speaker": HUMAN, "text": self.partials[HUMAN]})
+        return rows
 
     # ---------------------------------------------------------------- commands
 
@@ -338,7 +406,7 @@ class WallState:
             "open_floor": self.open_floor,
             "cue": self.cue,
             "human_speaking": self.human_speaking,
-            "partial": self.partial,
+            "partials": self._partials(),
             "lines": [line.payload() for line in self.lines],
             "line_seq": self.line_seq,
             "agents": [self.agents[agent_id].payload() for agent_id in self.order],
@@ -355,7 +423,7 @@ class WallState:
         """
         return (
             self.human_speaking,
-            self.partial,
+            tuple((row["speaker"], row["text"]) for row in self._partials()),
             self.line_seq,
             self.cue,
             self.open_floor,

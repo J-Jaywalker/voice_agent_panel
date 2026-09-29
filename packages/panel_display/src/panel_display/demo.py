@@ -36,7 +36,6 @@ from panel_core import (
     HUMAN,
     AgentSpeechEnded,
     AgentSpeechStarted,
-    AgentUtteranceProgress,
     CueModerator,
     DuckSpeech,
     HandsRaised,
@@ -59,11 +58,12 @@ SCRIPT = [
     "Let's take one more before we open it up.",
 ]
 
-# What an agent's turn says, sentence by sentence — exercising the same path
-# `AgentUtteranceProgress` takes in the real runtime, so the transcript band's
-# handling of an agent turn is a beat covered here rather than a thing nobody
-# sees before the venue. Not attributed to any one agent; `turn_for` below
-# just draws a handful per turn, same as the real panel draws from whichever
+# What an agent's turn says, sentence by sentence. Delivered here exactly the
+# way the real runtime delivers it — as `TranscriptUpdated` partials and finals
+# off that agent's own transcription session (`PanelRuntime._run_agent_stt`) —
+# so `--demo` exercises the code path the show runs on rather than a
+# display-only shortcut. Not attributed to any one agent; `turn_for` below just
+# draws a handful per turn, same as the real panel draws from whichever
 # candidate won arbitration.
 AGENT_LINES = [
     "Adoption already happened, and nobody noticed the day it did.",
@@ -147,42 +147,39 @@ class SyntheticPanel:
             )
         )
 
+    async def transcribe(
+        self, speaker: str, line: str, *, per_word_s: float
+    ) -> None:
+        """One sentence arriving the way a transcription session delivers it.
+
+        Growing partials, then a final. The same shape for the moderator's mic
+        and for an agent's own played audio, because in the real runtime they
+        are the same event off the same protocol — only the socket differs
+        (`PanelSTT`, one per voice). Paced at roughly speaking rate here
+        because in the real runtime the pace *is* the speech: the agents'
+        audio is tapped at `Mixer.render`, so a partial arrives when the word
+        is heard rather than when the model wrote it.
+        """
+        words = line.split()
+        for index in range(1, len(words) + 1):
+            self.server.on_event(
+                TranscriptUpdated(
+                    t=self.t, speaker=speaker, text=" ".join(words[:index]), is_final=False
+                )
+            )
+            await asyncio.sleep(per_word_s)
+        self.server.on_event(
+            TranscriptUpdated(t=self.t, speaker=speaker, text=line, is_final=True)
+        )
+
     async def moderator(self, line: str) -> None:
         """James asks something, one word at a time, then it finalises."""
         self.human = True
         self.server.on_event(HumanSpeechStarted(t=self.t))
         self.paint()
-        words = line.split()
-        for index in range(1, len(words) + 1):
-            self.server.on_event(
-                TranscriptUpdated(
-                    t=self.t, speaker=HUMAN, text=" ".join(words[:index]), is_final=False
-                )
-            )
-            await asyncio.sleep(0.16)
-        self.server.on_event(
-            TranscriptUpdated(t=self.t, speaker=HUMAN, text=line, is_final=True)
-        )
+        await self.transcribe(HUMAN, line, per_word_s=0.16)
         self.human = False
         self.server.on_event(HumanSpeechEnded(t=self.t))
-
-    async def say(self, agent: str, sentence: str, spoken: list[str]) -> None:
-        """One sentence, pushed the way `speak()` actually pushes it: fast.
-
-        Deliberately *not* paced to speaking rate here. In the real runtime
-        `AgentUtteranceProgress` is emitted the moment a sentence is handed to
-        the TTS provider, so a whole turn's sentences can arrive within a
-        fraction of a second of each other — the gap between them is
-        generation pace and a socket write, nothing more. The reveal pacing
-        lives in `DisplayServer` (see `SPEAKING_WPS`), and pacing it here too
-        would mean `--demo` looked correct whether or not the server's pacing
-        still worked. The short sleep is the model streaming, not the voice.
-        """
-        spoken.append(sentence)
-        self.server.on_event(
-            AgentUtteranceProgress(t=self.t, agent=agent, text=sentence)
-        )
-        await asyncio.sleep(0.12)
 
     async def turn_for(self, agent: str) -> None:
         self.turn += 1
@@ -196,31 +193,27 @@ class SyntheticPanel:
 
         sentences = random.sample(AGENT_LINES, k=random.randint(3, 4))
         spoken: list[str] = []
-        # How long the turn's audio would run for. The sentences are pushed in
-        # a burst well inside this, exactly as they are on the night; the turn
-        # then has to stay open until the room would have heard the last of
-        # them, or `AgentSpeechEnded` would arrive while the band was still
-        # mid-reveal and drop the rest — which is the correct behaviour for a
-        # cut-off turn and the wrong one for a completed one.
-        started = asyncio.get_running_loop().time()
-        audio_s = sum(len(s.split()) / 2.8 for s in sentences)
 
-        await self.say(agent, sentences[0], spoken)
+        # 2.8 words/sec, which is what the panel has measured itself at. The
+        # turn therefore takes as long as it would take to say — there is no
+        # separate "how long would the audio have run" padding any more,
+        # because the transcript and the audio are the same clock now.
+        async def say(sentence: str) -> None:
+            spoken.append(sentence)
+            await self.transcribe(agent, sentence, per_word_s=1 / 2.8)
+
+        await say(sentences[0])
 
         # A backchannel mid-turn: "mm-hm" ducks but does not stop — and the
-        # agent keeps talking through it, same as `AgentUtteranceProgress`'s
-        # own docstring says a ducked agent must.
+        # agent keeps talking through it, so its transcript keeps arriving.
         self.ducked = True
         self.server.on_command(DuckSpeech(agent=agent, gain_db=-12.0, ramp_ms=120))
-        await asyncio.sleep(1.1)
+        await say(sentences[1])
         self.ducked = False
         self.server.on_command(ResumeSpeech(agent=agent, ramp_ms=180))
 
-        for sentence in sentences[1:]:
-            await self.say(agent, sentence, spoken)
-
-        elapsed = asyncio.get_running_loop().time() - started
-        await asyncio.sleep(max(0.0, audio_s - elapsed))
+        for sentence in sentences[2:]:
+            await say(sentence)
 
         self.speaking = None
         self.invited = None

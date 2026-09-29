@@ -15,15 +15,23 @@ Everything here is called from two threads: the PortAudio callback (`render`)
 and the asyncio loop (everything else). The lock is held for as short a time as
 possible and never across an await, because a blocked audio callback is a glitch
 in front of 400 people.
+
+`on_played` is the one tap out of here that is not a meter. It hands each
+agent's rendered block to a caller as PCM16, from the audio thread, paced by the
+output device — see its note on `Mixer`.
 """
 
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 
 import numpy as np
 
 from .gain import GainEnvelope
+
+# Signature of the `on_played` tap: `(agent_id, pcm16le)`, audio thread.
+PlayedTap = Callable[[str, bytes], None]
 
 # A stop should be inaudible as a transition but immediate as a silence.
 STOP_RAMP_MS = 20.0
@@ -114,14 +122,31 @@ class AgentVoice:
 
     # ----------------------------------------------------------- audio thread
 
-    def render(self, frames: int) -> np.ndarray:
+    def render(self, frames: int, tap: PlayedTap | None = None) -> np.ndarray:
         gain = self.envelope.render(frames)
         if len(self._buffer) == 0:
+            if tap is not None:
+                # Silence is still a block that was played, and the tap's one
+                # consumer (a transcription session — see `Mixer.on_played`)
+                # needs the gaps: an endpointer with no trailing silence leaves
+                # the last sentence of every turn sitting as a partial until
+                # the agent's *next* turn pushes audio in behind it.
+                tap(self.agent_id, b"\x00\x00" * frames)
             return np.zeros(frames, dtype=np.float32)
         take = min(frames, len(self._buffer))
         chunk = np.zeros(frames, dtype=np.float32)
         chunk[:take] = self._buffer[:take]
         self._buffer = self._buffer[take:]
+        if tap is not None:
+            # Pre-gain, deliberately — unlike the meter below. The tap's job is
+            # *what was said and when*, and the gain envelope is about how loud
+            # the room heard it: a ducked agent is still talking and its words
+            # are still owed to the transcript band, so feeding a recogniser
+            # -12dB of it would only cost accuracy and buy nothing. A stop
+            # still cuts the tap within the ramp, because `Mixer.render` drops
+            # the buffer once the ramp has been heard and this branch then
+            # stops being taken at all.
+            tap(self.agent_id, (chunk * 32767.0).astype(np.int16).tobytes())
         out = chunk * gain
         # Metered *after* gain, so a ducked agent visibly shrinks on the video
         # wall and a stopped one collapses with the ramp. What the wall shows
@@ -136,15 +161,41 @@ class AgentVoice:
 
 
 class Mixer:
-    """Sums every agent voice into the output bus."""
+    """Sums every agent voice into the output bus.
+
+    Args:
+        agent_ids: Every voice on the bus.
+        sample_rate: Output rate. Must match the TTS decode rate.
+        unity_db: Per-persona resting trim, if any.
+        on_played: Optional tap, called from the audio thread once per agent
+            per output block with that block's PCM16. This is the *playback*
+            clock, and that is the whole reason it exists here rather than at
+            the point audio arrives from the provider. `feed()` is a
+            concatenate onto an unbounded buffer and TTS generates faster than
+            anyone speaks, so a turn's audio can sit here seconds deep
+            (`buffered_seconds`); anything timed off arrival is therefore
+            timed off generation. `render` is the only place in this repo that
+            runs at the rate the room actually hears — the same argument the
+            post-gain meter below makes, applied to words instead of levels.
+
+            Called with the lock held, from the callback, so it must not
+            block, must not raise, and must not touch the loop directly.
+            `panel_runtime.stt.PushAudioSource.feed` is built for exactly
+            this contract and is the only caller today. Left `None`, none of
+            this costs anything.
+    """
 
     def __init__(
         self,
         agent_ids: tuple[str, ...],
         sample_rate: int,
         unity_db: dict[str, float] | None = None,
+        on_played: PlayedTap | None = None,
     ) -> None:
         self.sample_rate = sample_rate
+        # Public and reassignable: the runtime drops the tap if the video wall
+        # turns out not to bind, and a wall-less show must not pay for it.
+        self.on_played = on_played
         gains = unity_db or {}
         self.voices = {
             a: AgentVoice(a, sample_rate, gains.get(a, 0.0)) for a in agent_ids
@@ -230,9 +281,10 @@ class Mixer:
     def render(self, frames: int) -> np.ndarray:
         """Called from the PortAudio callback. Must not block or allocate much."""
         out = np.zeros(frames, dtype=np.float32)
+        tap = self.on_played
         with self._lock:
             for agent_id, voice in self.voices.items():
-                out += voice.render(frames)
+                out += voice.render(frames, tap)
                 # The stop ramp has completed and been heard — now drop the rest.
                 if agent_id in self._stopping and voice.envelope.at_target:
                     voice.reset()

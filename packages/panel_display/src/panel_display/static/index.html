@@ -55,9 +55,10 @@
       <div class="lanes" data-role="agents"></div>
 
       <!--
-        Transcript, full width, along the bottom. A stub: it carries the
-        moderator's live words and nothing else. Agent turns are not in here
-        yet — see the note in wall.css.
+        Transcript, full width, along the bottom. All four voices — the
+        moderator's mic and each agent's own played audio — arrive here as
+        real transcription, so the lines are timed by speech rather than
+        estimated. See the note in wall.css.
       -->
       <section class="band band--transcript">
         <header class="lane__eyebrow">
@@ -67,7 +68,12 @@
 
         <div class="transcript">
           <div class="transcript__feed" data-role="lines"></div>
-          <p class="transcript__partial" data-role="partial"></p>
+          <!--
+            In-progress lines, one per live voice. More than one at a time is
+            the barge-in beat: James coming in over an agent whose socket is
+            still finalising what the room already heard.
+          -->
+          <div class="transcript__partials" data-role="partials"></div>
         </div>
 
         <footer class="lane__foot">

@@ -51,7 +51,9 @@
  *     68  gap
  *    423  feed — 5 lines at 67 (50px / 1.34) with 4 x 22 gaps
  *     28  gap
- *     67  partial, reserved whether or not there is one
+ *     67  partial, reserved whether or not there is one. A second concurrent
+ *          partial (barge-in: James over an agent) takes this to 146 and eats
+ *          a line off the feed for as long as it lasts, which is brief.
  *     56  cue foot
  *     96  bottom padding (--foot-clear), deliberately empty
  *   ────
@@ -430,14 +432,16 @@ body {
 
 /*
  * The moderator's words and the agents', in one feed, in the order they were
- * said. Agent sentences arrive from `AgentUtteranceProgress` — emitted as
- * each sentence is handed to TTS, a couple of seconds *ahead* of the audio
- * (see that event's docstring) — rather than from `AgentSpeechEnded`, which
- * only exists once the whole turn is over and would land a 20-30s turn on the
- * wall as one paragraph appearing after the agent had already stopped
- * talking. The lead is the trade: the band runs slightly ahead of what the PA
- * is playing rather than slightly behind it, which reads as brisk captioning
- * rather than as a transcription lag.
+ * said. All four arrive the same way: a live Speechmatics session per voice —
+ * James's mic, and each agent's own played audio tapped at `Mixer.render`
+ * (`PanelRuntime._run_agent_stt`). So the band is timed by speech, and lags
+ * the PA by a transcription round trip rather than leading it by however far
+ * ahead the model happened to be writing.
+ *
+ * It used to lead: agent sentences came from `AgentUtteranceProgress`,
+ * emitted as each sentence is handed to TTS, and the server paid them out at
+ * an assumed 2.8 words/sec. The estimate drifted against real pacing over a
+ * turn, which is the whole reason this is now measured instead.
  *
  * Every line gets a small name tag (`.line__speaker`, wired in wall.js). The
  * three agents' tags are accent-coloured — three voices sharing one feed are
@@ -555,18 +559,29 @@ body {
   color: var(--accent-amber);
 }
 
-.transcript__partial {
-  margin: 0;
-  font-size: 50px;
-  font-weight: 400;
-  line-height: 1.34;
-  color: var(--text-quiet);
+/*
+ * In-progress lines, one per live voice. Usually there is exactly one; during
+ * a barge-in there are two, because James's mic and the interrupted agent's
+ * socket are both mid-sentence for a few hundred milliseconds.
+ *
+ * `min-height` reserves one line whether or not anything is being said, so
+ * the feed above does not jump every time a sentence finalises. A second
+ * concurrent partial does push the feed up by a line — rare, brief, and
+ * honest about the fact that two people are talking.
+ */
+.transcript__partials {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
   min-height: 67px;
-  transition: opacity var(--dur-fast) var(--ease);
 }
 
-.transcript__partial:empty {
-  opacity: 0;
+.line--partial {
+  /* Quieter than a finalised line, and no entrance animation: this node is
+   * reused and rewritten on every word (see `renderPartials` in wall.js), so
+   * an animation here would fire forty times a sentence. */
+  color: var(--text-quiet);
+  animation: none;
 }
 
 @keyframes line-in {
