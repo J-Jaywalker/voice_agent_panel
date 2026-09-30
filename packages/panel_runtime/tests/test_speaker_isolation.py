@@ -332,12 +332,13 @@ def test_a_stranger_s_turn_never_opens_arbitration(cast: PanelCast):
 
 
 def test_a_stranger_cannot_stop_a_speaking_agent(cast: PanelCast):
-    """End to end, through the real reducer: the audience ducks and never stops.
+    """End to end, through the real reducer: the audience never ducks or stops an agent.
 
     The VAD fires on any voice — it is energy detection and knows nothing about
-    identity, deliberately, because that is what keeps the barge-in reflex off
-    the network. So the duck happens. What must not happen is the promotion to
-    a full stop when the duck outlives `backchannel_max_duration_s`.
+    identity — but no longer opens a duck by itself (`panel_core.floor`); the
+    duck now only opens on a `TranscriptUpdated` already attributed to James.
+    So a segment attributed to someone else never ducks the agent at all, and
+    is certainly never promoted to a full stop.
     """
     display = FakeDisplay()
     runtime = _identified_runtime(cast, display=display)
@@ -387,7 +388,8 @@ def test_a_stranger_cannot_stop_a_speaking_agent(cast: PanelCast):
         "the audience must not be able to stop an agent"
     )
     assert runtime.state.speaking == "wayne", "the agent kept the floor"
-    assert runtime.state.duck_confirmed is False
+    assert runtime.state.ducked_agent is None, "a stranger never opened a duck at all"
+    assert runtime.state.duck_confirmed is None
 
 
 # --------------------------------------------------------- the test's teeth

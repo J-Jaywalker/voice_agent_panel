@@ -78,6 +78,14 @@ class AgentVoice:
         self._finished = False  # TTS delivered everything it is going to
         # Loudest block RMS since the meter was last read. See `take_level`.
         self._level = 0.0
+        # Whether the *last* `render()` call actually pulled samples out of
+        # `_buffer`, as opposed to returning silence because there was
+        # nothing queued yet or the turn's audio has already drained. See
+        # `Mixer.is_playing` — this is what tells the mic-ducking gate in
+        # `panel.py` apart from `PanelState.speaking`, which spans an agent's
+        # whole turn including any gap before its first TTS chunk lands or
+        # between sentences.
+        self.active = False
 
     # ------------------------------------------------------------ loop thread
 
@@ -92,6 +100,7 @@ class AgentVoice:
         self._buffer = np.zeros(0, dtype=np.float32)
         self._finished = False
         self._level = 0.0
+        self.active = False
         self.envelope = GainEnvelope(self.sample_rate, self.unity_db)
 
     def take_level(self) -> float:
@@ -125,6 +134,7 @@ class AgentVoice:
     def render(self, frames: int, tap: PlayedTap | None = None) -> np.ndarray:
         gain = self.envelope.render(frames)
         if len(self._buffer) == 0:
+            self.active = False
             if tap is not None:
                 # Silence is still a block that was played, and the tap's one
                 # consumer (a transcription session — see `Mixer.on_played`)
@@ -133,6 +143,7 @@ class AgentVoice:
                 # the agent's *next* turn pushes audio in behind it.
                 tap(self.agent_id, b"\x00\x00" * frames)
             return np.zeros(frames, dtype=np.float32)
+        self.active = True
         take = min(frames, len(self._buffer))
         chunk = np.zeros(frames, dtype=np.float32)
         chunk[:take] = self._buffer[:take]
@@ -252,6 +263,20 @@ class Mixer:
         with self._lock:
             voice = self.voices.get(agent_id)
             return voice is None or voice.drained
+
+    def is_playing(self, agent_id: str) -> bool:
+        """Whether this voice's most recent `render()` call played real audio.
+
+        A plain read, not a peak-and-clear like `take_levels` — nothing else
+        consumes `AgentVoice.active`, so there is no frame to steal by calling
+        this from more than one place. Reflects the *previous* callback's
+        block (one block, ~5-20ms, behind "now"), because `_callback` reads
+        it before calling `render()` for the current block — see
+        `PanelRuntime._callback`.
+        """
+        with self._lock:
+            voice = self.voices.get(agent_id)
+            return voice is not None and voice.active
 
     def take_levels(self) -> dict[str, float]:
         """Every voice's peak since the last call. Drives the video wall's orbs.

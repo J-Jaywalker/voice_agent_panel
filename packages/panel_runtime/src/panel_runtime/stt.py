@@ -134,6 +134,8 @@ class STTConfig:
     # change would silently diarise the agents' sockets too.
     diarization: str = "none"
     speaker_diarization_config: dict[str, Any] | None = None
+    # How readily the engine splits audio into distinct speakers, 0-1, server
+    speaker_sensitivity: float = 0.7
     # Known speakers to identify in this session, each
     # `{"label": ..., "speaker_identifiers": [...]}` as returned by a previous
     # session's `SpeakersResult`. A matched segment comes back carrying
@@ -188,6 +190,7 @@ class STTConfig:
             config["punctuation_overrides"] = self.punctuation_overrides
         if self.diarization != "none":
             speaker_config: dict[str, Any] = dict(self.speaker_diarization_config or {})
+            speaker_config["speaker_sensitivity"] = self.speaker_sensitivity
             if self.get_speakers:
                 speaker_config["get_speakers"] = True
             if self.speakers:

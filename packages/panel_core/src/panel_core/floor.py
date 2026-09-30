@@ -471,14 +471,17 @@ class FloorController:
     def _human_started(
         self, state: PanelState, event: HumanSpeechStarted
     ) -> tuple[PanelState, list[Command]]:
-        """The reflex: duck first, classify after.
+        """VAD noticed a voice. No duck opens off this alone.
 
-        We cannot yet know whether this is a barge-in or a backchannel — the
-        transcript is ~300ms behind. Waiting for it costs responsiveness;
-        assuming "interrupt" means an agent stops dead every time James says
-        "mm-hm", and the panel stutters. So we duck within one audio buffer and
-        decide once evidence arrives. Responsiveness never trades against
-        correctness. See ADR 0001.
+        VAD cannot say whose voice it heard — that is `panel_runtime.stt`'s
+        job, and its identity gate means the *only* way a segment reaches this
+        reducer as `TranscriptUpdated` is already-attributed-to-James (see
+        `_transcript`). Ducking here, before that arrives, would duck for the
+        audience and the PA bleeding back into the stage mic exactly as
+        readily as for James — the case `_unverified_speech`'s docstring is
+        about. So this handler only records that a voice has started, for the
+        duration math in `_human_ended`/`_tick`; the duck itself opens in
+        `_transcript`, on the first confirmed word.
         """
         if state.speaking is None:
             state = replace(
@@ -498,22 +501,8 @@ class FloorController:
             state = state.not_awaiting()
             return state, [self._paint(state)]
 
-        state = replace(
-            state,
-            human_speaking=True,
-            human_speech_started_at=event.t,
-            ducked_agent=state.speaking,
-            # A fresh duck knows nothing about whose voice opened it. Whatever
-            # the last one concluded is not evidence about this one.
-            duck_confirmed=None,
-        )
-        return state, [
-            DuckSpeech(
-                agent=state.speaking,
-                gain_db=self.config.backchannel_duck_db,
-                ramp_ms=self.config.duck_ramp_ms,
-            )
-        ]
+        state = replace(state, human_speaking=True, human_speech_started_at=event.t)
+        return state, []
 
     def _human_ended(
         self, state: PanelState, event: HumanSpeechEnded
@@ -617,24 +606,37 @@ class FloorController:
         # `TranscriptUpdated` for a segment it has attributed to the enrolled
         # moderator; a stranger's segment arrives as `UnverifiedSpeechDetected`
         # with no text on it at all. So by the time a transcript reaches this
-        # reducer, "these are James's words" is already established, and the
-        # current duck can be marked confirmed without asking anyone.
+        # reducer, "these are James's words" is already established.
         #
-        # Latching, never downgraded: `_unverified_speech` refuses to overwrite
-        # a True. James talking over an applauding room is still James.
-        if event.speaker == HUMAN and state.ducked_agent is not None:
-            state = replace(state, duck_confirmed=True)
-
-        # Content-based classification: substantive words while an agent is
-        # speaking are a barge-in, however briefly they were spoken. This also
-        # catches a short-but-real interruption already resumed by _human_ended.
-        if (
-            event.speaker == HUMAN
-            and state.speaking is not None
-            and not is_backchannel(text, min_words=self.config.interrupt_min_words)
-        ):
-            state, interrupt_cmds = self._commit_human_interrupt(state, t=event.t)
-            commands.extend(interrupt_cmds)
+        # This is also, now, the *only* place a duck opens (`_human_started`
+        # no longer does — see its docstring): the reflex used to duck blind
+        # on VAD and classify after, trading a few false ducks on the audience
+        # for speed; it now waits for STT to say whose voice this is, so it
+        # never ducks for anyone but James. `duck_confirmed` is therefore
+        # already `True` at the moment a duck opens rather than latched onto
+        # one opened earlier — but the field, and `_unverified_speech`'s
+        # latch, stay: they are what stops a stranger talking mid-duck (after
+        # James has already opened it) from undoing his confirmation.
+        if event.speaker == HUMAN and state.speaking is not None:
+            if not is_backchannel(text, min_words=self.config.interrupt_min_words):
+                # Content-based classification: substantive words while an
+                # agent is speaking are a barge-in, however briefly they were
+                # spoken, and however little of the duck-then-classify dance
+                # above ran first. This also catches a short-but-real
+                # interruption already resumed by `_human_ended`.
+                state, interrupt_cmds = self._commit_human_interrupt(state, t=event.t)
+                commands.extend(interrupt_cmds)
+            elif state.ducked_agent is None:
+                state = replace(state, ducked_agent=state.speaking, duck_confirmed=True)
+                commands.append(
+                    DuckSpeech(
+                        agent=state.speaking,
+                        gain_db=self.config.backchannel_duck_db,
+                        ramp_ms=self.config.duck_ramp_ms,
+                    )
+                )
+            else:
+                state = replace(state, duck_confirmed=True)
 
         # Finals only. A partial can match a pattern the completed sentence
         # does not, and a stale invitation is a live mic on the wrong agent.

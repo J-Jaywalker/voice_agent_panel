@@ -177,6 +177,36 @@ def test_drained_reports_when_a_turn_is_finished(mixer):
     assert mixer.is_drained("dex")
 
 
+def test_is_playing_is_false_before_any_audio_arrives(mixer):
+    """The gap before an agent's first TTS chunk lands — nothing to duck the mic for."""
+    assert not mixer.is_playing("dex")
+    mixer.render(256)
+    assert not mixer.is_playing("dex")
+
+
+def test_is_playing_is_true_while_a_buffered_block_is_rendered(mixer):
+    mixer.feed("dex", tone(0.1))
+    mixer.render(256)
+    assert mixer.is_playing("dex")
+    assert not mixer.is_playing("wayne"), "only the agent with buffered audio is playing"
+
+
+def test_is_playing_goes_false_once_the_buffer_drains(mixer):
+    """The gap between sentences — the buffer runs dry, so this must drop immediately."""
+    mixer.feed("dex", tone(0.02))
+    render_ms(mixer, 50)  # long enough to exhaust a 20ms buffer
+    assert not mixer.is_playing("dex")
+
+
+def test_is_playing_survives_a_duck(mixer):
+    """A backchannel duck is a gain dip, not silence — the agent is still playing."""
+    mixer.feed("dex", tone(1.0))
+    mixer.render(256)
+    mixer.duck("dex", -15.0, ramp_ms=10)
+    mixer.render(256)
+    assert mixer.is_playing("dex")
+
+
 def test_audio_arriving_after_a_stop_is_refused(mixer):
     """TTS chunks in flight when the interrupt landed must not leak out."""
     mixer.feed("dex", tone(1.0))
