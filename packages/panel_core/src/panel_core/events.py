@@ -74,6 +74,40 @@ class TranscriptUpdated:
 
 
 @dataclass(frozen=True, slots=True)
+class UnverifiedSpeechDetected:
+    """Someone who is not the enrolled moderator was heard on the human mic.
+
+    The deliberate absence here is the point: there is no `text` field and
+    there never may be one. An unenrolled voice on James's mic is the
+    audience, or room bleed off the PA, and its words must not become visible
+    anywhere — not the console, not the video wall, not
+    `PanelState.transcript`. `panel_runtime.stt` therefore never builds a
+    `TranscriptUpdated` for such a segment at all; this content-free event is
+    what it emits instead, so there is no field anywhere on the path a
+    stranger's sentence could travel down. See
+    `packages/panel_runtime/tests/test_speaker_isolation.py`.
+
+    Nor is there a `speaker`: the only thing known about the voice is that it
+    is not the one identifier we enrolled, and "not James" is not an identity.
+
+    What the reducer does with it is narrow by design — see
+    `FloorController._unverified_speech`. It is evidence *against* promoting
+    the current duck to a full stop, and it is nothing else. It never opens a
+    duck, never closes one, and never emits a command.
+
+    Attributes:
+        t: When the segment was received. The runtime clock, as everywhere.
+        is_final: Whether this was a finalised segment or a partial. Carried
+            for the log's sake — a rehearsal recording should show whether the
+            stranger evidence was firm or provisional — and read by nothing:
+            either kind is enough to withhold a stop.
+    """
+
+    t: float
+    is_final: bool
+
+
+@dataclass(frozen=True, slots=True)
 class AddressDetected:
     """Who the moderator just invited, as decided by a model not a regex.
 
@@ -301,6 +335,7 @@ Event = (
     HumanSpeechStarted
     | HumanSpeechEnded
     | TranscriptUpdated
+    | UnverifiedSpeechDetected
     | AddressDetected
     | TurnYielded
     | AgentProposal

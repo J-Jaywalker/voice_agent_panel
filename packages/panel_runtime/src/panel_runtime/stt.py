@@ -9,8 +9,27 @@ Two things this layer is responsible for and the floor controller is not:
 **Channel identity.** Agent STT has no multi-channel mode, so each voice is its
 own connection. That is the stronger form of the same property the
 multi-channel client gave us: speaker attribution is a fact about the wiring,
-not a diarisation result (FEASIBILITY.md 3.3). Diarisation is therefore off —
-there is one speaker on the far end of each socket and we already know who.
+not a diarisation result (FEASIBILITY.md 3.3). One speaker per socket, and we
+already know who.
+
+That reasoning still holds exactly as written for the agents' display-only
+sessions, which transcribe each agent's own played audio: one voice, known in
+advance, nothing to diarise. It does **not** hold for James's mic, and the
+difference is not a change of mind. A microphone on a stage is not a channel
+with one speaker on it — the audience is in the room and the PA bleeds back
+into it — so the wiring cannot answer "is this James?" there, and it never
+could; it was simply not being asked. Diarisation on that one socket is
+therefore doing the opposite job from the one it was rejected for: not
+*guessing* identity where the wiring already knew it, but *establishing*
+identity where the wiring cannot. It is configured at exactly one call site
+(`PanelSTT.identify`, from `PanelRuntime.run` after enrolment), never by a
+changed default, because both families share `STTConfig`.
+
+What it buys is a gate rather than a label. Post-enrolment, a segment not
+attributed to James never becomes a `TranscriptUpdated` at all, and his turn
+is the only one that may open arbitration — so an audience question is neither
+transcribed nor answered. See `_emit_transcript`, `_receive`'s `EndOfTurn`
+arm, and `packages/panel_runtime/tests/test_speaker_isolation.py`.
 
 **End of turn.** `EndOfTurn` from the server becomes `TurnYielded`. This is the
 *understanding* path and it is deliberately not in the barge-in path: VAD owns
@@ -34,20 +53,17 @@ is dropped on the floor. `PanelSTT` itself is, and has always been, generic
 over `speaker` — it knows who is on the far end of a socket because the wiring
 says so, and it does not care whether that is a person.
 
-**`additional_vocab` on this endpoint is unverified.** The documented
-`content`/`sounds_like` schema (confirmed at
-https://docs.speechmatics.com/api-ref/realtime-transcription-websocket, and
-corroborated by LiveKit's `speechmatics/linden-1` plugin docs at
-https://docs.livekit.io/agents/models/stt/speechmatics/, which describes the
-same `content` + optional `sounds_like` shape for this model) is for the
-standard `/v2` endpoint and LiveKit's own inference wrapper. Neither
-Speechmatics' own preview-mode docs
-(https://docs.speechmatics.com/private/preview-mode) nor the realtime API
-reference mention the raw `/v2/agent` WebSocket protocol at all, so whether
-*this* endpoint accepts the key — or what its `Error` looks like if it
-doesn't — is not established. `STTConfig` therefore treats a rejected
-`additional_vocab` as recoverable rather than fatal: see `_VocabRejected` and
-`_AgentSTTSession.run`.
+**`additional_vocab` on this endpoint is confirmed.** This note used to say the
+opposite — that no Speechmatics page documented the raw `/v2/agent` protocol at
+all, so whether it accepted the key was unestablished. The agent-specific API
+reference now documents it, with exactly the `content` + optional
+`sounds_like` schema `vocab_from_cast` already builds (and which LiveKit's
+`speechmatics/linden-1` plugin docs describe for the same model). No behaviour
+changes on the strength of that: `_VocabRejected` and its one retry with the
+key dropped stay exactly as they are. A documented key is not a deployed one,
+the preview endpoint has moved under us before, and the machinery costs one
+reconnect in the case it is not needed against the whole show's transcription
+in the case it is.
 """
 
 from __future__ import annotations
@@ -57,12 +73,20 @@ import contextlib
 import json
 import logging
 import os
+import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any, Self
 
 import websockets
-from panel_core import HUMAN, PanelCast, TranscriptUpdated, TurnYielded
+from panel_core import (
+    HUMAN,
+    PanelCast,
+    TranscriptUpdated,
+    TurnYielded,
+    UnverifiedSpeechDetected,
+)
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +98,12 @@ AGENT_STT_WS = "wss://preview.rt.speechmatics.com/v2/agent"
 
 # The only model the agent endpoint serves during preview.
 DEFAULT_MODEL = "linden-1"
+
+# The server's own diarization labels. A known speaker may not be given a label
+# in this format — `StartRecognition` rejects it — so `PanelSTT.identify`
+# refuses one early, where the error names the cause, rather than letting the
+# session fail its handshake and retry a config that can never be accepted.
+_INTERNAL_LABEL_RE = re.compile(r"(?:S\d+|UU)", re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,9 +122,38 @@ class STTConfig:
     model: str = DEFAULT_MODEL
     domain: str | None = None
     output_locale: str | None = None
-    # One known mic per connection, so identity comes from the wiring.
+    # One known voice per connection, so identity comes from the wiring — and
+    # the default therefore stays off. Both of this repo's session families
+    # inherit it: the agents' display-only pass (`PanelRuntime.agent_stt`)
+    # genuinely has one known voice per socket and must never turn this on,
+    # and so did James's mic until speaker enrolment arrived.
+    #
+    # James's mic is now the one exception and it is configured *explicitly*,
+    # at one call site, by `PanelSTT.identify()` — never by changing this
+    # default, because the two families share this dataclass and a default
+    # change would silently diarise the agents' sockets too.
     diarization: str = "none"
     speaker_diarization_config: dict[str, Any] | None = None
+    # Known speakers to identify in this session, each
+    # `{"label": ..., "speaker_identifiers": [...]}` as returned by a previous
+    # session's `SpeakersResult`. A matched segment comes back carrying
+    # `segment.speaker == label`; anyone unmatched keeps an `S1`-style label.
+    # The server rejects a label in its own internal format (`S1`, `S2`,
+    # `UU`), so the labels here are names like "James".
+    #
+    # Setting this is what turns `_AgentSTTSession` into a gate: see
+    # `identified_labels` and `_emit_transcript`. Empty — the default, and what
+    # every session in the show ran with before enrolment existed — means no
+    # identification and byte-for-byte today's behaviour.
+    #
+    # A tuple of dicts, matching `additional_vocab` above, so the frozen
+    # dataclass is not handed a mutable field.
+    speakers: tuple[dict[str, Any], ...] = ()
+    # Ask the server to return speaker identifiers for this session. Only the
+    # enrolment capture pass sets it; `SpeakersResult` then arrives at end of
+    # stream. Mid-session `GetSpeakers` polling is deliberately not used — see
+    # `enrolment.py`.
+    get_speakers: bool = False
     enable_partials: bool = True
     punctuation_overrides: dict[str, Any] | None = None
     # Pronunciation hints derived from the cast (see `from_cast` /
@@ -127,9 +186,36 @@ class STTConfig:
             config["output_locale"] = self.output_locale
         if self.punctuation_overrides is not None:
             config["punctuation_overrides"] = self.punctuation_overrides
-        if self.diarization != "none" and self.speaker_diarization_config is not None:
-            config["speaker_diarization_config"] = self.speaker_diarization_config
+        if self.diarization != "none":
+            speaker_config: dict[str, Any] = dict(self.speaker_diarization_config or {})
+            if self.get_speakers:
+                speaker_config["get_speakers"] = True
+            if self.speakers:
+                # Copied out, so nothing the server is sent aliases this
+                # frozen config's own dicts.
+                speaker_config["speakers"] = [dict(entry) for entry in self.speakers]
+            if speaker_config:
+                config["speaker_diarization_config"] = speaker_config
         return config
+
+    def identified_labels(self) -> frozenset[str]:
+        """The speaker labels this session can recognise by name.
+
+        Empty means this session does no identification at all, which is the
+        default and is what every session in the show ran with before
+        enrolment existed. `_AgentSTTSession` branches on exactly this: empty
+        and it behaves as it always has, non-empty and an unmatched segment is
+        withheld from the transcript entirely.
+
+        Returns:
+            The `label` of every entry in `speakers`, or an empty set when
+            diarization is off or no known speakers were supplied.
+        """
+        if self.diarization == "none":
+            return frozenset()
+        return frozenset(
+            str(entry["label"]) for entry in self.speakers if entry.get("label")
+        )
 
     def to_start_recognition(self) -> dict[str, Any]:
         return {
@@ -180,9 +266,8 @@ def vocab_from_cast(cast: PanelCast) -> tuple[dict[str, Any], ...]:
     Returns:
         One `additional_vocab` entry per persona that declares
         `sounds_like`, each shaped `{"content": ..., "sounds_like": [...]}`
-        per the documented `/v2` schema (see the `additional_vocab`
-        verification note in this module's docstring for why that schema
-        is not yet confirmed for the preview `/v2/agent` endpoint).
+        per the schema the agent endpoint's own API reference documents (see
+        this module's docstring).
     """
     return tuple(
         {"content": persona.canonical_name, "sounds_like": list(persona.sounds_like)}
@@ -261,9 +346,9 @@ class _VocabRejected(RuntimeError):
     Raised instead of a bare `RuntimeError` so `run()` can retry once with
     the vocabulary key dropped, rather than treating the rejection as an
     ordinary transient fault and retrying the identical (and presumably
-    still-rejected) config forever. Whether `additional_vocab` is actually
-    supported on the preview `/v2/agent` endpoint is unverified — see the
-    module docstring — and that endpoint's `Error` message has no documented
+    still-rejected) config forever. `additional_vocab` is now documented for
+    `/v2/agent` (see the module docstring), and this stays anyway: a documented
+    key is not a deployed one, and that endpoint's `Error` message still has no
     field naming the offending config key, so this treats *any* rejection
     seen while the key is present as possibly caused by it. That is a
     deliberately broad, safe-by-construction guess: the cost of a wrong
@@ -284,6 +369,7 @@ class _AgentSTTSession:
         api_key: str,
         events: asyncio.Queue,
         name: str,
+        on_speakers: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self._speaker = speaker
         self._source = source
@@ -291,8 +377,21 @@ class _AgentSTTSession:
         self._api_key = api_key
         self._events = events
         self._name = name
+        self._on_speakers = on_speakers
         self._running = True
         self._started = False
+        # Non-empty only on James's mic, post-enrolment. This is the whole
+        # switch between "transcribe whatever arrives", which is what every
+        # session did before enrolment existed and what the agents'
+        # display-only sessions still do, and "transcribe only the enrolled
+        # moderator" — see `_emit_transcript`.
+        self._identified = config.identified_labels()
+        # Whether any segment in the turn now in progress was identified as an
+        # enrolled speaker. Reset at both turn boundaries and on every fresh
+        # socket; read once, at `EndOfTurn`, to decide whether this turn is
+        # allowed to open arbitration. Turn-level protocol state, which is
+        # already this class's job.
+        self._turn_had_identified = False
         # Dropped for the rest of the show on the first rejection — see
         # `_VocabRejected`. A fact about this session's history, not the
         # deployment config, so it lives here rather than on `STTConfig`.
@@ -348,6 +447,11 @@ class _AgentSTTSession:
             await ws.send(json.dumps(start_config.to_start_recognition()))
             await self._await_started(ws)
             self._started = True
+            # A reconnect mid-turn leaves the old turn's evidence behind with
+            # the old socket. Starting clean is the conservative direction: the
+            # new socket's first `EndOfTurn` must be earned by a segment this
+            # connection actually identified.
+            self._turn_had_identified = False
             log.info("stt[%s]: recognition started", self._name)
 
             seq_no = 0
@@ -397,11 +501,51 @@ class _AgentSTTSession:
                     self._emit_transcript(message, is_final=True)
                 case "AddPartialSegment":
                     self._emit_transcript(message, is_final=False)
+                case "StartOfTurn":
+                    # Only bookkeeping, and only for the identity gate: a new
+                    # turn's evidence starts empty. Not forwarded to the floor
+                    # — the reducer has no start-of-turn event and does not
+                    # want one, because `HumanSpeechStarted` off the local VAD
+                    # already says this hundreds of milliseconds sooner.
+                    self._turn_had_identified = False
                 case "EndOfTurn":
                     # End of turn — the floor may now be arbitrated. This is
                     # the *understanding* path; the barge-in reflex already
                     # fired on VAD hundreds of milliseconds ago.
-                    self._events.put_nowait(TurnYielded(t=time.monotonic()))
+                    #
+                    # Withheld entirely when this session identifies speakers
+                    # and nothing in the turn was the enrolled moderator.
+                    # Dropping a stranger's transcript text is not enough on
+                    # its own: `TurnYielded` carries no speaker, arbitration
+                    # does not ask whose words opened the floor, and a standing
+                    # invitation would therefore let an audience question be
+                    # answered by an agent. The words are already gone; this is
+                    # what stops the *turn* existing too.
+                    if self._identified and not self._turn_had_identified:
+                        log.info(
+                            "stt[%s]: EndOfTurn withheld — no segment in the "
+                            "turn was identified as %s",
+                            self._name,
+                            "/".join(sorted(self._identified)),
+                        )
+                    else:
+                        self._events.put_nowait(TurnYielded(t=time.monotonic()))
+                    self._turn_had_identified = False
+                case "SpeakersResult":
+                    # Enrolment's answer, and only enrolment ever asks: the
+                    # show's sessions never set `get_speakers`, so one arriving
+                    # here is worth a line rather than a silent debug. The
+                    # enrolment module runs its own session (see
+                    # `enrolment.py`) and does not come through this class, so
+                    # the hook is a courtesy for anything that later wants to.
+                    if self._on_speakers is not None:
+                        self._on_speakers(message)
+                    else:
+                        log.warning(
+                            "stt[%s]: unsolicited SpeakersResult (%d speakers)",
+                            self._name,
+                            len(message.get("speakers") or ()),
+                        )
                 case "SpeechStarted" | "SpeechEnded":
                     # Deliberately inert. Endpointing for barge-in belongs to
                     # the local VAD; routing these into the floor would put a
@@ -417,7 +561,66 @@ class _AgentSTTSession:
                     log.debug("stt[%s]: %s", self._name, message.get("message"))
 
     def _emit_transcript(self, message: dict[str, Any], *, is_final: bool) -> None:
-        text = (message.get("segment") or {}).get("transcript", "").strip()
+        """Turn one segment into an event — or into no text at all.
+
+        The identity gate, and the lowest layer it can live at. A segment that
+        was not attributed to an enrolled speaker never becomes a
+        `TranscriptUpdated`, so the stranger's words do not exist as an event
+        with content anywhere in the process: no consumer — console, video
+        wall, rehearsal log, reducer, `PanelState.transcript` — can leak what
+        it was never handed. Filtering a `TranscriptUpdated` further upstream
+        would leave the text sitting in an object that four sinks already
+        subscribe to, and the requirement is not "nobody renders it" but "it
+        was never written down".
+
+        Three cases when this session identifies speakers, and the third is
+        the one that matters:
+
+        * **matched** — the enrolled moderator. Emitted exactly as before,
+          unchanged in every field.
+        * **attributed to someone else** — `UnverifiedSpeechDetected`, which
+          has no text field at all. The floor uses it to keep a duck
+          recoverable rather than promoting it to a stop.
+        * **no attribution at all** — dropped silently, and deliberately *not*
+          reported as a stranger. "Diarization attributed nothing" and
+          "diarization says this is not James" are different facts, and
+          conflating them would let a run of unattributed segments block
+          James's own interrupt. Absence of confirmation is not confirmation
+          of absence; `panel_core` sees no evidence either way and behaves
+          exactly as it does today.
+
+        **Unverified on this endpoint** (venue-rig check, CLAUDE.md
+        § Deployment): whether `segment.speaker` is populated on
+        `AddPartialSegment` as reliably as on `AddSegment` is documented
+        nowhere for `/v2/agent`, in either direction — the same standing
+        uncertainty as `additional_vocab`'s schema was. If partials turn out to
+        carry no `speaker`, they take the third branch above: James's live
+        partial text stops reaching the console and the wall, his finals still
+        land, and content-based barge-in falls back to finals only. His
+        *reflex* barge-in is unaffected either way, because that fires on the
+        local VAD and never on a transcript (CLAUDE.md). Degraded display, not
+        a broken interrupt — which is why this direction is the safe one to
+        guess.
+        """
+        segment = message.get("segment") or {}
+        if self._identified:
+            speaker = segment.get("speaker")
+            if not speaker:
+                return  # no evidence either way — say nothing at all
+            if speaker not in self._identified:
+                self._events.put_nowait(
+                    UnverifiedSpeechDetected(t=time.monotonic(), is_final=is_final)
+                )
+                return
+            # Counted from partials as well as finals, and on the match rather
+            # than on the text. The failure to avoid is withholding *James's*
+            # `EndOfTurn`, which would leave a real question unarbitrated and
+            # the panel silent — much the worse of the two errors, since a
+            # stranger's turn getting through opens arbitration against a
+            # transcript their words never entered.
+            self._turn_had_identified = True
+
+        text = segment.get("transcript", "").strip()
         if not text:
             return
         self._events.put_nowait(
@@ -473,6 +676,51 @@ class PanelSTT:
         self.sources: dict[str, PushAudioSource] = {}
         self._sessions: dict[str, _AgentSTTSession] = {}
         self._tasks: list[asyncio.Task] = []
+
+    # ----------------------------------------------------------- identification
+
+    def identify(self, *, label: str, speaker_identifiers: tuple[str, ...]) -> None:
+        """Configure this instance to recognise one enrolled speaker.
+
+        The single call site that turns diarization on anywhere in the show
+        (`PanelRuntime.run`, once enrolment has produced identifiers for
+        James). Deliberately a method rather than a changed `STTConfig`
+        default: both session families share that dataclass, and the agents'
+        display-only pass over their own played audio must stay undiarized —
+        one voice per socket, identity already a fact about the wiring. A moved
+        default would have diarised those three sockets too, silently.
+
+        Must be called before `start()`. Each `_AgentSTTSession` reads the
+        config once, when it is constructed there, so a later change would
+        apply to nothing and look as though it had.
+
+        Args:
+            label: The label matched segments will carry, e.g. "James". Must
+                not be in the server's internal format (`S1`, `S2`, `UU`) —
+                those are rejected on `StartRecognition`.
+            speaker_identifiers: Opaque identifiers from a previous session's
+                `SpeakersResult`. Bound to the STT model that produced them;
+                `enrolment.SpeakerStore` is what keeps the two together.
+
+        Raises:
+            RuntimeError: If the sessions are already running.
+            ValueError: If `label` looks like an internal server label, or no
+                identifiers were supplied.
+        """
+        if self._sessions or self._tasks:
+            raise RuntimeError("identify() must be called before start()")
+        if not speaker_identifiers:
+            raise ValueError("speaker_identifiers must not be empty")
+        if _INTERNAL_LABEL_RE.fullmatch(label):
+            raise ValueError(
+                f"{label!r} is the server's own label format and is rejected "
+                "on StartRecognition — use a name"
+            )
+        self.config = replace(
+            self.config,
+            diarization="speaker",
+            speakers=({"label": label, "speaker_identifiers": list(speaker_identifiers)},),
+        )
 
     # ------------------------------------------------------------------ session
 

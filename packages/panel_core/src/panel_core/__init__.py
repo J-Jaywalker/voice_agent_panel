@@ -30,6 +30,7 @@ from .events import (
     Tick,
     TranscriptUpdated,
     TurnYielded,
+    UnverifiedSpeechDetected,
 )
 from .floor import AddressRole, CueReason, FloorController
 from .personas import PanelCast, Persona
@@ -95,6 +96,7 @@ __all__ = [
     "Tick",
     "TranscriptUpdated",
     "TurnYielded",
+    "UnverifiedSpeechDetected",
     "Utterance",
     "build_system_prompt",
     "build_turn_prompt",

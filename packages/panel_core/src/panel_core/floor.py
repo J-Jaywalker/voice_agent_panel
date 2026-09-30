@@ -50,6 +50,7 @@ from .events import (
     Tick,
     TranscriptUpdated,
     TurnYielded,
+    UnverifiedSpeechDetected,
 )
 from .personas import PanelCast
 from .prompts import (
@@ -442,6 +443,8 @@ class FloorController:
                 return self._human_ended(state, event)
             case TranscriptUpdated():
                 return self._transcript(state, event)
+            case UnverifiedSpeechDetected():
+                return self._unverified_speech(state, event)
             case AddressDetected():
                 return self._address_detected(state, event)
             case TurnYielded():
@@ -500,6 +503,9 @@ class FloorController:
             human_speaking=True,
             human_speech_started_at=event.t,
             ducked_agent=state.speaking,
+            # A fresh duck knows nothing about whose voice opened it. Whatever
+            # the last one concluded is not evidence about this one.
+            duck_confirmed=None,
         )
         return state, [
             DuckSpeech(
@@ -518,7 +524,11 @@ class FloorController:
 
         started = state.human_speech_started_at
         duration = event.t - started if started is not None else 0.0
-        if duration >= self.config.backchannel_max_duration_s:
+        # Duration alone, exactly as before — *unless* identification has
+        # positively established that the voice is not the enrolled moderator,
+        # in which case this is the audience or room bleed and an agent must
+        # not lose the floor to it. See `_unverified_speech`.
+        if duration >= self.config.backchannel_max_duration_s and state.duck_confirmed is not False:
             return self._commit_human_interrupt(state, t=event.t)
         return self._resume_ducked(state)
 
@@ -541,6 +551,7 @@ class FloorController:
             state,
             speaking=None,
             ducked_agent=None,
+            duck_confirmed=None,
             floor_holder=HUMAN,
             consecutive_agent_turns=0,
             last_audio_progress_t=None,
@@ -558,7 +569,9 @@ class FloorController:
     def _resume_ducked(self, state: PanelState) -> tuple[PanelState, list[Command]]:
         """It was only an acknowledgement. Bring the agent back to full gain."""
         agent = state.ducked_agent
-        state = replace(state, ducked_agent=None, human_speech_started_at=None)
+        state = replace(
+            state, ducked_agent=None, human_speech_started_at=None, duck_confirmed=None
+        )
         if agent is None:
             return state, []
         return state, [ResumeSpeech(agent=agent, ramp_ms=self.config.resume_ramp_ms)]
@@ -597,6 +610,20 @@ class FloorController:
         else:
             state = replace(state, partial=event.text)
             text = event.text
+
+        # Words on the human channel *are* the identification evidence, and
+        # this is the whole reason the gate lives in `panel_runtime.stt` and
+        # not here. Post-enrolment that layer only ever builds a
+        # `TranscriptUpdated` for a segment it has attributed to the enrolled
+        # moderator; a stranger's segment arrives as `UnverifiedSpeechDetected`
+        # with no text on it at all. So by the time a transcript reaches this
+        # reducer, "these are James's words" is already established, and the
+        # current duck can be marked confirmed without asking anyone.
+        #
+        # Latching, never downgraded: `_unverified_speech` refuses to overwrite
+        # a True. James talking over an applauding room is still James.
+        if event.speaker == HUMAN and state.ducked_agent is not None:
+            state = replace(state, duck_confirmed=True)
 
         # Content-based classification: substantive words while an agent is
         # speaking are a barge-in, however briefly they were spoken. This also
@@ -670,6 +697,45 @@ class FloorController:
                     commands.append(request)
 
         return state, commands
+
+    def _unverified_speech(
+        self, state: PanelState, event: UnverifiedSpeechDetected
+    ) -> tuple[PanelState, list[Command]]:
+        """Someone who is not the enrolled moderator was heard. Bookkeeping only.
+
+        Emits nothing. This event is evidence about the duck already in
+        progress and is not itself a floor signal: it must never open a duck,
+        never close one, and never put a command on the wire. An unenrolled
+        voice on the mic is the audience or the PA bleeding back in, and the
+        panel's audible response to it is exactly what it is today — the brief
+        recoverable duck the VAD already started, which now resumes instead of
+        promoting to a stop.
+
+        Three rules, all of them in the two conditions below:
+
+        * **Only while ducked.** With nobody on the PA there is no duck to
+          qualify and nothing to decide, so a stranger talking into a silent
+          room changes no state at all.
+        * **Never downgrades a confirmation.** Once a segment in this duck has
+          been identified as James, a later stranger segment leaves it alone.
+          James interrupting over audience noise produces both kinds of
+          evidence, in either order, and he must still be able to stop an
+          agent.
+        * **Never itself permits anything.** The field it writes is read in
+          exactly two places, and in both it can only withhold a stop.
+
+        Args:
+            state: Current panel state.
+            event: The content-free stranger-speech notification.
+
+        Returns:
+            The state with `duck_confirmed` possibly set to False, and no
+            commands.
+        """
+        del event  # carries only `t`/`is_final`; neither changes the outcome
+        if state.ducked_agent is None or state.duck_confirmed is True:
+            return state, []
+        return replace(state, duck_confirmed=False), []
 
     def _address_detected(
         self, state: PanelState, event: AddressDetected
@@ -1145,8 +1211,10 @@ class FloorController:
             last_audio_progress_t=None,
             # A stalled agent may also have been ducked — James can say "mm-hm"
             # over a turn that is already broken — and the duck must not outlive
-            # the turn it applied to.
+            # the turn it applied to. Nor may its identity verdict: that is a
+            # fact about one duck, and this one is over.
             ducked_agent=None,
+            duck_confirmed=None,
             proposals={},
             invitation=None,
             address_conflict=(),
@@ -1179,7 +1247,7 @@ class FloorController:
         if state.speaking == event.agent:
             state = replace(state, speaking=None, floor_holder=None, last_audio_progress_t=None)
         if state.ducked_agent == event.agent:
-            state = replace(state, ducked_agent=None)
+            state = replace(state, ducked_agent=None, duck_confirmed=None)
 
         if event.utterance:
             state = replace(
@@ -1320,11 +1388,22 @@ class FloorController:
     def _tick(self, state: PanelState, event: Tick) -> tuple[PanelState, list[Command]]:
         # Duration-based classification: speech this long is a bid for the
         # floor whatever the words turn out to be.
+        #
+        # This is the branch that actually fires on stage, and the identity
+        # guard therefore matters more here than on `HumanSpeechEnded`. A
+        # sustained voice trips this ~0.6s in, while it is still talking;
+        # `_human_ended`'s copy of the same rule only gets a look in for speech
+        # that stops just after the threshold. Guarding one and not the other
+        # would leave the audience able to stop an agent by the usual route and
+        # block them only on the rare one. Same condition, same reasoning as
+        # `_human_ended`: `False` is "confirmed not James" and withholds the
+        # stop; `None` (no evidence yet) and `True` behave as they always have.
         started = state.human_speech_started_at
         if (
             state.ducked_agent is not None
             and started is not None
             and event.t - started >= self.config.backchannel_max_duration_s
+            and state.duck_confirmed is not False
         ):
             return self._commit_human_interrupt(state, t=event.t)
 

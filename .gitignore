@@ -43,6 +43,12 @@ console-recordings/
 *.ogg
 *.m4a
 
+# --- Speaker enrolment ---------------------------------------------------
+# James's voice enrolment: opaque, model-bound speaker identifiers from
+# Speechmatics, written by `panel_runtime.enrolment.SpeakerStore`. Machine- and
+# model-specific, so there is nothing to share; re-enrol on the venue rig.
+.panel/
+
 # --- Model caches --------------------------------------------------------
 # VAD / turn-detector weights are downloaded at runtime, not vendored.
 .cache/

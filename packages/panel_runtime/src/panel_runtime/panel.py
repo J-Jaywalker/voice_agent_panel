@@ -41,6 +41,14 @@ rehearsal log. It changes what the audience *reads*, never what the panel
 **VAD owns stopping, STT owns understanding.** The barge-in reflex fires off
 Silero, never off a transcript. Transcripts only ever *refine* a decision the
 VAD already made.
+
+One phase runs before any of that exists: **speaker enrolment**. `run()` opens
+the PortAudio stream, then awaits `_enrol()` to completion before creating a
+single floor task, so the show's first event cannot be a stranger's. Until
+enrolment finishes, `_callback` routes mic blocks to the enrolment session
+instead of to the VAD and the floor's transcription; afterwards it routes them
+back and never looks again. See `enrolment.py` for the two-session capture and
+verification, and `stt.py` for what the identifiers then buy per segment.
 """
 
 from __future__ import annotations
@@ -103,6 +111,12 @@ from .brains import (
     StreamingClaudeBrain,
 )
 from .config import VAD_SAMPLE_RATE, BargeInConfig
+from .enrolment import (
+    DEFAULT_STORE_PATH,
+    EnrolledSpeaker,
+    SpeakerEnrolment,
+    SpeakerStore,
+)
 from .mixer import Mixer
 from .stt import PanelSTT, STTConfig
 from .tts import ElevenLabsTTS, TTSConfig
@@ -266,6 +280,8 @@ class PanelRuntime:
         log_path: Path | None = None,
         address_classifier: AddressClassifier | None = None,
         display: DisplayServer | None = None,
+        speakers_path: Path | None = None,
+        re_enrol: bool = False,
     ) -> None:
         self.cast = cast
         self.fc = FloorController(cast, floor_config or FloorConfig())
@@ -276,7 +292,20 @@ class PanelRuntime:
         self.log_path = log_path
 
         self.brain = StreamingClaudeBrain(BrainConfig())
+        # Built undiarized, exactly as before, and reconfigured in `run()` once
+        # enrolment has identifiers for James — see `_enrol` and
+        # `PanelSTT.identify`. The diarization default is not moved, because
+        # `self.agent_stt` below shares `STTConfig` and must stay undiarized.
         self.stt = PanelSTT({"James": "human"}, config=STTConfig.from_cast(cast))
+
+        # Speaker enrolment: where James's voiceprint is kept between runs,
+        # and whether to capture a fresh one regardless.
+        self._store = SpeakerStore(speakers_path)
+        self._re_enrol = re_enrol
+        # The enrolment in progress, or None. Read once per audio block by
+        # `_callback` to decide where mic audio goes, and set only while the
+        # floor's own tasks do not yet exist — see `run()`.
+        self._enrolling: SpeakerEnrolment | None = None
 
         # A second transcription pass, over the agents' *own* played audio,
         # built only when there is a wall to render it on.
@@ -436,10 +465,24 @@ class PanelRuntime:
         mono = indata[:, 0]
         pcm = (np.clip(mono, -1.0, 1.0) * 32767).astype(np.int16)
 
-        # Mic audio goes to VAD and to the STT that feeds the floor. Agent
-        # audio goes to neither, ever.
-        self._mic.put_nowait(mono.copy())
-        self.stt.feed("James", pcm.tobytes())
+        # One PortAudio stream serves both the enrolment phase and the show, so
+        # this is where a mic block finds out which one is running. Deliberately
+        # one attribute read and one branch: this is the most latency-sensitive
+        # function in the file, and the two consumers are mutually exclusive in
+        # time rather than concurrent, so there is nothing to fan out to.
+        #
+        # During enrolment the VAD queue and the floor's transcription are not
+        # merely idle, they do not exist yet — no task is draining `self._mic`
+        # (it is unbounded) and `self.stt` has not been started. Feeding them
+        # here would grow a queue nobody reads.
+        enrolling = self._enrolling
+        if enrolling is not None:
+            enrolling.feed(pcm.tobytes())
+        else:
+            # Mic audio goes to VAD and to the STT that feeds the floor. Agent
+            # audio goes to neither, ever.
+            self._mic.put_nowait(mono.copy())
+            self.stt.feed("James", pcm.tobytes())
 
         if self._display is not None:
             self._mic_level = max(self._mic_level, float(np.sqrt(np.mean(np.square(mono)))))
@@ -1534,6 +1577,124 @@ class PanelRuntime:
             self._mic_level = 0.0
             display.set_levels(levels)
 
+    # -------------------------------------------------------------- enrolment
+
+    async def _enrol(self) -> EnrolledSpeaker | None:
+        """Establish whose voice is the moderator's, before the show starts.
+
+        A structural gate rather than a flag: this is awaited to completion
+        before `_run_vad`, `_run_stt`, `_drain_events` or `_run_ticks` exist,
+        so there is no window in which a floor task could act on an
+        unidentified voice. The mic is already open — one PortAudio stream
+        serves both phases — and `_callback` routes to the enrolment while
+        `self._enrolling` is set.
+
+        **A failed enrolment does not stop the show.** It prints loudly and
+        returns None, and the panel then runs exactly as it did before this
+        feature existed: undiarized mic, every word transcribed, anyone
+        audible able to interrupt. That is the same fail-towards-a-working-show
+        instinct as `_VocabRejected`, the address classifier falling back to
+        the regex, and a video wall that will not bind — and here it is the
+        only defensible choice, because the alternative is a rig where a bad
+        socket or a dead identifier means the panel cannot be run at all.
+        Refusing to start is a worse failure on a stage than an ungated mic,
+        and there is no operator override to recover with (CLAUDE.md).
+
+        Returns:
+            The enrolled speaker — freshly captured or loaded from the store —
+            or None if enrolment did not produce one.
+        """
+        model = self.stt.config.model
+        if not self._re_enrol:
+            stored = self._store.load(model=model)
+            if stored is not None:
+                self._print(
+                    f"[dim]speaker enrolment loaded from[/] {self._store.path} "
+                    f"[dim]({stored.label}, {model}, enrolled "
+                    f"{stored.enrolled_at or 'unknown'})[/]"
+                )
+                return stored
+
+        console.print(
+            "\n[bold]Speaker enrolment.[/] Only your voice will be transcribed "
+            "or able to interrupt the panel.\n"
+            "[dim]Talk normally for up to 30 seconds — a few sentences about "
+            "anything is plenty.[/]"
+        )
+
+        enrolment = SpeakerEnrolment(
+            config=self.stt.config,
+            on_progress=self._show_enrolment_progress,
+        )
+        self._enrolling = enrolment
+        try:
+            speaker = await enrolment.run()
+        finally:
+            # Cleared even on cancellation, so a Ctrl-C during enrolment can
+            # never leave the audio callback feeding a dead session.
+            self._enrolling = None
+
+        if speaker is None:
+            console.print(
+                "\n[bold yellow]Speaker enrolment failed.[/] The panel will "
+                "run with the mic ungated: every voice it hears is "
+                "transcribed, and any of them can interrupt an agent.\n"
+                "[dim]Retry with[/] --re-enrol [dim]to try again.[/]\n"
+            )
+            return None
+
+        try:
+            self._store.save(speaker)
+        except OSError as exc:
+            # Enrolment worked; only persisting it did not. The show has the
+            # identifiers in hand and must not be held up by a filesystem.
+            self._print(
+                f"[yellow]could not write {self._store.path} ({exc}) — "
+                "enrolled for this run only[/]"
+            )
+        else:
+            self._print(f"[dim]enrolment saved to[/] {self._store.path}")
+        return speaker
+
+    def _show_enrolment_progress(self, phase: str, detail: dict) -> None:
+        """Render one enrolment phase change. The only consumer of `on_progress`.
+
+        Console-only, in both TTS modes. With `--no-tts` there is nothing to
+        speak through; with TTS there is, but a synthesised voice explaining
+        enrolment while the thing being enrolled is the operator's own
+        microphone invites him to talk over it, and the whole phase depends on
+        clean audio of one voice.
+        """
+        match phase:
+            case "capture_segment":
+                self._print(
+                    f"  [dim]listening… {detail['segments']} segments "
+                    f"({detail['speaker']})[/]"
+                )
+            case "capture_done":
+                self._print(
+                    f"  [dim]captured {detail['segments']} segments as "
+                    f"{detail['source_label']}; "
+                    f"{detail['speakers_seen']} voice(s) in the room[/]"
+                )
+                console.print(
+                    "[dim]Now say a couple more sentences so I can check I "
+                    "recognise you.[/]"
+                )
+            case "verify_segment":
+                self._print(
+                    f"  [dim]recognised you {detail['matched']}/"
+                    f"{detail['needed']}[/]"
+                )
+            case "verify_done":
+                self._print("  [green]voice confirmed[/]")
+            case "enrolled":
+                self._print(f"[bold green]enrolled as {detail['label']}[/]")
+            case "capture_failed" | "verify_failed" | "session_failed":
+                self._print(f"  [yellow]{phase}: {detail.get('reason', '')}[/]")
+            case _:
+                pass
+
     # --------------------------------------------------------------------- run
 
     async def run(self, *, input_device=None, output_device=None) -> None:
@@ -1565,10 +1726,11 @@ class PanelRuntime:
             await self.tts.prewarm(voices)
             self._print(f"[dim]  {1000 * (time.monotonic() - t0):.0f}ms (paid once)[/]")
 
-        await self.stt.start()
-        if self.agent_stt is not None:
-            await self.agent_stt.start()
-
+        # Hoisted above enrolment: one PortAudio stream serves both the
+        # enrolment phase and the show, so the mic is open before the first
+        # phase needs it and is never re-opened with the venue's device
+        # configuration a second time. `_callback` decides which consumer each
+        # block belongs to.
         stream = sd.Stream(
             samplerate=VAD_SAMPLE_RATE,
             blocksize=self.block_size,
@@ -1578,26 +1740,54 @@ class PanelRuntime:
             callback=self._callback,
         )
 
-        tasks = [
-            asyncio.create_task(self._drain_events(), name="events"),
-            asyncio.create_task(self._run_vad(), name="vad"),
-            asyncio.create_task(self._run_stt(), name="stt"),
-            asyncio.create_task(self._run_ticks(), name="ticks"),
-        ]
-        if self._display is not None:
-            tasks.append(asyncio.create_task(self._pump_levels(), name="display-levels"))
-        if self.agent_stt is not None:
-            tasks.append(asyncio.create_task(self._run_agent_stt(), name="agent-stt"))
-
-        console.print(
-            f"[bold]Panel live.[/] {', '.join(p.name for p in self.cast.personas.values())}\n"
-            "[dim]Ask a question to open the floor. A statement invites nobody. "
-            "Ctrl-C to stop.[/]\n"
-            "[dim]Left columns: seconds since start, +gap since the line above.[/]\n"
-        )
-
+        tasks: list[asyncio.Task] = []
         with stream:
             try:
+                # The gate. Awaited to completion before any floor task
+                # exists, so nothing can act on an unidentified voice: there
+                # is no reducer running to act, and no started session to hear
+                # one. See `_enrol`.
+                speaker = await self._enrol()
+                if speaker is not None:
+                    # The one call site in the show that turns diarization on,
+                    # and it is this instance only. `self.agent_stt` is never
+                    # touched: the agents' own played audio has one known voice
+                    # per socket and must stay undiarized (stt.py docstring).
+                    self.stt.identify(
+                        label=speaker.label,
+                        speaker_identifiers=speaker.speaker_identifiers,
+                    )
+
+                await self.stt.start()
+                if self.agent_stt is not None:
+                    await self.agent_stt.start()
+
+                tasks = [
+                    asyncio.create_task(self._drain_events(), name="events"),
+                    asyncio.create_task(self._run_vad(), name="vad"),
+                    asyncio.create_task(self._run_stt(), name="stt"),
+                    asyncio.create_task(self._run_ticks(), name="ticks"),
+                ]
+                if self._display is not None:
+                    tasks.append(
+                        asyncio.create_task(self._pump_levels(), name="display-levels")
+                    )
+                if self.agent_stt is not None:
+                    tasks.append(
+                        asyncio.create_task(self._run_agent_stt(), name="agent-stt")
+                    )
+
+                gated = "" if speaker is None else f" [dim]mic gated to {speaker.label}.[/]"
+                console.print(
+                    f"[bold]Panel live.[/] "
+                    f"{', '.join(p.name for p in self.cast.personas.values())}"
+                    f"{gated}\n"
+                    "[dim]Ask a question to open the floor. A statement invites "
+                    "nobody. Ctrl-C to stop.[/]\n"
+                    "[dim]Left columns: seconds since start, +gap since the line "
+                    "above.[/]\n"
+                )
+
                 await asyncio.gather(*tasks)
             except (KeyboardInterrupt, asyncio.CancelledError):
                 pass
@@ -1652,6 +1842,20 @@ def main() -> None:
         help="serve the 12m video wall (open the printed URL on the wall machine)",
     )
     parser.add_argument("--display-port", type=int, default=DISPLAY_PORT)
+    parser.add_argument(
+        "--speakers",
+        type=Path,
+        default=DEFAULT_STORE_PATH,
+        help=(
+            "where James's speaker enrolment is kept between runs "
+            f"(default: {DEFAULT_STORE_PATH})"
+        ),
+    )
+    parser.add_argument(
+        "--re-enrol",
+        action="store_true",
+        help="capture a fresh voice enrolment even if a stored one is valid",
+    )
     args = parser.parse_args()
 
     if args.list_devices:
@@ -1671,6 +1875,8 @@ def main() -> None:
         use_tts=not args.no_tts,
         log_path=args.log,
         display=DisplayServer(cast, port=args.display_port) if args.display else None,
+        speakers_path=args.speakers,
+        re_enrol=args.re_enrol,
     )
 
     with contextlib.suppress(KeyboardInterrupt):

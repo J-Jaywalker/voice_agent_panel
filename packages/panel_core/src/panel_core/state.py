@@ -235,6 +235,30 @@ class PanelState:
     ducked_agent: str | None = None
     human_speech_started_at: float | None = None
 
+    # Whose voice opened the *current* duck, as far as speaker identification
+    # has established it. Three states, and the third is the whole reason this
+    # is not a bool:
+    #
+    #   None  — no evidence yet. The transcript is ~300ms behind the VAD, so
+    #           this is the ordinary state for the first fraction of a second
+    #           of every duck, including every one of James's own interrupts.
+    #   True  — at least one segment in this duck was identified as the
+    #           enrolled moderator. Latches: room noise arriving after James
+    #           has been confirmed must not downgrade him.
+    #   False — segments arrived and every one of them was somebody else.
+    #
+    # Only `False` changes any outcome, and it only ever *blocks* a stop (see
+    # `FloorController._human_ended` and `_tick`). `None` behaves exactly as
+    # this field's absence did, which is what keeps James's own barge-in
+    # latency unchanged: confirmation is never a precondition for stopping an
+    # agent, because requiring it would put a network round-trip in the
+    # interrupt path that CLAUDE.md keeps out of it.
+    #
+    # Reset to None wherever a duck begins or ends, so it always describes the
+    # duck in progress and a previous duck's verdict can never be read against
+    # this one.
+    duck_confirmed: bool | None = None
+
     # When audio was last observed leaving the agent in `speaking`, or None if
     # none has been observed for this turn yet. Written only by
     # `FloorController._agent_audio_progress` (from `AgentAudioProgress`) and
