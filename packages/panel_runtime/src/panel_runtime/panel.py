@@ -1293,11 +1293,11 @@ class PanelRuntime:
         line = Text.from_markup(self._stamp())
         line.append("   ")
         line.append("James: ", style="bold")
-        line.append(self._James_final_text)
+        line.append(self._James_final_text, style="default")
         if partial:
             if self._James_final_text:
                 line.append(" ")
-            line.append(partial, style="dim")
+            line.append(partial, style="grey58 italic")
         return line
 
     def _render_James_line(self, partial: str = "") -> None:

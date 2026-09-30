@@ -576,11 +576,20 @@ body {
   min-height: 67px;
 }
 
-.line--partial {
-  /* Quieter than a finalised line, and no entrance animation: this node is
+.line.line--partial {
+  /* `.line.line--partial`, not `.line--partial`: a partial is always the
+   * only child of `.transcript__partials`, so `.line:last-child` (above)
+   * matches it too and — at equal specificity — a single-class selector
+   * here would lose to that two-class one regardless of source order,
+   * painting every partial in `--text-primary` instead of quiet grey.
+   *
+   * Quieter than a finalised line, and no entrance animation: this node is
    * reused and rewritten on every word (see `renderPartials` in wall.js), so
-   * an animation here would fire forty times a sentence. */
+   * an animation here would fire forty times a sentence. Italic is the
+   * second cue, so a glance at the band alone (no colour perception needed)
+   * still tells a partial from a finalised line. */
   color: var(--text-quiet);
+  font-style: italic;
   animation: none;
 }
 
