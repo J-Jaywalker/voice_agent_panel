@@ -10,8 +10,8 @@ That purity is not decoration. It is the only reason this can be tested at
 all — a video wall is otherwise a thing you can only check by looking at it,
 in a venue, once, on the night.
 
-Every line in the transcript band — James's and the agents' alike — arrives as
-a `TranscriptUpdated`, off a real Speechmatics session. James's comes from his
+Every line in the transcript band — Ricky's and the agents' alike — arrives as
+a `TranscriptUpdated`, off a real Speechmatics session. Ricky's comes from his
 mic; an agent's comes from a second, display-only session over that agent's own
 played audio (`PanelRuntime._run_agent_stt`). So the band is timed by speech in
 both cases rather than by an assumed words-per-second, and this file needs no
@@ -27,9 +27,9 @@ Two reasons the wall reads *commands* and not just events:
 * `HandsRaised` and `CueModerator` are commands and exist for precisely this
   surface — see their docstrings in `panel_core.events`. A raised hand is
   deliberately not self-served by the panel; it is shown so the room can see
-  three agents with something to say and watch James choose.
+  three agents with something to say and watch Ricky choose.
 * `DuckSpeech` / `ResumeSpeech` never touch `PanelState`. They are the
-  backchannel reflex, and an agent dropping its level because James said
+  backchannel reflex, and an agent dropping its level because Ricky said
   "mm-hm" is one of the more legible things this panel does. It would be
   invisible if the wall read state alone.
 """
@@ -56,6 +56,7 @@ from panel_core import (
     StateChanged,
     StopSpeech,
     TranscriptUpdated,
+    UnverifiedSpeechDetected,
 )
 
 # How many finalised lines the transcript band keeps — the moderator's and
@@ -154,7 +155,7 @@ class WallState:
     # In-progress lines, keyed by speaker. Per-speaker rather than the single
     # global string this used to be, because there are now four transcription
     # sessions feeding this class instead of one, and two of them are
-    # genuinely live at once in the beat the show is built around: James
+    # genuinely live at once in the beat the show is built around: Ricky
     # barging in over an agent. His first partials land while the agent's
     # socket is still returning partials for audio the room has already heard
     # — a few hundred milliseconds of network, unavoidable — so one string
@@ -170,7 +171,7 @@ class WallState:
     # client *append* rather than rebuild — and a rebuild re-runs the entrance
     # animation on every visible line every time anything on the wall changes.
     line_seq: int = 0
-    # Set when the floor comes back to James and cleared the moment anyone
+    # Set when the floor comes back to Ricky and cleared the moment anyone
     # speaks again. The audience's cue that the panel is done, not stuck.
     cue: str | None = None
     open_floor: bool = False
@@ -223,6 +224,22 @@ class WallState:
             case TranscriptUpdated(speaker=speaker):
                 self._transcript(speaker, event.text, is_final=event.is_final)
 
+            case UnverifiedSpeechDetected():
+                # A segment on Ricky's mic that `panel_runtime/stt.py` could
+                # not attribute to him — the audience, or the PA bleeding back
+                # into the room. It carries no text and never may, so there is
+                # nothing here to paint.
+                #
+                # What it *does* settle is the fate of whatever of Ricky's is
+                # currently in progress: his socket has moved on to someone
+                # else's segment, so the partial on the band is never going to
+                # be finalised. Left alone it would sit under the band for the
+                # rest of the show — the same leak `AgentSpeechStarted` closes
+                # for the agents, which until now Ricky had no equivalent of,
+                # because nothing else on this hook marks the end of a line of
+                # his that does not end in a final.
+                self.partials.pop(HUMAN, None)
+
             case AgentSpeechStarted(agent=agent):
                 self.cue = None
                 view = self.agents.get(agent)
@@ -260,8 +277,8 @@ class WallState:
         """Fold one transcript segment into the band, whoever said it.
 
         One path for all four voices, because they are all now real STT. The
-        only difference is the attribution guard: James's mic is authoritative
-        about James unconditionally, whereas an agent's session is only
+        only difference is the attribution guard: Ricky's mic is authoritative
+        about Ricky unconditionally, whereas an agent's session is only
         believed for the agent last put on air (see `last_on_air`). A
         `TranscriptUpdated` naming an agent that has never held the floor is
         not a real line — there is no audio it could have come from — and is
@@ -287,11 +304,33 @@ class WallState:
         else:
             self.partials.pop(speaker, None)
 
+    def drop_partial(self, speaker: str) -> bool:
+        """Forget one voice's in-progress line. Returns True if there was one.
+
+        For the case no event can close, which is the one the venue will
+        actually hit: `panel_runtime/stt.py` drops a segment *silently* when
+        diarisation attributed nothing at all — deliberately, because
+        "attributed nothing" and "this is not Ricky" are different facts and
+        conflating them would let a run of unattributed segments block his
+        interrupt. The consequence here is that a partial can simply stop being
+        updated, with no final, no `UnverifiedSpeechDetected` and nothing else
+        to hang a clear on.
+
+        So staleness is the only signal left, and staleness is a fact about
+        arrival time — which this module, having no clock, cannot know. The
+        sweep therefore lives in `DisplayServer._expire_partials`, which owns
+        the pump and the clock, and this is the one verb it needs. Keeping the
+        decision there rather than taking a timestamp here is what stops a
+        clock read appearing in a file whose testability is the reason the
+        wall can be checked anywhere but a venue.
+        """
+        return self.partials.pop(speaker, None) is not None
+
     def _partials(self) -> list[dict[str, str]]:
-        """In-progress lines, agents in stage order and James last.
+        """In-progress lines, agents in stage order and Ricky last.
 
         Ordered rather than a map so the client can append without sorting,
-        and James last because the band's finals land at its bottom edge —
+        and Ricky last because the band's finals land at its bottom edge —
         putting the moderator's in-progress words closest to them keeps his
         line reading as the newest thing on the wall, which during a barge-in
         is exactly what it is.

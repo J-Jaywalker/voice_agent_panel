@@ -1,6 +1,6 @@
 """The classifier address path, at the reducer.
 
-`FloorConfig.llm_address_detection` moves exactly one decision — *who did James
+`FloorConfig.llm_address_detection` moves exactly one decision — *who did Ricky
 just invite to speak?* — out of the regex in `FloorController._detect` and into
 a model in `panel_runtime.address`. The model's answer comes back as an
 `AddressDetected` event, and that is the whole point of the design: `panel_core`
@@ -97,7 +97,7 @@ def run(fc: FloorController, state: PanelState, *events):
 
 
 def said(text: str, t: float = 0.0) -> TranscriptUpdated:
-    """One final segment off James's mic."""
+    """One final segment off Ricky's mic."""
     return TranscriptUpdated(t=t, speaker=HUMAN, text=text, is_final=True)
 
 
@@ -376,7 +376,7 @@ def test_a_verdict_for_an_unknown_agent_falls_back_to_the_regex(llm, state):
     a live invitation the whole time.
     """
     text = "Melia, can you continue on that?"
-    state, _ = run(llm, state, said(text), verdict("James", "James", text=text))
+    state, _ = run(llm, state, said(text), verdict("RICKY", "ricky", text=text))
     assert state.invitation is not None
     assert state.invitation.agent == "melia"
     # ...and it came from the regex, not from the verdict.
@@ -409,7 +409,7 @@ def test_a_fresh_verdict_stands_the_moderator_cue_back_down(llm, state):
     """A new question is a new chance for the panel to answer it.
 
     `moderator_cued` latches for the life of one invitation so an unanswered
-    question cues James once rather than once per proposal. A fresh invitation
+    question cues Ricky once rather than once per proposal. A fresh invitation
     has to clear it, or the first unanswered question of the show would be the
     only one he is ever told about — and that reset lives in the shared
     `_install_invitation`, so it has to hold on this path too.
@@ -421,7 +421,7 @@ def test_a_fresh_verdict_stands_the_moderator_cue_back_down(llm, state):
         verdict("WAYNE", "wayne", t=0.2),
     )
     # Nobody proposed, so the floor holds a beat for Wayne rather than cueing
-    # James in the same millisecond his question landed...
+    # Ricky in the same millisecond his question landed...
     state, _ = llm.reduce(state, TurnYielded(t=1.0))
     assert state.awaiting_agent == "wayne"
     # ...and only cues him once the grace runs out.

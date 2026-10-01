@@ -1,4 +1,4 @@
-# Moderator Cue Card — James
+# Moderator Cue Card — Ricky
 
 **"Agentic Adoption: The Revenge of the Humans"** · Boost Camp Oslo, 21 Oct 2026
 

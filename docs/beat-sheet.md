@@ -2,9 +2,9 @@
 
 **Status:** REVISED 17 Sept 2026 — restructure and three new spines **pending re-sign-off**
 **Previously:** APPROVED 16 Sept 2026 (drafted 10 Sept, owed 14 Sept, FEASIBILITY §10 #5)
-**Owner:** Content + James · **Event:** Boost Camp Oslo, 21 Oct 2026
+**Owner:** Content + Ricky · **Event:** Boost Camp Oslo, 21 Oct 2026
 
-Six beats, three agents, one human moderator. James runs the floor throughout.
+Six beats, three agents, one human moderator. Ricky runs the floor throughout.
 
 **On stage, use [`moderator-cue-card.md`](moderator-cue-card.md) instead** — one
 page, cue lines and running order only. This document is the rehearsal material
@@ -44,7 +44,7 @@ Three things it gives you:
    generators produce a fresh unrelated example every time. Twelve spines
    total, deliberately few, deliberately reused across beats.
 2. **Per-beat positions and collisions** — who holds what, and who hits whom.
-3. **James's cue lines** — phrased in forms the floor controller is *tested* to
+3. **Ricky's cue lines** — phrased in forms the floor controller is *tested* to
    recognise. See [Cue-line rules](#cue-line-rules); these are not
    interchangeable with equivalent-sounding English.
 
@@ -67,7 +67,7 @@ hands it to them:
 
 | Rule | What it means for this beat sheet |
 |---|---|
-| **No Speechmatics claims, ever** | The agents don't work for Speechmatics and know nothing about it. Every product claim is James's to make. Beat 3 is written to *set him up*, never to speak for him. |
+| **No Speechmatics claims, ever** | The agents don't work for Speechmatics and know nothing about it. Every product claim is Ricky's to make. Beat 3 is written to *set him up*, never to speak for him. |
 | **No invented statistics** | *Invented* is the operative word, and this rule was narrowed on 21 Sept 2026 and again on 25 Sept. Three kinds of number are allowed and two of them are now **expected**: first-person counts about their own fictional work ("eight months", "thirty-one turns", "eleven hundred agents"); published figures written into `citable_figures:` on the persona, each one read from its primary source and carrying its attribution; and nothing else. No percentage, benchmark, error rate or market size may be produced live. Wayne's list is empty on purpose — see his "Never" below. What the original blanket ban actually bought was specificity from situation; what it cost was two quantitative characters with no quantities, who came out as atmosphere. Both halves are now in `prompts.GUARDRAILS`: never invent one, and never make a claim about how many or how fast without putting the evidence under it. |
 | **No real organisations — including STT vendors** | All three employers are fictional — Irrational Industries, Serve AI, The Kestrel Foundation. Clients and colleagues stay unnamed and generic. **New for Beat 3:** capability talk is exactly where a comparison to a named provider wants to appear. The field, in general terms, always: *"most engines now"*, *"the interesting systems"*, never a vendor, never a product, never a model name — ours included. |
 | **No working jailbreak payloads** | Beat 4 describes attacks at the level of *anecdote* — the framing somebody used, how many turns it took, how they were feeling. Never the wording, never a sequence anyone could repeat. The room holds four hundred customers and at least one person who will try it on the way home. The laugh is in the confession, never in the method. |
@@ -99,7 +99,7 @@ funniest part of the hour; played for laughs, it dies.
 | **Title** | Senior AI Infrastructure & Security Engineer | Autonomous Financial Partner & Analyst | Chief AI Ethics & Human Continuity Officer |
 | **Employer** | Irrational Industries | Serve AI | The Kestrel Foundation |
 | **Voice** | Measured. "Right, but —", "Historically," | Brisk, provocative. "Look —", "Come on." | Dry, precise, occasionally very funny. "Mm.", "Can I just —" |
-| **Turn budget** | No enforced cap. ~60s is where James should start listening for a natural out — Dexter runs a little longer than Wayne. | No enforced cap. Shortest of the three, and the quickest to take an opening; James rarely needs to listen for an out before Wayne finds one himself. | No enforced cap. ~60s is where James should start listening for a natural out — similar pacing to Dexter. |
+| **Turn budget** | No enforced cap. ~60s is where Ricky should start listening for a natural out — Dexter runs a little longer than Wayne. | No enforced cap. Shortest of the three, and the quickest to take an opening; Ricky rarely needs to listen for an out before Wayne finds one himself. | No enforced cap. ~60s is where Ricky should start listening for a natural out — similar pacing to Dexter. |
 | **Eagerness** | Hangs back | Takes every opening | Picks her moment |
 | **Authority** | security, jailbreaking, prompt injection, infrastructure, latency, speech recognition, paralinguistics | markets, cost curves, autonomy, scaling | trust, oversight, regulation, human factors, organisational change, consent |
 
@@ -109,7 +109,7 @@ when it helps the point land. Wayne is still the shortest and the most likely
 to take an opening the moment one appears — that combination is what makes him
 feel like the fastest person on stage.
 
-**No agent ever cuts another off.** Agents take turns; only James can interrupt
+**No agent ever cuts another off.** Agents take turns; only Ricky can interrupt
 a speaking agent. Wayne being "fast" means he wins the floor first when it
 opens, never that he talks over Dexter. If a beat only works with one agent
 cutting across another, it needs rewriting — see FEASIBILITY §3.6.
@@ -220,7 +220,7 @@ describing rooms she was in, not a policy citation engine and not a
 mathematician.
 
 **M2 is the panel's title.** Protect it. It should be planted in Beat 2 and paid
-off in Beat 5, and James should resist letting it come out in full in Beat 1
+off in Beat 5, and Ricky should resist letting it come out in full in Beat 1
 even if an agent reaches for it.
 
 **M4 lands on M1 and M3, which is why it's funny rather than random.** The woman
@@ -231,11 +231,11 @@ the appendix. She should arrive at that herself, flatly, and then stop talking.
 
 ## Cue-line rules
 
-Who James addresses is decided by grammatical role, and the floor is **closed by
+Who Ricky addresses is decided by grammatical role, and the floor is **closed by
 default**. Consequences he needs briefed on:
 
 - **A question opens the floor. A statement does not** — however interesting.
-  If James makes an observation and pauses expectantly, nothing happens.
+  If Ricky makes an observation and pauses expectantly, nothing happens.
 - **Courtesy tags invite nobody.** "Is that okay?", "right?", "does that work?"
   are question-shaped and aimed at the person being interrupted.
 - **The subject of a request beats a vocative.** "Sorry Dexter, can Melia speak?"
@@ -282,7 +282,7 @@ Nothing may cut across this round — it outranks every other invitation source.
 confidence *earn* something before anyone dents it. Ends unresolved.
 **Authority:** Wayne (markets, cost curves).
 
-**James opens:** *"So Wayne, where are we actually on the adoption curve?"*
+**Ricky opens:** *"So Wayne, where are we actually on the adoption curve?"*
 
 ### Wayne — further along than this room admits *(W1, W2)*
 
@@ -309,7 +309,7 @@ inside thirty seconds — Dexter reframes it as *nobody's checking*, Melia as
 *nobody's looking*. Wayne should not concede. His comeback is that both of them
 are describing adoption and calling it a problem.
 
-**James's out:** *"Dexter, what's actually changed?"* — straight into Beat 2.
+**Ricky's out:** *"Dexter, what's actually changed?"* — straight into Beat 2.
 
 ---
 
@@ -325,11 +325,11 @@ becoming the subject of the hour* — what is actually in the way.
 > purpose.** The talk is optimistic and open-ended now, and obstacles get one
 > pass rather than a movement of their own. Melia still lands the hardest line
 > of the night here — that stays, because it is about Wayne rather than about
-> barriers. What goes is the dwelling. **James should move on while the room
+> barriers. What goes is the dwelling. **Ricky should move on while the room
 > still wants more of it.** That is the whole point of the cut, and it is his
 > judgement call, not something the floor controller can make for him.
 
-**James opens:** *"Dexter, what's actually changed?"*
+**Ricky opens:** *"Dexter, what's actually changed?"*
 **Alternate:** *"Let's hear from Dexter on what changed."*
 
 ### Dexter — it got cheap, not clever *(D3)*
@@ -353,7 +353,7 @@ becoming the subject of the hour* — what is actually in the way.
 > accelerates adoption, and it accelerates the incidents at exactly the same
 > rate. I get to write up both."
 
-**Mid-beat, James turns it:** *"So Melia, what about the things in the way?"*
+**Mid-beat, Ricky turns it:** *"So Melia, what about the things in the way?"*
 
 ### Melia — not capability. Nobody reads the caveat *(M1, M3, then M2 in full)*
 
@@ -391,7 +391,7 @@ reads as losing. Dexter's turn then rescues the beat from personal into
 technical **and points forward**, which is the new job of his last line here:
 it is the ramp into Beat 3, not a closing complaint.
 
-**James's out:** *"So Dexter, what can speech recognition actually do now?"*
+**Ricky's out:** *"So Dexter, what can speech recognition actually do now?"*
 
 ---
 
@@ -402,7 +402,7 @@ still genuinely hard, and what is arriving next — prosody, sentiment,
 hesitation, laughter, knowing a person is *about* to finish. Written as a
 set-up: the agents describe the shape of the problem and the shape of what's
 coming, and every answer, product and claim about solving any of it is
-**James's**. This is where he takes the stage back.
+**Ricky's**. This is where he takes the stage back.
 **Authority:** Dexter (speech recognition, latency, paralinguistics).
 
 > ⚠️ **Highest-risk beat for guardrail breach, and the risk went up on 17
@@ -417,7 +417,7 @@ coming, and every answer, product and claim about solving any of it is
 > **If an agent starts to name a company or make a product claim, cut in.** A
 > named-vocative cue — *"Dexter, hold on"* — ducks them inside one audio buffer.
 
-**James opens:** *"So Dexter, what can speech recognition actually do now?"*
+**Ricky opens:** *"So Dexter, what can speech recognition actually do now?"*
 
 ### Dexter — the words stopped being the problem *(D3)*
 
@@ -473,9 +473,9 @@ job, and Melia agrees with him for once *before* qualifying it — that ordering
 is the new optimistic shape of the beat and it should not be reversed. Melia's
 Amelia line remains the biggest available laugh here, and if STT genuinely
 mistranscribes her name on the night it becomes the best moment of the show, so
-James should let it breathe rather than recover from it.
+Ricky should let it breathe rather than recover from it.
 
-**James's out:** *"Dexter, are people actually trying to break these things?"*
+**Ricky's out:** *"Dexter, are people actually trying to break these things?"*
 
 ---
 
@@ -499,7 +499,7 @@ all three converge without agreeing about what to do next.
 > See the content rules table. If an agent starts reciting a technique or
 > working a proof, cut in: *"Dexter, hold on."*
 
-**James opens:** *"Dexter, are people actually trying to break these things?"*
+**Ricky opens:** *"Dexter, are people actually trying to break these things?"*
 
 ### Dexter — constantly, and mostly badly *(D2, D4 — human lowball, automated)*
 
@@ -578,7 +578,7 @@ reason the panel feels real. Dexter's concession has to carry actual warmth; the
 two of them liking each other under the argument is what stops the hour reading
 as a format.
 
-**James's out:** *"So Wayne, what's actually been solved?"*
+**Ricky's out:** *"So Wayne, what's actually been solved?"*
 
 ---
 
@@ -589,7 +589,7 @@ the win he's earned, Dexter concedes something real, Melia closes on the second
 keyboard being switched off.
 **Authority:** Wayne (scaling) and Dexter (speech recognition, latency).
 
-**James opens:** *"So Wayne, what's actually been solved?"*
+**Ricky opens:** *"So Wayne, what's actually been solved?"*
 
 ### Wayne — the boring things, which is the point *(W2)*
 
@@ -619,7 +619,7 @@ directions, and two of them pointing forward rather than back. Dexter conceding
 to Wayne is the beat's credibility; Melia's close is the panel's title
 resolving.
 
-**James closes.** Product claims, the Speechmatics position and the actual
+**Ricky closes.** Product claims, the Speechmatics position and the actual
 answers to Beat 3 are all his, and this is where they go. The agents have spent
 an hour describing a hard problem and are structurally unable to claim anyone
 has solved it — which leaves the last word, and the only sales moment, entirely
@@ -631,17 +631,17 @@ with the human. That is by design, not a limitation.
 
 | Situation | What to do |
 |---|---|
-| **Nothing happens after James speaks** | He made a statement. The floor is closed by default. Re-cue with a named question — *"Wayne, what do you think?"* |
+| **Nothing happens after Ricky speaks** | He made a statement. The floor is closed by default. Re-cue with a named question — *"Wayne, what do you think?"* |
 | **An agent won't stop** | Nothing fires automatically — there is no enforced cap. Don't intervene for length before ~60s; before that, let it run. Past that, just speak — human speech ducks any agent within one buffer. |
 | **Wrong agent answers** | Two agents in the same grammatical role reads as ambiguous and keeps the floor shut. Re-cue with the subject form: *"Can Melia take that one?"* |
 | **An agent drifts towards a Speechmatics claim** | Cut in immediately. *"Dexter, hold on."* Then take the point yourself. |
-| **An agent names a provider or product in Beat 3** | Same cut-in. The rule is the field in general terms, and the correction is James's to make lightly and move on from — don't turn it into a moment. |
+| **An agent names a provider or product in Beat 3** | Same cut-in. The rule is the field in general terms, and the correction is Ricky's to make lightly and move on from — don't turn it into a moment. |
 | **An agent starts describing an actual jailbreak method** | Cut in. *"Dexter, hold on."* Then redirect to how it felt rather than how it worked: *"Melia, what did you do about it?"* |
 | **An agent starts doing the mathematics** | Cut in on the first equation-shaped sentence. The joke is that the proof exists and was never read; any actual content is a different and much worse bit. |
 | **Somebody in the room tries it live** | Likely, given the beat. The agents' correct behaviour is to decline and stay in character, and the funniest available response is Dexter being unimpressed. If it lands anyway, kill switch (FEASIBILITY §7) and move to Beat 5. |
 | **A beat dies** | Skip to the next cue. The beats are ordered but not interdependent — only M2's plant in Beat 2 and its payoff in Beat 5 are coupled. |
-| **An agent goes down** | Two agents is a viable panel. Drop that agent's beat authority to whoever has the nearest `topics_of_authority` — Dexter covers Beats 3/4, Wayne 1/2/5, Melia the obstacles half of Beat 2. Beat 4 is the one beat that genuinely wants all three; if Dexter is the one down, James runs it on Melia's and Wayne's confessions and skips the taxonomy. |
-| **Total failure** | James's rehearsed solo segment (FEASIBILITY §7). Must actually be rehearsed. |
+| **An agent goes down** | Two agents is a viable panel. Drop that agent's beat authority to whoever has the nearest `topics_of_authority` — Dexter covers Beats 3/4, Wayne 1/2/5, Melia the obstacles half of Beat 2. Beat 4 is the one beat that genuinely wants all three; if Dexter is the one down, Ricky runs it on Melia's and Wayne's confessions and skips the taxonomy. |
+| **Total failure** | Ricky's rehearsed solo segment (FEASIBILITY §7). Must actually be rehearsed. |
 
 ---
 
@@ -683,7 +683,7 @@ for in `--live` runs:
   describing attack technique in detail, only the general no-real-claims
   guardrail. If a rehearsal run produces a repeatable sequence, that is a
   `GUARDRAILS` change, and it should be made before the show rather than left
-  to James's reflexes.
+  to Ricky's reflexes.
 
 Target length is a prompt instruction (`GUARDRAILS`), not orchestrator-enforced,
 so an agent that feels long here will feel long on stage — tighten the prompt
@@ -728,7 +728,7 @@ than aspirational.** Built, per above.
 
 | Spines | Status |
 |---|---|
-| D1–D3, W1–W3, M1–M3 | **Signed off 16 Sept 2026** by James and content, checked against the content rules table (no Speechmatics claims, no invented stats, no real orgs). Wording unchanged on 17 Sept; sign-off stands. |
+| D1–D3, W1–W3, M1–M3 | **Signed off 16 Sept 2026** by Ricky and content, checked against the content rules table (no Speechmatics claims, no invented stats, no real orgs). Wording unchanged on 17 Sept; sign-off stands. |
 | **D4, W4, M4** | **Pending.** Written 17 Sept, in the personas and therefore live in rehearsal, **not yet signed off.** Three things to check, and D4/M4 are the ones that need a second pair of eyes: an agent describing its own security failure on stage is new territory for this panel, the jailbreak material must stay non-repeatable, and Melia's Millennium Prize gag has to be unmistakably a joke about her filing habits rather than a claim about mathematics. |
 
 Re-confirm sign-off if any spine's wording or claim changes. FEASIBILITY §10 #5

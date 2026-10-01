@@ -167,7 +167,7 @@ def test_the_request_shape_is_the_one_the_sdk_accepts(cast):
     assert "output_config" not in kwargs
     assert "effort" not in kwargs
     assert kwargs["system"][0]["cache_control"] == {"type": "ephemeral"}
-    assert 'James SAID: "Adoption is uneven."' in kwargs["messages"][0]["content"]
+    assert 'RICKY SAID: "Adoption is uneven."' in kwargs["messages"][0]["content"]
 
 
 def test_a_speculative_verdict_for_the_same_text_is_free(cast):
@@ -224,7 +224,7 @@ def test_an_undecodable_response_is_unavailable_not_a_guess(cast):
     `verdict=None` is the reducer's instruction to run `_apply_detection` on the
     same final, which is a correct answer for every row of the acceptance
     corpus. Guessing which token the model meant is the one thing that must not
-    happen — a wrong verdict puts the wrong panellist on a PA over James.
+    happen — a wrong verdict puts the wrong panellist on a PA over Ricky.
     """
     classifier, _ = _classifier(cast, [["The answer is probably Melia, I think."]])
 

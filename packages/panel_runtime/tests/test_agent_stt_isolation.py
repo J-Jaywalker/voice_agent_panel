@@ -158,7 +158,7 @@ def test_the_agents_own_end_of_turn_is_dropped_entirely(cast: PanelCast):
     """`EndOfTurn` on an agent's own voice is an agent pausing, and the floor
     already knows the turn's shape from `AgentSpeechEnded` with the verbatim
     text on it. Forwarded, it would let an agent end its own turn by taking a
-    breath, and would race a real end-of-turn off James's mic."""
+    breath, and would race a real end-of-turn off Ricky's mic."""
     display = FakeDisplay()
     runtime = _runtime(cast, display)
     assert runtime.agent_stt is not None

@@ -51,6 +51,26 @@ FLUSH_HZ = 20
 # consequence of the sample rate.
 LEVEL_HZ = 30
 
+# How long an in-progress line may go unchanged before the band stops calling
+# it in progress.
+#
+# Every other way a partial ends is an event: a final replaces it, an empty
+# update clears it, a handover closes the previous agent's, and
+# `UnverifiedSpeechDetected` closes Ricky's. The case left over has no event by
+# design — `panel_runtime/stt.py` drops a segment silently when diarisation
+# attributed nothing at all, so Ricky's partial can simply stop being updated.
+# Before this existed that partial stayed on the wall for the rest of the show,
+# and since the band grew bubbles that size with their text it held the room's
+# full attention while doing it.
+#
+# 6s, which is long rather than tight on purpose. A partial that stops arriving
+# is a display defect; a partial dropped out from under a speaker who was only
+# pausing is a *wrong* display, and the gap between a mid-sentence pause and a
+# dead socket is wide — the engine's own `EndOfTurn` fires well inside this.
+# Erring long means the worst case is six seconds of a stale line instead of a
+# band that flickers whenever Ricky stops to think.
+PARTIAL_TTL_S = 6.0
+
 # There is deliberately no words-per-second constant here any more.
 #
 # This server used to hold each `AgentUtteranceProgress` in a per-agent queue
@@ -105,6 +125,10 @@ class DisplayServer:
         # trailing frame of zeroes and then stops rather than streaming zeroes
         # through every gap in the conversation.
         self._levels_live = False
+        # speaker -> (the text last seen, when this process first saw it).
+        # Arrival time, which is this side's knowledge and not the wall's:
+        # `WallState` reads no clock. See `_expire_partials`.
+        self._partial_seen: dict[str, tuple[str, float]] = {}
 
     # -------------------------------------------------------------- lifecycle
 
@@ -167,7 +191,7 @@ class DisplayServer:
 
         Straight through to `WallState` now, with no queue in front of it.
         Every event on this hook is a fact whose arrival time means something:
-        `TranscriptUpdated` — the only source of transcript text, James's mic
+        `TranscriptUpdated` — the only source of transcript text, Ricky's mic
         or an agent's own played audio — is paced by the speech it came from,
         and needs no help from here.
 
@@ -230,6 +254,37 @@ class DisplayServer:
 
     # ------------------------------------------------------------------- pump
 
+    def _expire_partials(self, now: float) -> None:
+        """Drop in-progress lines that have stopped arriving. See `PARTIAL_TTL_S`.
+
+        Polled rather than scheduled, and stamped here rather than from
+        `TranscriptUpdated.t`, for two separate reasons.
+
+        Polled, because the event that would have scheduled it is the one that
+        never comes: a silently dropped segment (diarisation attributed
+        nothing) leaves the wall holding a partial with nothing following it.
+        Only a clock can notice that, and only this side has one.
+
+        Stamped on arrival, because `t` on those events is whatever clock
+        produced them — `time.monotonic()` from `panel_runtime/stt.py`, a
+        synthetic counter from `demo.py` — and comparing either against this
+        loop's `monotonic()` would expire every partial instantly in the demo
+        while appearing to work in the show. Arrival time is the thing being
+        measured anyway: the question is how long it has been since the wall
+        last heard anything, not when the words were spoken.
+        """
+        live = self.wall.partials
+        for speaker in [s for s in self._partial_seen if s not in live]:
+            del self._partial_seen[speaker]
+        for speaker, text in list(live.items()):
+            seen = self._partial_seen.get(speaker)
+            if seen is None or seen[0] != text:
+                # Still growing — a new voice, or another word. Restamp.
+                self._partial_seen[speaker] = (text, now)
+            elif now - seen[1] > PARTIAL_TTL_S:
+                self._dirty |= self.wall.drop_partial(speaker)
+                del self._partial_seen[speaker]
+
     async def _pump(self) -> None:
         """One timer for both channels, at the faster of the two rates."""
         period = 1.0 / LEVEL_HZ
@@ -238,6 +293,12 @@ class DisplayServer:
         while True:
             await asyncio.sleep(period)
             frame += 1
+            # Before the `_clients` check, not after: a wall nobody is watching
+            # yet still has to be *correct* when a browser connects, and the
+            # snapshot it is painted from is this state. Left behind the check,
+            # a stale partial would survive any gap in viewers and then be the
+            # first thing a reconnecting wall showed.
+            self._expire_partials(asyncio.get_running_loop().time())
             if not self._clients:
                 continue
             if self._dirty and frame % state_every == 0:

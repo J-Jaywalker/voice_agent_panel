@@ -44,7 +44,7 @@ console-recordings/
 *.m4a
 
 # --- Speaker enrolment ---------------------------------------------------
-# James's voice enrolment: opaque, model-bound speaker identifiers from
+# Ricky's voice enrolment: opaque, model-bound speaker identifiers from
 # Speechmatics, written by `panel_runtime.enrolment.SpeakerStore`. Machine- and
 # model-specific, so there is nothing to share; re-enrol on the venue rig.
 .panel/

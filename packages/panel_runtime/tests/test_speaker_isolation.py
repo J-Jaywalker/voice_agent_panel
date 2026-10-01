@@ -1,7 +1,7 @@
-"""An unenrolled voice on James's mic must never become words anywhere.
+"""An unenrolled voice on Ricky's mic must never become words anywhere.
 
-James's microphone is on a stage. The audience is in the room and the PA bleeds
-back into it, so audio arriving on that socket has never meant "James said
+Ricky's microphone is on a stage. The audience is in the room and the PA bleeds
+back into it, so audio arriving on that socket has never meant "Ricky said
 this". After enrolment, `panel_runtime.stt` asks the question per segment: a
 segment attributed to the enrolled moderator becomes a `TranscriptUpdated`
 exactly as before, and a segment attributed to anyone else becomes
@@ -23,7 +23,7 @@ enough on its own. `TurnYielded` carries no speaker, and arbitration does not
 ask whose words opened the floor — so an audience question landing under a
 standing invitation would have been answered by an agent, with nothing in the
 transcript to show why. `_AgentSTTSession` therefore withholds `TurnYielded`
-for any turn in which no segment was identified as James.
+for any turn in which no segment was identified as Ricky.
 
 Written against the real path, deliberately: raw Speechmatics messages go into
 `_AgentSTTSession._receive`, and what comes out is pumped through the actual
@@ -32,7 +32,7 @@ Written against the real path, deliberately: raw Speechmatics messages go into
 must still fail here. The one thing faked is the socket — nothing in this file
 touches the network.
 
-The final test in this file is the teeth: the identical setup with James's own
+The final test in this file is the teeth: the identical setup with Ricky's own
 label on the segment must reach the reducer. Without it, a pump that silently
 ran nothing would make every assertion above pass for the wrong reason.
 """
@@ -64,7 +64,7 @@ from panel_runtime.stt import PushAudioSource, STTConfig, _AgentSTTSession
 
 PERSONA_DIR = Path(__file__).resolve().parents[3] / "personas"
 
-LABEL = "James"
+LABEL = "Ricky"
 IDENTIFIERS = ("opaque-model-bound-identifier",)
 
 
@@ -155,7 +155,7 @@ async def _feed_server_messages(runtime: PanelRuntime, messages: list[dict]) -> 
         config=runtime.stt.config,
         api_key="test-key",
         events=runtime.stt.events,
-        name="James",
+        name="ricky",
     )
 
     tasks = [
@@ -186,14 +186,14 @@ def _texts(events: list[object]) -> list[str]:
 
 def test_the_agents_own_sessions_are_never_diarized(cast: PanelCast):
     """The split that CLAUDE.md's "identity is a fact about the wiring" line
-    still applies to. Configuring James's mic must not reach the agents'
+    still applies to. Configuring Ricky's mic must not reach the agents'
     display-only sessions, which have one known voice per socket."""
     runtime = _identified_runtime(cast, display=FakeDisplay())
     assert runtime.agent_stt is not None
     assert runtime.agent_stt.config.diarization == "none"
     assert runtime.agent_stt.config.speakers == ()
     assert runtime.agent_stt.config.identified_labels() == frozenset()
-    # ...while James's mic is gated.
+    # ...while Ricky's mic is gated.
     assert runtime.stt.config.diarization == "speaker"
 
 
@@ -275,9 +275,9 @@ def test_a_stranger_s_words_never_become_text_anywhere(cast: PanelCast, tmp_path
 def test_an_unattributed_segment_is_dropped_without_being_blamed_on_anyone(
     cast: PanelCast, tmp_path: Path
 ):
-    """No `speaker` on the segment is "no evidence", not "not James".
+    """No `speaker` on the segment is "no evidence", not "not Ricky".
 
-    Conflating the two would let a run of unattributed segments disarm James's
+    Conflating the two would let a run of unattributed segments disarm Ricky's
     own interrupt, so an unattributed segment emits nothing at all: no
     transcript (its words are not known to be his) and no
     `UnverifiedSpeechDetected` (nor known not to be).
@@ -336,7 +336,7 @@ def test_a_stranger_cannot_stop_a_speaking_agent(cast: PanelCast):
 
     The VAD fires on any voice — it is energy detection and knows nothing about
     identity — but no longer opens a duck by itself (`panel_core.floor`); the
-    duck now only opens on a `TranscriptUpdated` already attributed to James.
+    duck now only opens on a `TranscriptUpdated` already attributed to Ricky.
     So a segment attributed to someone else never ducks the agent at all, and
     is certainly never promoted to a full stop.
     """
@@ -354,7 +354,7 @@ def test_a_stranger_cannot_stop_a_speaking_agent(cast: PanelCast):
             config=runtime.stt.config,
             api_key="test-key",
             events=runtime.stt.events,
-            name="James",
+            name="ricky",
         )
         stt = asyncio.create_task(runtime._run_stt(), name="stt")
         tasks.append(stt)
@@ -364,7 +364,7 @@ def test_a_stranger_cannot_stop_a_speaking_agent(cast: PanelCast):
             runtime.emit(HumanSpeechStarted(t=2.0))
             for _ in range(20):
                 await asyncio.sleep(0)
-            # The transcript says it was not James.
+            # The transcript says it was not Ricky.
             await session._receive(
                 _FakeWebSocket([_segment("is it going to replace us", speaker="S3")])
             )
@@ -395,11 +395,11 @@ def test_a_stranger_cannot_stop_a_speaking_agent(cast: PanelCast):
 # --------------------------------------------------------- the test's teeth
 
 
-def test_james_own_words_still_travel_the_whole_path(cast: PanelCast, tmp_path: Path):
+def test_ricky_own_words_still_travel_the_whole_path(cast: PanelCast, tmp_path: Path):
     """Proof the assertions above are not vacuous.
 
     Identical setup, identical pump, one field different — the segment carries
-    James's label. His words must reach the console path, the wall, the
+    Ricky's label. His words must reach the console path, the wall, the
     reducer, `PanelState.transcript` and the log, and his `EndOfTurn` must open
     the floor. If this ever fails, every test above is passing for the wrong
     reason.
@@ -421,7 +421,7 @@ def test_james_own_words_still_travel_the_whole_path(cast: PanelCast, tmp_path: 
 
     assert _texts(display.events) == ["Wayne, what holds it back?"]
     assert any(isinstance(e, TurnYielded) for e in display.events), (
-        "James's end of turn must still open arbitration"
+        "Ricky's end of turn must still open arbitration"
     )
     assert [u.text for u in runtime.state.transcript] == ["Wayne, what holds it back?"]
     assert [u.speaker for u in runtime.state.transcript] == [HUMAN]
@@ -429,8 +429,8 @@ def test_james_own_words_still_travel_the_whole_path(cast: PanelCast, tmp_path: 
     assert not any(isinstance(e, UnverifiedSpeechDetected) for e in display.events)
 
 
-def test_james_words_in_a_turn_also_carrying_room_noise_still_yield(cast: PanelCast):
-    """A turn is James's if any segment in it was his.
+def test_ricky_words_in_a_turn_also_carrying_room_noise_still_yield(cast: PanelCast):
+    """A turn is Ricky's if any segment in it was his.
 
     On a live stage his question and an audience murmur land in the same turn
     routinely. Requiring every segment to be his would have withheld the
@@ -459,7 +459,7 @@ def test_james_words_in_a_turn_also_carrying_room_noise_still_yield(cast: PanelC
 
 def test_the_next_turn_does_not_inherit_the_last_turn_s_confirmation(cast: PanelCast):
     """`StartOfTurn` resets the evidence, so a stranger's turn following one of
-    James's is still withheld."""
+    Ricky's is still withheld."""
     display = FakeDisplay()
     runtime = _identified_runtime(cast, display=display)
 
@@ -478,7 +478,7 @@ def test_the_next_turn_does_not_inherit_the_last_turn_s_confirmation(cast: Panel
     )
 
     yielded = [e for e in display.events if isinstance(e, TurnYielded)]
-    assert len(yielded) == 1, "James's turn yielded; the stranger's did not"
+    assert len(yielded) == 1, "Ricky's turn yielded; the stranger's did not"
     assert _texts(display.events) == ["Dexter, go on."]
 
 
@@ -520,11 +520,11 @@ def test_an_undiarized_session_is_byte_for_byte_unchanged(cast: PanelCast):
     assert not any(isinstance(e, UnverifiedSpeechDetected) for e in drained)
 
 
-def test_a_backchannel_from_james_still_resumes_rather_than_stopping(cast: PanelCast):
+def test_a_backchannel_from_ricky_still_resumes_rather_than_stopping(cast: PanelCast):
     """The behaviour that existed before this feature, still intact.
 
     Ducking on "mm-hm" and resuming is `panel_core`'s job and is tested there;
-    what this checks is that routing James's own words through the identity
+    what this checks is that routing Ricky's own words through the identity
     gate has not changed which of them reach the reducer to be classified.
     """
     display = FakeDisplay()
@@ -544,7 +544,7 @@ def test_a_backchannel_from_james_still_resumes_rather_than_stopping(cast: Panel
             config=runtime.stt.config,
             api_key="test-key",
             events=runtime.stt.events,
-            name="James",
+            name="ricky",
         )
         try:
             runtime.emit(AgentSpeechStarted(t=1.0, agent="wayne"))

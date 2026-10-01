@@ -18,11 +18,13 @@ from pathlib import Path
 import aiohttp
 import pytest
 from panel_core import (
+    HUMAN,
     AgentSpeechEnded,
     AgentSpeechStarted,
     PanelCast,
     TranscriptUpdated,
 )
+from panel_display import server as server_module
 from panel_display.server import LEVEL_HZ, DisplayServer
 
 PERSONAS = Path(__file__).resolve().parents[3] / "personas"
@@ -201,6 +203,63 @@ def test_transcripts_are_not_held_back_by_the_server(cast: PanelCast):
             await server.close()
 
     assert asyncio.run(body()) == [("dex", SENTENCE_A), ("dex", SENTENCE_B)]
+
+
+def test_a_partial_that_stops_arriving_leaves_the_band(
+    cast: PanelCast, monkeypatch: pytest.MonkeyPatch
+):
+    """The undiarized case, which no event can close.
+
+    `panel_runtime/stt.py` drops a segment silently when diarisation
+    attributed nothing at all, so Ricky's in-progress line can simply stop
+    being updated: no final, no empty update, no `UnverifiedSpeechDetected`.
+    Staleness is the only signal left and it is a fact about arrival time, so
+    the sweep lives here rather than in the pure half.
+
+    The TTL is shortened rather than waited out; six real seconds in a unit
+    test is the kind of thing that gets deleted later.
+    """
+    monkeypatch.setattr(server_module, "PARTIAL_TTL_S", 2 / LEVEL_HZ)
+
+    async def body():
+        server = await _serve(cast)
+        try:
+            server.on_event(
+                TranscriptUpdated(t=1.0, speaker=HUMAN, text=SENTENCE_A, is_final=False)
+            )
+            assert server.wall.partials == {HUMAN: SENTENCE_A}
+            await asyncio.sleep(WINDOW_S)
+            return dict(server.wall.partials)
+        finally:
+            await server.close()
+
+    assert asyncio.run(body()) == {}
+
+
+def test_a_partial_still_arriving_is_left_alone(
+    cast: PanelCast, monkeypatch: pytest.MonkeyPatch
+):
+    """The guard on the test above. A line that is still growing must survive
+    the sweep however short the TTL is, or the band loses words mid-sentence —
+    which is a worse display than a stale one, not a better."""
+    monkeypatch.setattr(server_module, "PARTIAL_TTL_S", 2 / LEVEL_HZ)
+
+    async def body():
+        server = await _serve(cast)
+        try:
+            words = SENTENCE_A.split()
+            for index in range(1, len(words) + 1):
+                server.on_event(
+                    TranscriptUpdated(
+                        t=1.0, speaker=HUMAN, text=" ".join(words[:index]), is_final=False
+                    )
+                )
+                await asyncio.sleep(WINDOW_S / len(words))
+            return dict(server.wall.partials)
+        finally:
+            await server.close()
+
+    assert asyncio.run(body()) == {HUMAN: SENTENCE_A}
 
 
 def test_a_straggler_after_the_next_speaker_never_reaches_the_band(cast: PanelCast):

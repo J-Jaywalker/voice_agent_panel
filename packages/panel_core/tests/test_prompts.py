@@ -116,7 +116,7 @@ def test_the_evidence_rule_is_global_so_it_binds_a_persona_with_no_figures() -> 
 def test_guardrails_forbid_naming_providers_and_repeating_jailbreaks() -> None:
     """Two rules added for the 17 Sept beat sheet revision, both of which
     exist because a beat now invites the failure directly rather than merely
-    permitting it, and neither of which can be left to James's reflexes on
+    permitting it, and neither of which can be left to Ricky's reflexes on
     the night (docs/beat-sheet.md, Beat 3 and Beat 4):
 
     - **Beat 3** asks the agents what speech recognition can do now. Capability
@@ -141,12 +141,12 @@ def test_guardrails_forbid_naming_providers_and_repeating_jailbreaks() -> None:
 
 
 # --------------------------------------------------------------------------
-# The speculative pass — asked while James is still talking
+# The speculative pass — asked while Ricky is still talking
 # --------------------------------------------------------------------------
 
 
 def _mid_sentence(partial: str) -> PanelState:
-    """James part-way through a sentence: a live partial, no invitation yet."""
+    """Ricky part-way through a sentence: a live partial, no invitation yet."""
     return replace(PanelState.for_agents(("dex", "wayne")), partial=partial)
 
 
@@ -154,8 +154,8 @@ def test_a_mid_sentence_partial_is_not_described_as_a_closed_floor() -> None:
     """Invitations are read off finals only, so during speculation there is
     never a live invitation — and the old wording told the agent it "will
     almost certainly not be speaking" and to score itself low. Asked that
-    while James was three words into naming it, an agent wrote "Take your
-    time, James — we'll be here." and a direct address then aired it, because
+    while Ricky was three words into naming it, an agent wrote "Take your
+    time, Ricky — we'll be here." and a direct address then aired it, because
     a named invitation bypasses the score floor. The speculative pass has to
     be told what it actually is."""
     prompt = build_turn_prompt(_mid_sentence("So, Wayne, uh, where are we"), _persona())
@@ -165,7 +165,7 @@ def test_a_mid_sentence_partial_is_not_described_as_a_closed_floor() -> None:
 
 
 def test_a_settled_statement_still_gets_the_closed_floor_wording() -> None:
-    """With no partial in flight, James has finished and said nothing that
+    """With no partial in flight, Ricky has finished and said nothing that
     opens the floor — the branch `brains.py` documents measuring against."""
     prompt = build_turn_prompt(PanelState.for_agents(("dex", "wayne")), _persona())
     assert "NOT opened the floor" in prompt
@@ -184,7 +184,7 @@ def _after(speaker: str, text: str, **overrides) -> PanelState:
 
 
 def test_replying_to_another_agent_demands_something_they_did_not_have() -> None:
-    """Agents pass turns to each other without James re-opening the floor
+    """Agents pass turns to each other without Ricky re-opening the floor
     (`FloorController._maybe_rearbitrate`), and every one of those exchanges
     lands in the open-floor branch, which says nothing about who just spoke.
 
@@ -192,29 +192,29 @@ def test_replying_to_another_agent_demands_something_they_did_not_have() -> None
     words and hands them back reframed. That reads as sharp and carries no
     information, and it is what the whole 25 Sept revision is aimed at — the
     live failures were all in agent-to-agent exchanges, never in answers to
-    James's questions.
+    Ricky's questions.
     """
     prompt = build_turn_prompt(_after("wayne", "Fix the channel."), _persona())
-    assert "wayne spoke last, not James" in prompt
+    assert "wayne spoke last, not Ricky" in prompt
     assert "Rephrasing their point back at them" in prompt
 
 
 def test_the_speculative_pass_is_never_treated_as_an_exchange() -> None:
-    """James mid-sentence means the last final is stale by construction and he
+    """Ricky mid-sentence means the last final is stale by construction and he
     is about to be the one answered. Telling the agent it is replying to Wayne
-    while James is three words into naming it would put the two instructions
+    while Ricky is three words into naming it would put the two instructions
     in direct contradiction on the one pass where latency matters most."""
     state = _after("wayne", "Fix the channel.", partial="So Dexter, what changed")
     prompt = build_turn_prompt(state, _persona())
-    assert "spoke last, not James" not in prompt
+    assert "spoke last, not Ricky" not in prompt
     assert "still mid-sentence" in prompt
 
 
-def test_your_own_last_turn_and_Jamess_are_not_exchanges() -> None:
-    """Continuing yourself is not answering somebody, and answering James is
+def test_your_own_last_turn_and_rickys_are_not_exchanges() -> None:
+    """Continuing yourself is not answering somebody, and answering Ricky is
     what every other branch in this function is already about."""
     assert "spoke last" not in build_turn_prompt(_after("dex", "Mine."), _persona())
-    assert "spoke last" not in build_turn_prompt(_after(HUMAN, "James's."), _persona())
+    assert "spoke last" not in build_turn_prompt(_after(HUMAN, "Ricky's."), _persona())
 
 
 # --------------------------------------------------------------------------
@@ -329,7 +329,7 @@ def test_being_asked_mid_turn_says_so_and_says_you_are_not_cutting_in() -> None:
     Told nothing, an agent asked while somebody else is speaking writes as
     though the floor were open now — either an interruption (which the
     runtime will never air: agents never interrupt agents) or an answer to
-    James that ignores the thirty seconds in between. It has to know it is
+    Ricky that ignores the thirty seconds in between. It has to know it is
     writing the *next* turn, against a turn still in progress.
     """
     state = replace(

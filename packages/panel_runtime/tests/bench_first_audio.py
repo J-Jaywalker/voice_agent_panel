@@ -3,7 +3,7 @@
     uv run python packages/panel_runtime/tests/bench_first_audio.py --voice <id>
 
 Everything else measured so far is an intermediate. This is what the audience
-experiences: the gap between James finishing his question and an agent's voice
+experiences: the gap between Ricky finishing his question and an agent's voice
 arriving.
 
 Two paths, measured against each other:

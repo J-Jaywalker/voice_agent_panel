@@ -20,8 +20,8 @@ class AgentState(str, Enum):
 
 
 class InvitationSource(str, Enum):
-    ADDRESS = "address"  # James named an agent and asked them something
-    OPEN = "open"  # James asked the room
+    ADDRESS = "address"  # Ricky named an agent and asked them something
+    OPEN = "open"  # Ricky asked the room
     OPERATOR = "operator"  # the console opened the floor by hand
     INTRODUCTION = "introduction"  # the one-shot "introduce yourselves" round
 
@@ -56,7 +56,7 @@ class Invitation:
     agent: str | None  # None = open to the whole panel
     turns_remaining: int
     source: InvitationSource
-    # The moment James opened the floor. This never moves. It is the question a
+    # The moment Ricky opened the floor. This never moves. It is the question a
     # proposal has to be an answer to (``FloorController._stale``) and the
     # anchor for the supersede window, and both of those are about *when the
     # invitation was made*, not about how recently it has been used.
@@ -209,7 +209,7 @@ class PanelState:
     # decides that it opens (the classifier, or the regex) versus who wins it
     # once open (scoring), and CLAUDE.md "Floor closed by default".
     invitation: Invitation | None = None
-    # Agents that tied for "the one James addressed", when the utterance named
+    # Agents that tied for "the one Ricky addressed", when the utterance named
     # more than one in the same grammatical role. Ambiguity is an outcome, not
     # an error: the floor stays CLOSED and the tie is surfaced to the operator
     # rather than guessed at. A missed invitation costs one beat; a wrong one
@@ -241,15 +241,15 @@ class PanelState:
     #
     #   None  — no evidence yet. The transcript is ~300ms behind the VAD, so
     #           this is the ordinary state for the first fraction of a second
-    #           of every duck, including every one of James's own interrupts.
+    #           of every duck, including every one of Ricky's own interrupts.
     #   True  — at least one segment in this duck was identified as the
-    #           enrolled moderator. Latches: room noise arriving after James
+    #           enrolled moderator. Latches: room noise arriving after Ricky
     #           has been confirmed must not downgrade him.
     #   False — segments arrived and every one of them was somebody else.
     #
     # Only `False` changes any outcome, and it only ever *blocks* a stop (see
     # `FloorController._human_ended` and `_tick`). `None` behaves exactly as
-    # this field's absence did, which is what keeps James's own barge-in
+    # this field's absence did, which is what keeps Ricky's own barge-in
     # latency unchanged: confirmation is never a precondition for stopping an
     # agent, because requiring it would put a network round-trip in the
     # interrupt path that CLAUDE.md keeps out of it.
@@ -272,6 +272,32 @@ class PanelState:
     # delivered and then stopped). Two failures, two budgets, one field — see
     # `FloorController._stalled_speaker`.
     last_audio_progress_t: float | None = None
+
+    # `Proposal.written_against_t` of the line currently being spoken, or None
+    # for a turn that came from fixed text (introductions) or from no proposal
+    # at all. Written by `FloorController._grant`, read once by `_agent_ended`,
+    # cleared there.
+    #
+    # It is the cutoff that decides which *other* proposals survive the turn,
+    # and it exists because `speaking_since` was the wrong clock for that job.
+    # The round that produces the grant also produces the other two agents'
+    # lines, and it necessarily opens *before* the winner reaches the PA —
+    # arbitration and TTS first-audio sit in between. Measured from
+    # `speaking_since`, those siblings were therefore always "written before
+    # this turn" and always discarded: on the run that found this (1 Oct 2026)
+    # a full set of proposals missed the cutoff by 110ms, the panel sat on them
+    # for 29 seconds and then paid a fresh 1.6s generation at the boundary.
+    # Measured from here they are what they are — lines written against the
+    # same moment as the one that just aired, and the fallback when nothing
+    # fresher exists. Anything genuinely older still goes.
+    turn_input_t: float | None = None
+
+    # When the last *mid-turn* speculation round opened, or None if none has
+    # opened in the current turn. Reset by `_agent_started`/`_agent_ended`, so
+    # it only ever describes the turn in progress, and deliberately separate
+    # from `last_proposal_request_t` below — see
+    # `FloorController._agent_utterance_progress`.
+    agent_turn_request_t: float | None = None
 
     turn_id: int = 0
     consecutive_agent_turns: int = 0
@@ -298,9 +324,9 @@ class PanelState:
     speculation_epoch: int = 0
     killed: bool = False
 
-    # --- the beat before the floor goes back to James ---
+    # --- the beat before the floor goes back to Ricky ---
     #
-    # Set when arbitration found nothing for an agent James named by name.
+    # Set when arbitration found nothing for an agent Ricky named by name.
     # Rather than telling him to fill the silence in the same millisecond his
     # question landed, the floor waits `FloorConfig.invited_agent_grace_s` for
     # the answer that is almost certainly still being written, and only cues him
@@ -309,8 +335,8 @@ class PanelState:
     #
     # `moderator_cued` latches for the life of one invitation. Every proposal
     # that lands re-opens arbitration (`PanelRuntime._maybe_rearbitrate`), so a
-    # single unanswered question used to cue James once per proposal — three
-    # times over, in the run that prompted this. James needs telling once.
+    # single unanswered question used to cue Ricky once per proposal — three
+    # times over, in the run that prompted this. Ricky needs telling once.
     awaiting_agent: str | None = None
     awaiting_since: float | None = None
     moderator_cued: bool = False
@@ -359,7 +385,7 @@ class PanelState:
         """Stand down the beat before the moderator cue.
 
         Called wherever the wait is over however it ended — the answer arrived,
-        someone took the floor, James spoke again, or the cue finally fired.
+        someone took the floor, Ricky spoke again, or the cue finally fired.
         """
         return replace(self, awaiting_agent=None, awaiting_since=None)
 

@@ -58,7 +58,7 @@ in his head on stage. Naming an agent narrows the invitation to them; a courtesy
 tag like "is that okay?" invites nobody. See
 [Moderator phrasings](#moderator-phrasings) for what the floor does and does not
 recognise. Agents that want in but were not invited show as `✋ wants in`, for
-James to call on.
+Ricky to call on.
 
 The event log replays through modified floor logic afterwards, because
 `panel_core` reads no clocks of its own.
@@ -103,15 +103,15 @@ default is a decision (see `BrainConfig` in
 §10 #3), not a constant. Note that Haiku rejects `effort` outright with a 400,
 so `--model claude-haiku-4-5-20251001` ignores whatever `--effort` you pass.
 
-Type as James and watch the floor controller arbitrate:
+Type as Ricky and watch the floor controller arbitrate:
 
 ```
-James › So Wayne, what do you think about human oversight?
-James › /scores      # why each agent did or didn't get the floor
-James › /force dex   # override — give an agent the floor now
-James › /mute wayne  # toggle
-James › /kill        # emergency silence  (/unkill to release)
-James › /state       # dump floor state
+Ricky › So Wayne, what do you think about human oversight?
+Ricky › /scores      # why each agent did or didn't get the floor
+Ricky › /force dex   # override — give an agent the floor now
+Ricky › /mute wayne  # toggle
+Ricky › /kill        # emergency silence  (/unkill to release)
+Ricky › /state       # dump floor state
 ```
 
 Edit `personas/*.yaml` and restart. **`/scores` is the feedback loop:** if an
@@ -211,7 +211,7 @@ renders the YAML.
 
 Enforced in `floor.py`, in strict order:
 
-1. **Human moderator** — absolute. James speaking ducks any agent within one
+1. **Human moderator** — absolute. Ricky speaking ducks any agent within one
    audio buffer, then stops it or resumes it once classification lands.
 2. **Explicitly invited agent** — "So Wayne, …" outranks any score, though Wayne
    may still hand off to a better-placed colleague.
@@ -223,7 +223,7 @@ hands back to the moderator, and an operator kill switch.
 
 ## Moderator phrasings
 
-Who James addressed is decided by **grammatical role, not position in the
+Who Ricky addressed is decided by **grammatical role, not position in the
 sentence**. Three roles, in strict precedence:
 
 | Role | Example | Addressee |
@@ -243,7 +243,7 @@ Two non-outcomes matter as much as the outcomes:
   alone no longer opens the floor.
 - **Two agents in the same role is ambiguous**, and ambiguity keeps the floor
   closed and puts the tie in front of the operator. A missed invitation costs
-  one beat; a wrong one puts an agent on the PA over James in front of 400
+  one beat; a wrong one puts an agent on the PA over Ricky in front of 400
   people.
 
 The corpus is the spec.
@@ -255,7 +255,7 @@ maintenance loop: the spec grows by observation, not by guessing at grammar.
 
 Two consequences for rehearsal:
 
-- **Brief James on the reliable form** — a short vocative and a request, "Melia,
+- **Brief Ricky on the reliable form** — a short vocative and a request, "Melia,
   carry on." Compound apologies ("sorry Dexter, can Melia speak? sorry for
   interrupting, is that okay?") are the hardest input the floor sees and the
   phrasing he is least attached to. Stagecraft is a legitimate mitigation.

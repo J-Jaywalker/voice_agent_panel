@@ -101,7 +101,7 @@ class BargeInConfig:
     # which are measured on the venue rig, not here.
     internal_budget_ms: float = 75.0
     hard_limit_ms: float = 150.0
-    # How much to attenuate James's mic block *before it reaches STT* while an
+    # How much to attenuate Ricky's mic block *before it reaches STT* while an
     # agent's TTS audio is actually sounding out of the PA (`_callback` gates
     # this on `Mixer.is_playing`, not on `state.speaking is not None` — the
     # latter also spans the gap before an agent's first chunk and any gap
@@ -110,7 +110,7 @@ class BargeInConfig:
     # him. Applied only on the STT feed — the VAD queue gets the unattenuated
     # block, so the barge-in reflex (duck timing, and duck *opening*, since
     # that now also runs off a confirmed transcript) is unaffected by
-    # anything except how loud James actually is at the mic.
+    # anything except how loud Ricky actually is at the mic.
     # A guess pending a rehearsal-room measurement, not a derived number —
     # see CLAUDE.md § Deployment on re-measuring on the target rig.
     human_mic_duck_db: float = -15.0

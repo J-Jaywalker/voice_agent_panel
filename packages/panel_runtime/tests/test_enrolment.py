@@ -46,7 +46,7 @@ def cast() -> PanelCast:
 def test_the_store_round_trips(tmp_path: Path) -> None:
     store = SpeakerStore(tmp_path / "speakers.json")
     speaker = EnrolledSpeaker(
-        label="James",
+        label="Ricky",
         speaker_identifiers=("opaque-a", "opaque-b"),
         model=MODEL,
         enrolled_at="2026-10-21T09:00:00+00:00",
@@ -61,7 +61,7 @@ def test_the_store_creates_its_directory(tmp_path: Path) -> None:
     """The default path is `.panel/speakers.json`, which will not exist on the
     venue machine the first time the show is run there."""
     store = SpeakerStore(tmp_path / "nested" / "deeper" / "speakers.json")
-    store.save(EnrolledSpeaker(label="James", speaker_identifiers=("x",), model=MODEL))
+    store.save(EnrolledSpeaker(label="Ricky", speaker_identifiers=("x",), model=MODEL))
     assert store.load(model=MODEL) is not None
 
 
@@ -75,11 +75,11 @@ def test_a_model_mismatch_is_treated_as_absent(tmp_path: Path) -> None:
 
     Speaker identifiers are bound to the STT model that produced them. A
     stored enrolment from another model is not "probably fine" — it is
-    indistinguishable from a good one until nothing James says is recognised
+    indistinguishable from a good one until nothing Ricky says is recognised
     as his, on stage, with no operator override to recover with.
     """
     store = SpeakerStore(tmp_path / "speakers.json")
-    store.save(EnrolledSpeaker(label="James", speaker_identifiers=("x",), model="linden-0"))
+    store.save(EnrolledSpeaker(label="Ricky", speaker_identifiers=("x",), model="linden-0"))
 
     assert store.load(model=MODEL) is None, "must force re-enrolment"
     assert store.load(model="linden-0") is not None, "and is fine for its own model"
@@ -92,9 +92,9 @@ def test_a_model_mismatch_is_treated_as_absent(tmp_path: Path) -> None:
         '"a bare string"',
         "[]",
         json.dumps({"model": MODEL}),  # no identifiers
-        json.dumps({"model": MODEL, "label": "James", "speaker_identifiers": []}),
+        json.dumps({"model": MODEL, "label": "Ricky", "speaker_identifiers": []}),
         json.dumps({"model": MODEL, "speaker_identifiers": ["x"]}),  # no label
-        json.dumps({"label": "James", "speaker_identifiers": ["x"]}),  # no model
+        json.dumps({"label": "Ricky", "speaker_identifiers": ["x"]}),  # no model
     ],
 )
 def test_an_unusable_file_is_absent(tmp_path: Path, content: str) -> None:
@@ -133,7 +133,7 @@ def test_the_dominant_label_is_not_assumed_to_be_s1() -> None:
     result = _speakers_result("S1", "S2")
     tally = {
         "S1": _LabelTally(seconds=0.8, segments=1),  # a cough, heard first
-        "S2": _LabelTally(seconds=24.0, segments=11),  # James
+        "S2": _LabelTally(seconds=24.0, segments=11),  # Ricky
     }
     assert _dominant_label(result, tally) == "S2"
 
@@ -248,7 +248,7 @@ def _enrolment(**overrides: Any) -> SpeakerEnrolment:
 
 def test_the_real_caps_are_the_documented_ones() -> None:
     """The small values the tests below drive are not the shipped ones."""
-    assert CAPTURE_LIMIT_S == 30.0, "the capture cap James is told about"
+    assert CAPTURE_LIMIT_S == 30.0, "the capture cap Ricky is told about"
     assert VERIFY_LIMIT_S == 60.0
     assert REQUIRED_VERIFIED_SEGMENTS == 3
     default = SpeakerEnrolment(config=STTConfig(), api_key="k")
@@ -379,7 +379,7 @@ def test_verification_fails_below_three_matched_segments(
     """
     messages: list[dict] = [{"message": "RecognitionStarted"}]
     messages += [
-        _segment_message(f"sentence {i}", speaker="James", start=float(i), end=float(i) + 1)
+        _segment_message(f"sentence {i}", speaker="Ricky", start=float(i), end=float(i) + 1)
         for i in range(matched)
     ]
     messages.append({"message": "EndOfTranscript"})
@@ -398,9 +398,9 @@ def test_verification_succeeds_at_three_matched_segments(
     socket = _FakeWebSocket(
         [
             {"message": "RecognitionStarted"},
-            _segment_message("one", speaker="James", start=0.0, end=1.0),
-            _segment_message("two", speaker="James", start=1.0, end=2.0),
-            _segment_message("three", speaker="James", start=2.0, end=3.0),
+            _segment_message("one", speaker="Ricky", start=0.0, end=1.0),
+            _segment_message("two", speaker="Ricky", start=1.0, end=2.0),
+            _segment_message("three", speaker="Ricky", start=2.0, end=3.0),
             {"message": "EndOfTranscript"},
         ]
     )
@@ -414,7 +414,7 @@ def test_verification_succeeds_at_three_matched_segments(
     config = json.loads(socket.sent[0])["transcription_config"]
     assert config["diarization"] == "speaker"
     assert config["speaker_diarization_config"]["speakers"] == [
-        {"label": "James", "speaker_identifiers": ["id-for-S2"]}
+        {"label": "Ricky", "speaker_identifiers": ["id-for-S2"]}
     ]
     assert "get_speakers" not in config["speaker_diarization_config"]
 
@@ -428,7 +428,7 @@ def test_segments_attributed_to_someone_else_do_not_count(
         _FakeWebSocket(
             [
                 {"message": "RecognitionStarted"},
-                _segment_message("a", speaker="James", start=0.0, end=1.0),
+                _segment_message("a", speaker="Ricky", start=0.0, end=1.0),
                 _segment_message("b", speaker="S2", start=1.0, end=2.0),
                 _segment_message("c", speaker="S3", start=2.0, end=3.0),
                 {"message": "EndOfTranscript"},
@@ -449,7 +449,7 @@ def test_partials_do_not_count_towards_verification(
     """
     partial = {
         "message": "AddPartialSegment",
-        "segment": {"transcript": "hello", "speaker": "James"},
+        "segment": {"transcript": "hello", "speaker": "Ricky"},
     }
     _install(
         monkeypatch,
@@ -470,9 +470,9 @@ def test_a_server_warning_fails_verification(monkeypatch: pytest.MonkeyPatch) ->
         _FakeWebSocket(
             [
                 {"message": "RecognitionStarted"},
-                _segment_message("one", speaker="James", start=0.0, end=1.0),
-                _segment_message("two", speaker="James", start=1.0, end=2.0),
-                _segment_message("three", speaker="James", start=2.0, end=3.0),
+                _segment_message("one", speaker="Ricky", start=0.0, end=1.0),
+                _segment_message("two", speaker="Ricky", start=1.0, end=2.0),
+                _segment_message("three", speaker="Ricky", start=2.0, end=3.0),
                 {"message": "Warning", "reason": "speaker identifiers are for another model"},
                 {"message": "EndOfTranscript"},
             ]
@@ -516,9 +516,9 @@ def test_run_does_capture_then_verify_and_records_the_model(
     verify = _FakeWebSocket(
         [
             {"message": "RecognitionStarted"},
-            _segment_message("one", speaker="James", start=0.0, end=1.0),
-            _segment_message("two", speaker="James", start=1.0, end=2.0),
-            _segment_message("three", speaker="James", start=2.0, end=3.0),
+            _segment_message("one", speaker="Ricky", start=0.0, end=1.0),
+            _segment_message("two", speaker="Ricky", start=1.0, end=2.0),
+            _segment_message("three", speaker="Ricky", start=2.0, end=3.0),
             {"message": "EndOfTranscript"},
         ]
     )
@@ -529,7 +529,7 @@ def test_run_does_capture_then_verify_and_records_the_model(
     speaker = asyncio.run(enrolment.run())
 
     assert speaker is not None
-    assert speaker.label == "James"
+    assert speaker.label == "Ricky"
     assert speaker.speaker_identifiers == ("id-for-S2",)
     assert speaker.model == MODEL, "the model is recorded so a later run can reject it"
     assert speaker.enrolled_at, "stamped for the operator's benefit"

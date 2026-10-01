@@ -1,13 +1,18 @@
 """The video wall.
 
-A 16:9 stage display, laid out at 3840 x 2160 and scaled to fit: the three
-agents across the top, a third of the width each, and the transcript in a
-full-width band beneath them. Each agent gets a ring that pulses with that
-agent's own audio and lights up in that agent's colour.
+A 12.00m x 4.50m ultrawide LED panel, 8:3, laid out at a fixed 3840 x 1440 and
+scaled to fit: four 3m columns, three agent lanes then the transcript on the
+right. Each agent gets a ring that pulses with that agent's own audio and
+lights up in that agent's colour.
 
-It was drawn for a 12.00m x 4.50m ultrawide LED wall (8:3, four 3m columns,
-transcript hard left) and is being shown first on an ordinary widescreen
-display, which is why the rows used to be columns.
+This briefly ran as two rows instead — three agents across the top, the
+transcript full-width beneath them — for a 16:9 sneak preview on an ordinary
+widescreen display at a smaller venue. The transcript's features from that
+detour (the chat-bubble presentation, all four voices sharing one feed, live
+partials) are all still here; only the row geometry it was drawn into is
+gone. The transcript sits on the right — the original wall had it on the
+left; see `.lane--transcript` in wall.css for the one line that flips it
+back.
 
     uv run panel --display        # driven by the live panel
     uv run panel-display --demo   # synthetic, no mic and no API keys

@@ -61,45 +61,55 @@
   /*
    * ── Geometry ────────────────────────────────────────────────
    *
-   * 3840 x 2160, an exact 16:9 (3840 x 9/16 = 2160, no rounding), scaled once
-   * to fit whatever display it lands on (`fitStage`, js/wall.js).
+   * The wall is 12.00m x 4.50m, 8:3. Laid out at 3840 x 1440 — an exact
+   * 320px per metre in both axes — and scaled once to fit whatever display
+   * it lands on (`fitStage`, js/wall.js).
    *
-   * The canvas was 3840 x 1440 — 8:3, standing for a 12.00m x 4.50m LED wall
-   * at 320px per metre. The sneak preview runs on an ordinary 16:9 screen
-   * instead, so the *shape* changed but the horizontal convention did not:
-   * 3840 is still twelve 320px metres across. Vertically 2160 is 6.75m of the
-   * same grid — a number with no physical claim behind it now, just the
-   * height 16:9 hands you.
+   * Four 960px (3.00m) columns: three agent lanes, then the transcript —
+   * see `.lane--transcript` in wall.css for why that one is on the right
+   * rather than the left this wall originally shipped with.
    *
-   * Two rows, not four columns: the three agents across the top, the
-   * transcript full-width underneath. `--agent-row-h` + `--transcript-row-h`
-   * is exactly `--stage-h`; the per-row vertical budgets are in wall.css.
+   * This briefly ran as two rows instead of four columns — three agents
+   * across the top, the transcript full-width underneath — for a 16:9 sneak
+   * preview at a smaller venue, on an ordinary widescreen display rather than
+   * the physical wall. `--agent-row-h` and `--transcript-row-h` existed only
+   * for that detour and left with it. `--m` did not: 3840 was twelve 320px
+   * metres across in both layouts, which is why it survived the trip there
+   * and back.
    */
   --stage-w: 3840px;
-  --stage-h: 2160px;
-  /* One metre, horizontally. Currently unreferenced: the last user was
-     `--foot-clear`, and the reflow made every remaining size a fraction of a
-     row rather than a physical length. Kept because it is the stated
-     conversion — if the show goes back onto the 12m wall, or if anything here
-     ever needs to be a real size again, this is the number it multiplies. */
-  --m: 320px;
-  --lane-w: 1280px; /* 4.00m — three of these across, exactly --stage-w */
-
-  --agent-row-h: 1280px; /* square lanes: the orb row is as tall as it is wide */
-  --transcript-row-h: 880px; /* 2160 - 1280, its 2px divider included */
+  --stage-h: 1440px;
+  --m: 320px; /* one metre */
+  --lane-w: 960px;
+  /* 3.00m — four of these across, exactly --stage-w */
 
   /*
-   * The bottom of the screen is reserved and stays empty.
+   * The readable part of the transcript column: the bubble feed, and the
+   * in-progress bubble underneath it. See the column's budget at the head of
+   * wall.css, where this number is derived.
    *
-   * On a display standing behind a stage, the lowest strip is the part heads,
-   * music stands and the front row's sightline eat first. Nothing that has to
-   * be read goes there. It used to be a full metre of a 4.5m wall; on a
-   * shorter 16:9 screen a metre of reserve is most of the transcript, so it is
-   * now 96px — a proportionate margin rather than a physical claim. This is
-   * still the one layout number most likely to need moving at load-in, once
-   * there is a real room to look down.
+   * Stated as a token rather than left to `flex: 1 1 auto` because the
+   * in-progress bubble needs a hard ceiling it can be clipped against: it
+   * grows with every word of a partial, and a percentage ceiling depends on
+   * an ancestor's height being definite, which is a fragile thing to hang
+   * "does the newest sentence stay on the screen" on. Recomputed for the
+   * column rather than the row it used to budget for — a taller, narrower
+   * space with the same two claimants.
    */
-  --foot-clear: 96px;
+  --transcript-body-h: 900px;
+
+  /*
+   * The bottom metre is reserved and stays empty.
+   *
+   * On a wall standing behind a stage, the lowest ~1m is the part heads,
+   * music stands and the front row's sightline eat first. Nothing that has to
+   * be read goes there. The 16:9 preview shrank this to a proportionate 96px,
+   * because a full metre of a 4.5m screen was most of the transcript; back on
+   * the physical wall it is a real metre again, and remains the one layout
+   * number most likely to need moving at load-in, once there is a real room
+   * to look down.
+   */
+  --foot-clear: var(--m);
 
   /*
    * The agent's permanent identity bar, across the top of their lane.
@@ -110,6 +120,26 @@
    * that still reads as a deliberate rule rather than a panel seam.
    */
   --lane-bar: 12px;
+
+  /*
+   * The transcript bubbles.
+   *
+   * The brand's radius ceiling is 6px — "sharp, not rounded" — and that is a
+   * figure for a UI viewed at 60cm. Scaled by the same ~320px/m this whole
+   * wall is drawn at, 6px is a hairline chamfer nobody in the room can see,
+   * which would make a bubble a rectangle. 28px is 8.75cm: the smallest
+   * radius that still reads as a bubble from the back of a room, and still
+   * well under the "pill" the brand is actually ruling out.
+   *
+   * The corner on the speaker's own side keeps the unscaled 6px instead. That
+   * squared corner is what points a bubble at its speaker without drawing a
+   * tail, and a tail is a shape the brand has no room for.
+   */
+  --bubble-radius: 28px;
+  --bubble-notch: 6px;
+  /* One untagged bubble: 20 + 65 + 20. Reserved in the in-progress row so the
+     feed above does not lift every time a sentence finalises. */
+  --bubble-min-h: 105px;
 
   /*
    * ── Motion ──────────────────────────────────────────────────
@@ -136,6 +166,20 @@
   --bg-wall: var(--sage-2);
   --bg-lane: color-mix(in srgb, var(--sage-3) 75%, transparent);
   --bg-divider: color-mix(in srgb, var(--sage-7) 90%, transparent);
+
+  /*
+   * The moderator's transcript bubble, and the fallback for any voice without
+   * an accent. Sage 4 against the band's own Sage 3 wash: enough to read as a
+   * surface rather than as tinted text, and no more. The three agents' bubbles
+   * take `--accent-*-wash` instead — the same step 4 of their own scale, so
+   * all four bubbles sit at one lightness and only hue tells them apart.
+   *
+   * Ricky gets a step and not an accent for the reason his name tag does not:
+   * the three accents each name one agent, and a fourth colour would imply a
+   * fourth seat on the panel.
+   */
+  --bg-bubble: var(--sage-4);
+
 
   /*
    * The stage's centre lift, which in dark mode stops 54m² of flat black
@@ -178,7 +222,8 @@
    *   --accent-*-quiet  the identity fill: the lane bar, and the colour the
    *                     orb sits at when idle. High chroma, because this is
    *                     the token doing the "which agent is this" work.
-   *   --accent-*-wash   the lane tint. Step 4, used at a fraction of itself.
+   *   --accent-*-wash   the lane tint and the transcript bubble fill. A
+   *                     thinning of `quiet` — *not* step 4. See below.
    *
    * Amber breaks the pattern at `quiet` and has to. Radix calls amber a
    * *bright* scale: its step 9 (#FFC53D) is higher-luminance than its step 8
@@ -188,18 +233,66 @@
    * 8 where jade's and cyan's are 9. No amber fill anywhere on this wall
    * carries text, so the rule that amber never pairs with light type holds
    * trivially.
+   *
+   * ── Why the washes are thinned `quiet` and not step 4 ──
+   *
+   * The step-4s do not survive being told apart from one another at 12m.
+   *
+   * Radix's low steps are deliberately near-neutral — that is what makes them
+   * usable as component backgrounds behind arbitrary content — and jade 4 and
+   * amber 4 are adjacent hues *and* near-neutral *and* near-identical in
+   * lightness, so as a pair of 4m fields they converge into two slightly
+   * different warm off-whites. Strength alone does not separate them: at an
+   * 0.78 lane the three were unmistakably coloured and jade still bled into
+   * amber, because raising the alpha of a near-neutral scales a hue difference
+   * that was never there to begin with.
+   *
+   * `quiet` is where the hue lives, and it is already the token that means
+   * "which agent is this" — so the wash is that same identity fill, thinned.
+   * Which also means amber's step-8 exception, documented above for the bar,
+   * is inherited here rather than restated: one rule, three agents.
+   *
+   * Searched rather than guessed, over steps 8-11 at every alpha, maximising
+   * the worst of two things at once:
+   *
+   * * the three pairwise CIELAB distances *between* the lanes, and
+   * * the distance between each lane and its own orb (`quiet` at rest,
+   *   `--accent-*` while speaking).
+   *
+   * The second constraint is the one that is easy to miss and expensive to
+   * get wrong: the orb is drawn in the agent's own colour, so a lane deepened
+   * toward that colour swallows it. An earlier pass optimised the lanes
+   * against each other alone, picked jade 11 / cyan 9 / amber 11 — forcing
+   * amber off yellow and into brown to match the others' darkness — and the
+   * amber orb vanished into its own lane.
+   *
+   * Winner: `quiet` for all three (jade 9 / cyan 9 / amber 8) at 0.38. Lane
+   * separation dE 14.4, lane-to-orb dE 27. Two near misses worth recording:
+   * step 11 for all three gives dE 8.5 between lanes, because jade 11 and
+   * cyan 11 are both teals; and step 12 — the obvious answer to "make it
+   * darker" — is the worst of every option at dE 4.1, because every scale's
+   * step 12 is nearly the same near-black.
+   *
+   * The amber lane does come out lighter than the other two (10 L below the
+   * ground against their 15), and that is left alone. Yellow is light; the
+   * only way to make it as dark as a green is to stop it being yellow.
+   *
+   * 0.38 is a lane figure — light enough that the name plates keep dark type
+   * on them, where past roughly 0.45 a lane starts wanting light type instead,
+   * which is a different wall. The transcript bubbles thin it further; see
+   * `.bubble` in wall.css.
    */
   --accent-jade: var(--jade-11);
   --accent-jade-quiet: var(--jade-9);
-  --accent-jade-wash: var(--jade-4);
+  --accent-jade-wash: color-mix(in srgb, var(--accent-jade-quiet) 38%, transparent);
 
   --accent-cyan: var(--cyan-11);
   --accent-cyan-quiet: var(--cyan-9);
-  --accent-cyan-wash: var(--cyan-4);
+  --accent-cyan-wash: color-mix(in srgb, var(--accent-cyan-quiet) 38%, transparent);
 
   --accent-amber: var(--amber-11);
   --accent-amber-quiet: var(--amber-8);
-  --accent-amber-wash: var(--amber-4);
+  --accent-amber-wash: color-mix(in srgb, var(--accent-amber-quiet) 38%, transparent);
 
   /* Reserved for the kill switch. Orange is negative-only, per the brand. */
   --accent-alarm: var(--orange-11);
@@ -230,6 +323,11 @@
   --bg-lane: color-mix(in srgb, var(--sage-2) 55%, transparent);
   --bg-divider: color-mix(in srgb, var(--sage-7) 70%, transparent);
   --bg-lift: color-mix(in srgb, var(--sage-4) 34%, transparent);
+  /* Sage 4 dark is a lit grey against a #070908 ground — a plain fill reads as
+     a bright box on a black wall, where in light mode it reads as paper. Held
+     back to a tint of itself so the bubble is a surface, not a panel. */
+  --bg-bubble: color-mix(in srgb, var(--sage-4) 60%, transparent);
+
 
   --text-quiet: var(--sage-9);
   --rest-dim: var(--sage-6);
@@ -240,17 +338,29 @@
    * a step below it. Amber needs no exception here — on black, step 9 is the
    * brightest thing on the scale rather than the least visible.
    */
+  /*
+   * The washes follow `quiet` here as well, which on this ground is step 8 —
+   * a lane is named by being *lighter* than the black behind it rather than
+   * darker than a light ground, and step 8 is already the dark theme's
+   * identity fill for the same reason.
+   *
+   * Thinned much harder than light mode's 0.38. A tint against #070908 is a
+   * far larger share of the available contrast than the same tint against
+   * Sage 2: at anything like the light figure the lanes become three lit
+   * panels, which is the "dark sci-fi interface" the brand rules out. Dark
+   * mode here is technical, not atmospheric.
+   */
   --accent-jade: var(--jade-9);
   --accent-jade-quiet: var(--jade-8);
-  --accent-jade-wash: var(--jade-4);
+  --accent-jade-wash: color-mix(in srgb, var(--accent-jade-quiet) 16%, transparent);
 
   --accent-cyan: var(--cyan-9);
   --accent-cyan-quiet: var(--cyan-8);
-  --accent-cyan-wash: var(--cyan-4);
+  --accent-cyan-wash: color-mix(in srgb, var(--accent-cyan-quiet) 16%, transparent);
 
   --accent-amber: var(--amber-9);
   --accent-amber-quiet: var(--amber-8);
-  --accent-amber-wash: var(--amber-4);
+  --accent-amber-wash: color-mix(in srgb, var(--accent-amber-quiet) 16%, transparent);
 
   --accent-alarm: var(--orange-9);
 }

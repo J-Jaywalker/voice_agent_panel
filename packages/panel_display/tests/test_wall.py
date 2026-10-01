@@ -29,6 +29,7 @@ from panel_core import (
     StopReason,
     StopSpeech,
     TranscriptUpdated,
+    UnverifiedSpeechDetected,
 )
 from panel_display.wall import (
     ACCENTS,
@@ -215,7 +216,7 @@ def test_the_cue_shows_and_clears_when_anyone_speaks(wall: WallState):
     assert wall.snapshot()["cue"] is None
 
 
-def test_the_cue_clears_when_James_starts_talking(wall: WallState):
+def test_the_cue_clears_when_ricky_starts_talking(wall: WallState):
     wall.apply_command(CueModerator(reason="invitation_spent"))
     wall.apply_event(HumanSpeechStarted(t=1.0))
     assert wall.snapshot()["cue"] is None
@@ -300,7 +301,7 @@ def test_the_window_slides_and_the_sequence_keeps_counting(wall: WallState):
 
 
 def test_an_agents_own_transcription_paints_its_lines(wall: WallState):
-    """Partials show live and finals append, exactly as James's do — same
+    """Partials show live and finals append, exactly as Ricky's do — same
     event, same protocol, a different socket."""
     wall.apply_event(AgentSpeechStarted(t=1.0, agent="wayne"))
 
@@ -371,6 +372,53 @@ def test_a_handover_clears_the_previous_speakers_partial(wall: WallState):
     assert wall.snapshot()["partials"] == []
 
 
+def test_a_stranger_on_the_mic_closes_ricky_unfinished_line(wall: WallState):
+    """The leak the agents never had.
+
+    An agent's abandoned partial is bounded by the next handover; Ricky's was
+    bounded by nothing, so a question of his that never finalised — because
+    the segment carrying its final came back attributed to the audience or to
+    the PA bleeding into the room — stayed under the band for the whole show.
+    `UnverifiedSpeechDetected` is the exact moment his socket moves on to
+    somebody else's segment, and therefore the moment that line stops being
+    in progress.
+    """
+    wall.apply_event(
+        TranscriptUpdated(t=1.0, speaker=HUMAN, text="Dexter, is any of this", is_final=False)
+    )
+    assert wall.snapshot()["partials"] == [partial(HUMAN, "Dexter, is any of this")]
+
+    wall.apply_event(UnverifiedSpeechDetected(t=1.4, is_final=True))
+    assert wall.snapshot()["partials"] == []
+    # And it contributes nothing of its own. The event has no text field and
+    # never may — the words were never written down anywhere in the process.
+    assert wall.snapshot()["lines"] == []
+
+
+def test_a_stranger_does_not_disturb_an_agent_mid_sentence(wall: WallState):
+    """It is Ricky's channel the stranger was heard on, so it is Ricky's line
+    that is settled by it. An agent's own socket is unaffected and still owes
+    the band a final."""
+    wall.apply_event(AgentSpeechStarted(t=1.0, agent="wayne"))
+    wall.apply_event(
+        TranscriptUpdated(t=1.1, speaker="wayne", text="the sign-off is", is_final=False)
+    )
+    wall.apply_event(UnverifiedSpeechDetected(t=1.2, is_final=False))
+    assert wall.snapshot()["partials"] == [partial("wayne", "the sign-off is")]
+
+
+def test_dropping_a_partial_reports_whether_there_was_one(wall: WallState):
+    """`DisplayServer._expire_partials` repaints off the return value, so a
+    sweep that found nothing must not mark the wall dirty thirty times a
+    second."""
+    wall.apply_event(
+        TranscriptUpdated(t=1.0, speaker=HUMAN, text="stopped arriving", is_final=False)
+    )
+    assert wall.drop_partial(HUMAN) is True
+    assert wall.snapshot()["partials"] == []
+    assert wall.drop_partial(HUMAN) is False
+
+
 def test_a_ducked_agent_still_writes_to_the_band(wall: WallState):
     wall.apply_event(AgentSpeechStarted(t=1.0, agent="wayne"))
     wall.apply_command(DuckSpeech(agent="wayne", gain_db=-18.0, ramp_ms=80))
@@ -385,7 +433,7 @@ def test_a_ducked_agent_still_writes_to_the_band(wall: WallState):
 def test_two_voices_mid_sentence_both_show(wall: WallState):
     """The barge-in beat, and the reason `partials` is keyed by speaker.
 
-    James's first partials land while the interrupted agent's socket is still
+    Ricky's first partials land while the interrupted agent's socket is still
     returning partials for audio the room has already heard. One shared string
     would flicker between them; two rows read the way the room sounds. Agents
     come first and the moderator last, so his in-progress line sits closest to

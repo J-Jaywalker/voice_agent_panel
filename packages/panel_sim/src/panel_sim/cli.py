@@ -1,6 +1,6 @@
 """Text-mode panel harness.
 
-Type as James; watch the floor controller arbitrate. No audio, no venue, no AV
+Type as Ricky; watch the floor controller arbitrate. No audio, no venue, no AV
 team, no credentials in stub mode. This is where personas get written and
 thresholds get tuned, in parallel with the audio pipeline being built — see
 FEASIBILITY.md 5.2.
@@ -157,7 +157,7 @@ class Simulation:
                 console.print(f"  [yellow]✋ wants in:[/] {hands} [dim](not invited)[/]")
 
             case CueModerator():
-                console.print(f"  [magenta]▸ hand back to James ({command.reason})[/]")
+                console.print(f"  [magenta]▸ hand back to Ricky ({command.reason})[/]")
 
     def _gather(self, agents: tuple[str, ...]) -> None:
         """Speculative proposals, in parallel — as production will do.
@@ -233,7 +233,7 @@ class Simulation:
         (see `FloorController._cue_overdue`). The live runtime ticks every
         100ms; this harness has no clock of its own, so without this a silent
         named agent would leave the sim sitting on an armed beat that nothing
-        ever fires, and `▸ hand back to James` would simply never print.
+        ever fires, and `▸ hand back to Ricky` would simply never print.
 
         Gathering here is synchronous, so by this point every brain has already
         returned: the beat can only be resolved one way and there is nothing to
@@ -290,7 +290,7 @@ def _jsonable(value):
 
 HELP = r"""
 [bold]Commands[/]
-  <text>          speak as James — a QUESTION invites the panel, a
+  <text>          speak as Ricky — a QUESTION invites the panel, a
                   statement invites nobody
   /open \[agent] \[n]  open the floor by hand (backstop for a missed cue)
   /close          revoke a standing invitation
@@ -329,7 +329,7 @@ def main() -> None:
 
     while True:
         try:
-            line = console.input("\n[bold green]James ›[/] ").strip()
+            line = console.input("\n[bold green]Ricky ›[/] ").strip()
         except (EOFError, KeyboardInterrupt):
             break
         if not line:

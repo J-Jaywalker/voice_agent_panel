@@ -1,6 +1,6 @@
 """Persona schema tests: aliases and pronunciation data.
 
-Regression coverage for the STT misrecognition failure (James said "Melia",
+Regression coverage for the STT misrecognition failure (Ricky said "Melia",
 Speechmatics transcribed "Amelia", which the floor's `\\b(amelia|melia)\\b`
 address pattern cannot match because the leading "A" removes the word
 boundary — see CLAUDE.md and `panel_runtime.stt`'s module docstring).
@@ -35,7 +35,7 @@ def test_aliases_includes_yaml_declared_alias(cast: PanelCast) -> None:
 def test_aliases_is_the_name_the_id_and_whatever_the_yaml_declares() -> None:
     """`aliases()`'s full contract, spelled out: `floor.py` builds its
     address regexes from this and nothing else, so the set has to be
-    exactly the display name, the short id James and the operator console
+    exactly the display name, the short id Ricky and the operator console
     use, and any spellings the YAML declares. Nothing is derived from the
     name's shape — a name a human might say differently is a fact about
     the persona and belongs in `aliases:`.

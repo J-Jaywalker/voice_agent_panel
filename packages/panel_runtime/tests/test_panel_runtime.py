@@ -164,7 +164,7 @@ async def _run_until_intro_done(runtime: PanelRuntime, *, timeout: float | None 
 
 
 def test_introduction_round_completes_with_no_further_human_input(runtime: PanelRuntime):
-    """The whole point: once James says the magic words, all three agents get
+    """The whole point: once Ricky says the magic words, all three agents get
     a turn with nobody re-prompting the panel in between."""
 
     async def body():
@@ -220,7 +220,7 @@ def test_introduction_round_never_grants_two_agents_at_once(runtime: PanelRuntim
 def test_fixed_utterance_beats_a_speculative_candidate(runtime: PanelRuntime):
     """The introduction the panel actually rehearsed must be the one it says.
 
-    James's opening line arrives as a long run of *partial* transcripts, each
+    Ricky's opening line arrives as a long run of *partial* transcripts, each
     re-firing speculation (`scoring.speculation_interval_s`), while the
     introduction latch in `panel_core.floor` fires only on the *final*
     transcript. So every agent already has a speculative `Candidate` parked by
@@ -440,7 +440,7 @@ def test_streamed_sentences_never_corrupt_across_chunk_boundaries(
 #
 # Speechmatics' `EndOfTurn` lands within a few milliseconds of the final that
 # names an agent, so `TurnYielded` normally beats the address verdict. If
-# arbitration runs first the floor is still closed: James gets cued, the panel
+# arbitration runs first the floor is still closed: Ricky gets cued, the panel
 # says nothing, and the audience hears the dead air this project spent a week
 # removing. So `PanelRuntime` holds that one event — and only that one — until
 # the verdict has been emitted.
@@ -759,7 +759,7 @@ def test_a_verdict_carries_all_the_way_to_a_granted_turn(monkeypatch):
 # shared a key and each agent got at most one in-flight generation for the
 # whole turn. On stage that meant: Dexter and Melia finished in ~2.1s, freed
 # their key and were re-asked against a later partial; Wayne took 3967ms,
-# spanning James's entire question, so no fresher request could start and his
+# spanning Ricky's entire question, so no fresher request could start and his
 # one answer was necessarily written against the turn's oldest input. The
 # slower the agent, the staler the input behind its winning line — structurally,
 # and always the same agent.

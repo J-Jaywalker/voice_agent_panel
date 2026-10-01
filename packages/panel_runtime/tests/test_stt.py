@@ -17,6 +17,7 @@ from typing import Self
 import pytest
 from panel_core import PanelCast
 from panel_runtime.stt import (
+    SHOW_VOCAB,
     PushAudioSource,
     STTConfig,
     _AgentSTTSession,
@@ -37,9 +38,23 @@ def cast() -> PanelCast:
 def test_vocab_from_cast_has_one_entry_per_persona_with_sounds_like(cast: PanelCast) -> None:
     vocab = vocab_from_cast(cast)
     contents = {entry["content"] for entry in vocab}
-    assert contents == {"Melia"}, "only melia.yaml declares `sounds_like` today"
-    (entry,) = vocab
+    assert contents == {"Melia", "Speechmatics"}, (
+        "only melia.yaml declares `sounds_like` today; the other is SHOW_VOCAB"
+    )
+    entry = next(e for e in vocab if e["content"] == "Melia")
     assert entry["sounds_like"] == cast["melia"].sounds_like
+
+
+def test_show_vocab_rides_on_every_session(cast: PanelCast) -> None:
+    """The company's name is not any persona's property, so it is not in
+    `personas/*.yaml` — but every session writes to the transcript band on
+    the wall, so every session has to spell it. This is the only path into
+    `additional_vocab`, which is what makes "every" true of Ricky's mic and
+    the three display-only agent channels alike."""
+    vocab = vocab_from_cast(cast)
+    for entry in SHOW_VOCAB:
+        assert entry in vocab
+    assert STTConfig.from_cast(cast).additional_vocab == vocab
 
 
 def test_stt_config_from_cast_populates_additional_vocab(cast: PanelCast) -> None:
@@ -130,7 +145,7 @@ def test_rejected_vocab_falls_back_to_a_working_session(
             config=config,
             api_key="test-key",
             events=asyncio.Queue(),
-            name="James",
+            name="ricky",
         )
         await session.run()
         return session
@@ -175,7 +190,7 @@ def test_vocab_rejection_when_no_vocab_was_set_is_a_plain_failure(
             config=config,
             api_key="test-key",
             events=asyncio.Queue(),
-            name="James",
+            name="ricky",
         )
         session.stop()  # run() must not reconnect forever inside this test
         try:

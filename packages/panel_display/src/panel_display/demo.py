@@ -5,7 +5,7 @@
 
 Why this exists rather than "just run the panel": the wall has to be checked
 against the real hardware, and the two things that matter most at load-in —
-does the 16:9 layout actually fill the display's output, and can the back row
+does the 8:3 layout actually fill the display's output, and can the back row
 read a name — need a picture on the wall, not a working panel. This needs
 no mic, no API keys, no speakers and no moderator. Bring up the wall first,
 then bring up the show.
@@ -13,7 +13,7 @@ then bring up the show.
 `--demo` drives a loop of the beats the wall has to render: the moderator
 talking, the panel thinking, an agent invited and then speaking, a
 backchannel duck mid-turn, a raised hand nobody took, and the floor going
-back to James. If a state never appears here, nobody will see it before the
+back to Ricky. If a state never appears here, nobody will see it before the
 night.
 
 The envelope is synthesised rather than sampled, and that is the one thing
@@ -118,7 +118,7 @@ class SyntheticPanel:
                 value = 0.34 * syllable * (0.4 + 0.6 * stress) * breath * gate
                 value *= random.uniform(0.75, 1.0)
                 values[self.speaking] = value * (0.28 if self.ducked else 1.0)
-            # James's mic. Live only while he is mid-question, which is what
+            # Ricky's mic. Live only while he is mid-question, which is what
             # makes the moderator dot worth looking at.
             values[HUMAN] = 0.18 * random.uniform(0.6, 1.0) if self.human else 0.0
             self.server.set_levels(values)
@@ -173,7 +173,7 @@ class SyntheticPanel:
         )
 
     async def moderator(self, line: str) -> None:
-        """James asks something, one word at a time, then it finalises."""
+        """Ricky asks something, one word at a time, then it finalises."""
         self.human = True
         self.server.on_event(HumanSpeechStarted(t=self.t))
         self.paint()
@@ -264,7 +264,7 @@ async def main_async(args: argparse.Namespace) -> None:
     if url is None:
         raise SystemExit(f"could not bind port {args.port}")
     print(f"video wall: {url}")
-    print("open it on the wall machine, fullscreen, 16:9.")
+    print("open it on the wall machine, fullscreen, 8:3.")
 
     tasks = []
     if args.demo:

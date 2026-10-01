@@ -1,14 +1,15 @@
 <!doctype html>
 <html lang="en-GB" data-theme="light">
-  <head>
-    <meta charset="utf-8" />
-    <title>Panel — video wall</title>
 
-    <!--
+<head>
+  <meta charset="utf-8" />
+  <title>Panel — video wall</title>
+
+  <!--
       Light is the wall. `?theme=dark` is a load-in escape hatch and nothing
       more — no toggle, no persistence, no UI — for the case where the room
-      turns out darker than anyone expected and a screen-filling field of
-      Sage 2 is too much light to put behind a lit stage.
+      turns out darker than anyone expected and 54m² of Sage 2 is too much
+      light to put behind a lit stage.
 
       The class is the part that does the work: the vendored Radix dark blocks
       are scoped to `.dark`, so setting only `data-theme` would flip nothing
@@ -16,96 +17,110 @@
       Both go on together, and this runs before the stylesheets so the wall
       never paints one theme and then the other in front of an audience.
     -->
-    <script>
-      if (new URLSearchParams(location.search).get("theme") === "dark") {
-        document.documentElement.classList.add("dark");
-        document.documentElement.setAttribute("data-theme", "dark");
-      }
-    </script>
+  <script>
+    if (new URLSearchParams(location.search).get("theme") === "dark") {
+      document.documentElement.classList.add("dark");
+      document.documentElement.setAttribute("data-theme", "dark");
+    }
+  </script>
 
-    <!--
+  <!--
       No viewport meta and no responsive breakpoints, on purpose. This is not a
       web page that might be opened on a phone; it is a stage display with one
-      fixed aspect ratio (16:9). The stage is laid out at a fixed 3840x2160 and
-      scaled to whatever the screen's real pixel count turns out to be at
-      load-in — see `fitStage` in js/wall.js. Designing in fixed units and
-      scaling once is what makes "this element is a third of the screen" a
-      statement that survives meeting the actual hardware.
+      fixed aspect ratio: 8:3, for the 12m x 4.5m ultrawide LED wall this is
+      drawn for. The stage is laid out at a fixed 3840x1440 and scaled to
+      whatever the screen's real pixel count turns out to be at load-in — see
+      `fitStage` in js/wall.js. Designing in fixed units and scaling once is
+      what makes "this element is three metres of wall" a statement that
+      survives meeting the actual hardware.
     -->
-    <link rel="stylesheet" href="/static/css/tokens.css" />
-    <link rel="stylesheet" href="/static/css/wall.css" />
-  </head>
+  <link rel="stylesheet" href="/static/css/tokens.css" />
+  <link rel="stylesheet" href="/static/css/wall.css" />
+</head>
 
-  <body>
-    <!--
+<body>
+  <!--
       `#stage` is the wall. Everything inside is positioned in stage pixels:
-      3840 x 2160, 16:9. Two rows — the three agents across the top, the
-      transcript full-width beneath them. Source order is layout order here,
-      so the agent row comes first.
+      3840 x 1440, 8:3. Four columns, left to right — the three agent lanes,
+      then the transcript. Source order is layout order here, so the agents
+      come first, which is what puts the transcript on the right rather than
+      the left.
 
-      3840 is still twelve 320px metres across — the one convention left over
-      from the 12m LED wall this was drawn for, kept as `--m` in tokens.css so
-      the width means the same thing it always did.
+      3840 is twelve 320px metres across — kept as `--m` in tokens.css so the
+      width means the same thing it always did, back to the 12m LED wall this
+      was first drawn for.
     -->
-    <div id="stage" class="stage" aria-hidden="true">
-      <!--
-        Three agent lanes, a third of the width each, injected from the cast
-        on connect.
+  <div id="stage" class="stage" aria-hidden="true">
+    <!--
+        Three agent lanes, 960px / 3m each, injected from the cast on connect.
       -->
-      <div class="lanes" data-role="agents"></div>
+    <div class="lanes" data-role="agents"></div>
 
-      <!--
-        Transcript, full width, along the bottom. All four voices — the
-        moderator's mic and each agent's own played audio — arrive here as
-        real transcription, so the lines are timed by speech rather than
-        estimated. See the note in wall.css.
+    <!--
+        Transcript, one lane, on the right. The wall this was first drawn for
+        had it on the left — this is the one line that would put it back
+        there: move this `<section>` before `.lanes` above.
+
+        All four voices — the moderator's mic and each agent's own played
+        audio — arrive here as real transcription, so the lines are timed by
+        speech rather than estimated. See the note in wall.css.
       -->
-      <section class="band band--transcript">
-        <header class="lane__eyebrow">
-          <span class="dot" data-role="human-dot"></span>
-          <span data-role="transcript-label">Moderator</span>
-        </header>
+    <section class="lane lane--transcript">
+      <header class="lane__eyebrow">
+        <span class="dot" data-role="human-dot"></span>
+        <span data-role="transcript-label">Moderator</span>
+      </header>
 
-        <div class="transcript">
-          <div class="transcript__feed" data-role="lines"></div>
-          <!--
-            In-progress lines, one per live voice. More than one at a time is
-            the barge-in beat: James coming in over an agent whose socket is
-            still finalising what the room already heard.
+      <div class="transcript">
+        <!--
+            Finalised bubbles. The shrinkable half of the band: when the row
+            below grows, this is what gives up the room, oldest bubble first.
           -->
-          <div class="transcript__partials" data-role="partials"></div>
-        </div>
+        <div class="transcript__feed" data-role="lines"></div>
+        <!--
+            In-progress bubbles, one per live voice. More than one at a time is
+            the barge-in beat: Ricky coming in over an agent whose socket is
+            still finalising what the room already heard.
 
-        <footer class="lane__foot">
-          <span class="lane__cue" data-role="cue"></span>
-        </footer>
-      </section>
-    </div>
+            Two containers rather than one feed, and that is what keeps a long
+            partial on the screen: this row never shrinks, so a sentence that
+            grows to four lines takes four lines and pushes the finalised
+            bubbles up through the mask instead of running off the bottom.
+          -->
+        <div class="transcript__partials" data-role="partials"></div>
+      </div>
 
-    <!-- Shown only while the socket is down. Nothing else ever covers the wall. -->
-    <div class="offline" data-role="offline">
-      <span>waiting for the panel</span>
-    </div>
+      <footer class="lane__foot">
+        <span class="lane__cue" data-role="cue"></span>
+      </footer>
+    </section>
+  </div>
 
-    <template data-role="agent-template">
-      <section class="lane lane--agent" data-state="idle">
-        <header class="lane__eyebrow">
-          <span class="dot"></span>
-          <span data-role="status"></span>
-        </header>
+  <!-- Shown only while the socket is down. Nothing else ever covers the wall. -->
+  <div class="offline" data-role="offline">
+    <span>waiting for the panel</span>
+  </div>
 
-        <div class="orb">
-          <canvas data-role="canvas"></canvas>
-        </div>
+  <template data-role="agent-template">
+    <section class="lane lane--agent" data-state="idle">
+      <header class="lane__eyebrow">
+        <span class="dot"></span>
+        <span data-role="status"></span>
+      </header>
 
-        <div class="plate">
-          <h1 class="plate__name" data-role="name"></h1>
-          <p class="plate__role" data-role="role"></p>
-          <p class="plate__employer" data-role="employer"></p>
-        </div>
-      </section>
-    </template>
+      <div class="orb">
+        <canvas data-role="canvas"></canvas>
+      </div>
 
-    <script type="module" src="/static/js/wall.js"></script>
-  </body>
+      <div class="plate">
+        <h1 class="plate__name" data-role="name"></h1>
+        <p class="plate__role" data-role="role"></p>
+        <p class="plate__employer" data-role="employer"></p>
+      </div>
+    </section>
+  </template>
+
+  <script type="module" src="/static/js/wall.js"></script>
+</body>
+
 </html>

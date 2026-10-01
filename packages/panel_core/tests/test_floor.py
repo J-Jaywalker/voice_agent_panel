@@ -86,7 +86,7 @@ def strong(**overrides) -> Signals:
 
 
 def invite(t: float = 0.0, text: str = "What holds it back?") -> TranscriptUpdated:
-    """James opening the floor.
+    """Ricky opening the floor.
 
     Every test that expects an agent to speak must go through one of these.
     That is the point: without an invitation there is no turn, so the
@@ -121,7 +121,7 @@ def test_human_speech_alone_does_not_duck_the_agent(fc, state):
 
     Ducking on VAD used to be the reflex: fast, but blind to who was talking,
     so the audience and the PA bleeding back into the stage mic ducked an
-    agent exactly as readily as James did. The duck now waits for STT to say
+    agent exactly as readily as Ricky did. The duck now waits for STT to say
     this is him — see `test_transcript_evidence_ducks_the_agent` for the
     reflex that replaced it.
     """
@@ -137,7 +137,7 @@ def test_transcript_evidence_ducks_the_agent(fc, state):
     """The reflex, now gated on STT rather than VAD.
 
     A `TranscriptUpdated` on the human channel is only ever built for a
-    segment already attributed to James (`panel_runtime.stt`), so the first
+    segment already attributed to Ricky (`panel_runtime.stt`), so the first
     one to arrive while an agent is speaking is the first moment this reducer
     knows it is him — and that is when the duck opens.
     """
@@ -154,11 +154,11 @@ def test_transcript_evidence_ducks_the_agent(fc, state):
     assert not [c for c in cmds if isinstance(c, StopSpeech)], "a backchannel alone stops nothing"
     assert state.speaking == "wayne", "the agent is quieter, not stopped"
     assert state.ducked_agent == "wayne"
-    assert state.duck_confirmed is True, "the duck cannot open except already confirmed as James"
+    assert state.duck_confirmed is True, "the duck cannot open except already confirmed as Ricky"
 
 
 def test_backchannel_resumes_the_agent(fc, state):
-    """James says 'mm-hm'. The agent must not stop."""
+    """Ricky says 'mm-hm'. The agent must not stop."""
     state = speaking_agent(fc, state)
     state, _ = fc.reduce(state, HumanSpeechStarted(t=2.0))
     state, _ = fc.reduce(
@@ -239,7 +239,7 @@ def test_human_speech_with_no_agent_speaking_just_takes_the_floor(fc, state):
 
 # ------------------------------------------------- identity-gated interrupts
 #
-# Only James may stop an agent. His mic is on a stage, so the audience and the
+# Only Ricky may stop an agent. His mic is on a stage, so the audience and the
 # PA bleeding back into the room both land on it; `panel_runtime.stt` gives a
 # segment it could not attribute to the enrolled moderator no text at all and
 # reports it as `UnverifiedSpeechDetected` instead. What that buys here is
@@ -250,13 +250,13 @@ def test_human_speech_with_no_agent_speaking_just_takes_the_floor(fc, state):
 # longer open one either — `UnverifiedSpeechDetected` reaching this reducer
 # with no duck already in progress is a no-op, not a downgrade. What remains
 # to guard is the case the identity gate was always really for: a stranger
-# talking *after* James has already opened a confirmed duck must not undo his
+# talking *after* Ricky has already opened a confirmed duck must not undo his
 # confirmation and hand the promotion back to duration alone.
 #
 # The asymmetry is the whole design. Requiring positive confirmation before
 # allowing a barge-in would put a network round trip in the interrupt path,
 # which is precisely what "VAD owns stopping, STT owns understanding"
-# (CLAUDE.md) keeps out of it — so a duck already confirmed as James must
+# (CLAUDE.md) keeps out of it — so a duck already confirmed as Ricky must
 # behave exactly as before any of this existed.
 
 
@@ -289,12 +289,12 @@ def test_a_stranger_alone_never_ducks_or_stops_an_agent(fc, state):
     assert state.duck_confirmed is None
 
 
-def test_a_stranger_cannot_undo_james_s_confirmation_on_either_promotion_path(fc, state):
+def test_a_stranger_cannot_undo_ricky_s_confirmation_on_either_promotion_path(fc, state):
     """There are two duration-only promotion paths, and both are gated.
 
     `_tick` fires while the voice is still going and is the one that trips on
     stage; `_human_ended` catches speech that stops just past the threshold.
-    Here James has already opened and confirmed a duck with a backchannel;
+    Here Ricky has already opened and confirmed a duck with a backchannel;
     a stranger heard mid-duck must not undo that on either path.
     """
     state = speaking_agent(fc, state)
@@ -309,14 +309,14 @@ def test_a_stranger_cannot_undo_james_s_confirmation_on_either_promotion_path(fc
     state, cmds = fc.reduce(
         state, HumanSpeechEnded(t=2.0 + fc.config.backchannel_max_duration_s + 0.05)
     )
-    assert [c for c in cmds if isinstance(c, StopSpeech)], "James's own duration promotes normally"
+    assert [c for c in cmds if isinstance(c, StopSpeech)], "Ricky's own duration promotes normally"
     assert state.speaking is None
 
 
 def test_a_confirmed_duck_still_stops_on_duration(fc, state):
-    """James's own sustained speech is untouched by the gate.
+    """Ricky's own sustained speech is untouched by the gate.
 
-    'mm-hm' is used as the confirming segment deliberately: it is James, so it
+    'mm-hm' is used as the confirming segment deliberately: it is Ricky, so it
     confirms, but it is a backchannel, so the *content* path does not fire and
     the promotion under test really is the duration one.
     """
@@ -335,12 +335,12 @@ def test_a_confirmed_duck_still_stops_on_duration(fc, state):
     assert state.floor_holder == HUMAN
 
 
-def test_room_noise_after_james_is_confirmed_does_not_downgrade_him(fc, state):
+def test_room_noise_after_ricky_is_confirmed_does_not_downgrade_him(fc, state):
     """He talks, the room reacts, he keeps going. He must still be able to stop.
 
     Both kinds of evidence arrive during one duck, and a stranger segment
     landing second must not undo a confirmation. Without the latch, applause
-    over the top of James's interruption would hand the floor back to the
+    over the top of Ricky's interruption would hand the floor back to the
     agent he was interrupting.
     """
     state = speaking_agent(fc, state)
@@ -357,14 +357,14 @@ def test_room_noise_after_james_is_confirmed_does_not_downgrade_him(fc, state):
     assert state.speaking is None
 
 
-def test_james_words_stop_an_agent_even_after_stranger_evidence(fc, state):
+def test_ricky_words_stop_an_agent_even_after_stranger_evidence(fc, state):
     """The content path needs no gate, and this proves it is already safe.
 
     Strangers produce no `TranscriptUpdated` at all after the `stt.py` change,
-    so any transcript reaching this reducer is James by construction — the
+    so any transcript reaching this reducer is Ricky by construction — the
     content-based promotion is speaker-safe without a runtime check, and a
     redundant one would only be another thing to get wrong. Here a stranger is
-    heard first (before any duck exists, so it is a no-op) and James speaks
+    heard first (before any duck exists, so it is a no-op) and Ricky speaks
     over them; his words win.
     """
     state = speaking_agent(fc, state)
@@ -388,7 +388,7 @@ def test_a_duck_never_opens_without_being_confirmed(fc, state):
     The duck used to be able to sit at `duck_confirmed is None` — VAD had
     opened it before anyone knew whose voice it was, and duration promoted it
     anyway (CLAUDE.md: `None` behaves as "no evidence required", never as "not
-    James"). That state is no longer reachable: the only place `ducked_agent`
+    Ricky"). That state is no longer reachable: the only place `ducked_agent`
     is ever set (`_transcript`) sets `duck_confirmed=True` in the same
     assignment, because the identity gate already ran in `panel_runtime.stt`
     before this reducer saw the segment at all. If a duck is open, it is
@@ -477,7 +477,7 @@ def test_addressed_agent_gets_the_floor_over_a_higher_score(fc, state):
 
 
 def test_every_live_agent_chips_in_once_before_the_floor_closes(fc, state):
-    """James names Wayne. Dexter and Melia still each get a turn afterwards,
+    """Ricky names Wayne. Dexter and Melia still each get a turn afterwards,
     and the floor closes the moment all three have spoken — not before, and
     not by relaying indefinitely either.
     """
@@ -526,7 +526,7 @@ def test_every_live_agent_chips_in_once_before_the_floor_closes(fc, state):
 
     state, cmds = fc.reduce(state, AgentSpeechEnded(t=13.0, agent="melia", completed=True))
     assert not [c for c in cmds if isinstance(c, StartSpeech)], (
-        "everyone has spoken — the floor goes back to James, not round again"
+        "everyone has spoken — the floor goes back to Ricky, not round again"
     )
     assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [
         CueReason.INVITATION_SPENT
@@ -544,7 +544,7 @@ def test_a_named_agent_answers_alone(fc, state):
     )
     state, cmds = fc.reduce(state, TurnYielded(t=1.0))
     assert not [c for c in cmds if isinstance(c, StartSpeech)]
-    # Wayne is given the beat first; the floor still ends up back with James.
+    # Wayne is given the beat first; the floor still ends up back with Ricky.
     _, cmds = fc.reduce(state, Tick(t=1.0 + fc.config.invited_agent_grace_s))
     assert [c for c in cmds if isinstance(c, CueModerator)]
 
@@ -552,9 +552,9 @@ def test_a_named_agent_answers_alone(fc, state):
 def test_a_named_agent_may_not_answer_with_a_line_written_before_the_question(fc, state):
     """The failure this guard exists for, from a live run.
 
-    James said "So, Wayne, uh, where are we actually on the adoption curve?".
+    Ricky said "So, Wayne, uh, where are we actually on the adoption curve?".
     Speculation fired on the opening fragment, so Wayne's brain was asked before
-    anything had been asked of it and wrote "Take your time, James — we'll be
+    anything had been asked of it and wrote "Take your time, Ricky — we'll be
     here." A named invitation bypasses the score floor, so that went on the PA
     in answer to a direct question. Silence plus a cue is recoverable; this is
     not. The same guard covers the slower version: a proposal left over from a
@@ -573,7 +573,7 @@ def test_a_named_agent_may_not_answer_with_a_line_written_before_the_question(fc
             t=0.2,
             input_t=0.0,
             agent="wayne",
-            utterance="Take your time, James.",
+            utterance="Take your time, Ricky.",
             signals=strong(),
         ),
         invite(20.0, "So Wayne, where are we on the adoption curve?"),
@@ -601,7 +601,7 @@ def test_a_named_agent_may_not_answer_with_a_line_that_raced_past_the_question(f
                       adoption curve?" lands, and invites Wayne.
         12:54:51.437  that 3967ms generation finally finishes — 0.77s *after*
                       the invitation.
-        12:54:52.233  Wayne airs "Happy to let James finish setting the table
+        12:54:52.233  Wayne airs "Happy to let Ricky finish setting the table
                       —" in answer to a direct question, because it was the
                       only proposal in hand.
         12:54:53.054  the real answer exists. 1.6s too late.
@@ -634,7 +634,7 @@ def test_a_named_agent_may_not_answer_with_a_line_that_raced_past_the_question(f
             t=51.437,
             input_t=47.461,
             agent="wayne",
-            utterance="Happy to let James finish setting the table —",
+            utterance="Happy to let Ricky finish setting the table —",
             signals=strong(),
             epoch=1,
         ),
@@ -648,11 +648,11 @@ def test_a_named_agent_may_not_answer_with_a_line_that_raced_past_the_question(f
     assert not [c for c in cmds if isinstance(c, StartSpeech)], (
         "a line written before the question was aired in answer to it"
     )
-    assert state.proposals["wayne"].utterance.startswith("Happy to let James"), (
+    assert state.proposals["wayne"].utterance.startswith("Happy to let Ricky"), (
         "refused for airing, but kept — nothing here throws a fallback away"
     )
 
-    # James is cued instead, and the invitation survives so the real answer can
+    # Ricky is cued instead, and the invitation survives so the real answer can
     # still take it.
     state, cmds = fc.reduce(state, Tick(t=51.44 + fc.config.invited_agent_grace_s))
     assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [
@@ -692,7 +692,7 @@ def test_a_named_agent_answers_with_a_line_written_during_the_question(fc, state
     state, _ = run(
         fc,
         state,
-        # James is mid-question and the partial already carries it, so this is
+        # Ricky is mid-question and the partial already carries it, so this is
         # the round whose answer is worth having.
         TranscriptUpdated(
             t=19.4, speaker=HUMAN, text="So Wayne, where are we on the adoption", is_final=False
@@ -743,7 +743,7 @@ def test_a_silent_arbitration_asks_the_panel_again(fc, state):
 
     Recovery used to depend on a stream that happened to still be in flight.
     When the only generation for the turn had already finished — against a
-    partial, or before James had asked anything — nothing re-drove arbitration
+    partial, or before Ricky had asked anything — nothing re-drove arbitration
     and a live invitation sat on the floor until its 25s TTL.
     """
     state, _ = fc.reduce(state, invite(20.0, "So Wayne, where are we on the curve?"))
@@ -776,7 +776,7 @@ def test_an_unnamed_question_opens_the_floor_to_the_panel(fc, state):
 def test_a_statement_invites_nobody(fc, state):
     """The bug this whole model exists to fix.
 
-    James talking about the product is not a cue. Agents may want the floor —
+    Ricky talking about the product is not a cue. Agents may want the floor —
     they just do not get to take it.
     """
     state, cmds = run(
@@ -799,7 +799,7 @@ def test_a_statement_invites_nobody(fc, state):
 
 
 def test_wanting_the_floor_is_surfaced_to_the_operator(fc, state):
-    """A raised hand is visible, not self-served — James decides."""
+    """A raised hand is visible, not self-served — Ricky decides."""
     state, _ = run(
         fc,
         state,
@@ -839,7 +839,7 @@ def test_operator_can_open_a_floor_the_patterns_missed(fc, state):
 
 
 def test_an_open_invitation_is_spent_and_the_floor_goes_back(fc, state):
-    """Two agents on one question, then back to James — not an infinite relay."""
+    """Two agents on one question, then back to Ricky — not an infinite relay."""
     config = FloorConfig(open_invitation_turns=1)
     fc = FloorController(fc.cast, config)
     state, _ = run(
@@ -876,7 +876,7 @@ def test_silence_is_a_legitimate_outcome(fc, state):
 
     The reason is `below_floor`, not the old catch-all `no_candidate`: a
     rehearsal needs to tell "the panel had nothing" from "the panel had
-    something and it was not good enough" from "the one agent James named said
+    something and it was not good enough" from "the one agent Ricky named said
     nothing", because those are three different fixes.
     """
     state, _ = run(
@@ -1108,7 +1108,7 @@ def test_a_partial_too_short_to_answer_is_not_worth_asking_about(fc, state):
 def test_a_short_final_always_asks_however_few_words(fc, state):
     """The word gate is for partials only.
 
-    "Wayne, thoughts?" is a real thing James says, and by the time it is final
+    "Wayne, thoughts?" is a real thing Ricky says, and by the time it is final
     the invitation exists — gating it would leave the named agent permanently
     silent on the shortest direct questions.
     """
@@ -1273,7 +1273,7 @@ def test_turn_immediately_after_an_agent_finishes_is_not_starved(fc, state):
         AgentSpeechStarted(t=0.2, agent="wayne"),
         AgentSpeechEnded(t=5.0, agent="wayne", completed=True),
     )
-    # James comes straight back in at the same instant the agent stopped.
+    # Ricky comes straight back in at the same instant the agent stopped.
     state, cmds = run(
         fc,
         state,
@@ -1287,7 +1287,7 @@ def test_turn_immediately_after_an_agent_finishes_is_not_starved(fc, state):
 
 
 def _open_turn(fc, state, agent="dex", *, invited_at=0.0, started=0.5, ended=30.0):
-    """James opens the floor, one agent takes it and speaks for `ended - started`.
+    """Ricky opens the floor, one agent takes it and speaks for `ended - started`.
 
     Turn lengths on stage run 20-30s, which is the whole point of the fixtures
     below: the numbers here are not arbitrary, they straddle `invitation_ttl_s`.
@@ -1321,7 +1321,7 @@ def test_a_long_turn_does_not_age_out_its_own_invitation(fc, state):
                       and nothing noticed, because `_expire_invitation` is
                       held off while anyone is on the PA.
         16:40:37.940  first tick afterwards: `invitation_expired`, floor
-                      closed, James told to fill.
+                      closed, Ricky told to fill.
         16:40:39.695  the other two agents' lines arrive, to a closed floor.
 
     Nobody was unwilling. The invitation died of old age at the exact moment
@@ -1382,15 +1382,23 @@ def test_a_bid_written_before_the_turn_does_not_survive_it(fc, state):
     has already been passed over once. Measured on the input clock, so a slow
     generation that started before the turn is still refused however late it
     happened to arrive.
+
+    The turn opens at 1.0 rather than the fixture's default 0.0 to leave room
+    for a bid that is genuinely older than the round that granted it. The
+    cutoff is `turn_input_t` — the moment Dexter's own line was written
+    against — not `speaking_since`, so "before the turn" has to mean before
+    that round, not merely before the audio. A bid between the two clocks is
+    a sibling of the granted line and is kept on purpose; see
+    `test_the_opening_rounds_siblings_survive_the_turn_they_opened`.
     """
-    state = _open_turn(fc, state)
+    state = _open_turn(fc, state, invited_at=1.0, started=1.5)
     state, _ = fc.reduce(
         state,
         AgentProposal(
             t=2.5,
-            input_t=0.05,  # started before Dexter had the floor
+            input_t=0.05,  # answering a moment before this turn's round opened
             agent="wayne",
-            utterance="Take your time, James.",
+            utterance="Take your time, Ricky.",
             signals=strong(),
         ),
     )
@@ -1399,6 +1407,45 @@ def test_a_bid_written_before_the_turn_does_not_survive_it(fc, state):
     assert "wayne" not in state.proposals
     assert not [c for c in cmds if isinstance(c, StartSpeech)]
     assert [c for c in cmds if isinstance(c, RequestProposals)]
+
+
+def test_the_opening_rounds_siblings_survive_the_turn_they_opened(fc, state):
+    """The 110ms case, 1 Oct 2026. The other half of the test above.
+
+    The round that grants a turn also writes the other agents' lines, and it
+    necessarily opens *before* the winner reaches the PA — the address
+    classifier hold, arbitration and TTS first-audio all sit in between.
+    Measured from `speaking_since` those siblings were always "older than the
+    turn" and were always discarded, so the filter could only ever return
+    empty and every handover paid a cold generation. Measured from
+    `turn_input_t` they are what they are: answers to the same moment as the
+    line the room just heard, and the fallback whenever nothing fresher
+    exists.
+
+    This is the half a revert to `speaking_since` would break silently —
+    `test_a_bid_raised_during_a_turn_survives_it_and_is_taken_at_once` writes
+    its bid *during* the turn and so passes under either clock.
+    """
+    state = _open_turn(fc, state)  # Dexter granted off input_t=0.0
+    state, _ = fc.reduce(
+        state,
+        AgentProposal(
+            t=0.15,
+            input_t=0.0,  # same round as Dexter's line, before the grant
+            agent="wayne",
+            utterance="Not on the numbers I'm looking at.",
+            signals=strong(),
+        ),
+    )
+    state, cmds = fc.reduce(state, AgentSpeechEnded(t=30.0, agent="dex", completed=True))
+
+    starts = [c for c in cmds if isinstance(c, StartSpeech)]
+    assert [c.agent for c in starts] == ["wayne"], (
+        "a sibling of the granted line is the free handover, not a leftover"
+    )
+    assert not [c for c in cmds if isinstance(c, RequestProposals)], (
+        "no point asking for a line we are about to talk over"
+    )
 
 
 def test_the_agent_who_just_spoke_may_not_take_the_next_turn_off_its_own_bid(fc, state):
@@ -1428,7 +1475,7 @@ def test_a_line_written_before_the_question_does_not_win_an_open_floor(fc, state
         15:12:58.247  "Um, so let's just dive right into it. Where do you think
                       we are on the adoption curve? Who wants to go first?"
         15:12:58.420  floor invited, and Melia airs "Mm, I'll wait to hear
-                      where James's actually pointing this before I stake out
+                      where Ricky's actually pointing this before I stake out
                       ground." — one millisecond later, so necessarily written
                       against the preamble, since generation measures 1.7-2.4s.
 
@@ -1447,7 +1494,7 @@ def test_a_line_written_before_the_question_does_not_win_an_open_floor(fc, state
             t=1.0,
             input_t=0.0,
             agent="melia",
-            utterance="I'll wait to hear where James's pointing this.",
+            utterance="I'll wait to hear where Ricky's pointing this.",
             signals=strong(),
         ),
         invite(10.0, "Where do you think we are on the adoption curve?"),
@@ -1654,7 +1701,7 @@ def test_introduction_round_ignores_the_consecutive_turn_safety_valve(fc, state)
     assert state.intro_done is True
 
 
-def test_James_interrupting_the_round_allows_a_clean_retry(fc, state):
+def test_ricky_interrupting_the_round_allows_a_clean_retry(fc, state):
     """An abandoned round has not 'been done' — the safety latch must not
     engage, or the show is stuck with two agents introduced and no way to
     finish."""
@@ -1662,7 +1709,7 @@ def test_James_interrupting_the_round_allows_a_clean_retry(fc, state):
     winner = cmds[0].agent
     state, _ = fc.reduce(state, AgentSpeechStarted(t=0.2, agent=winner))
 
-    # James cuts in mid-round.
+    # Ricky cuts in mid-round.
     state, _ = fc.reduce(state, HumanSpeechStarted(t=0.5))
     state, _ = fc.reduce(
         state, TranscriptUpdated(t=0.6, speaker=HUMAN, text="hang on, stop", is_final=True)
@@ -1734,7 +1781,7 @@ def test_a_named_agent_answering_within_the_beat_takes_the_floor(fc, state):
     Speechmatics' `EndOfTurn` lands within a few milliseconds of the final that
     names an agent, so the first arbitration of every invitation runs before any
     generation started against that final could have produced signals. The old
-    reducer read that as "Wayne had nothing", cued James, and the answer arrived
+    reducer read that as "Wayne had nothing", cued Ricky, and the answer arrived
     moments later into a floor that had already moved on.
     """
     state, cmds = run(
@@ -1744,7 +1791,7 @@ def test_a_named_agent_answering_within_the_beat_takes_the_floor(fc, state):
         TurnYielded(t=20.01),  # EndOfTurn, effectively simultaneous
     )
     assert not [c for c in cmds if isinstance(c, CueModerator)], (
-        "James must not be told to fill a gap nobody has had time to fill"
+        "Ricky must not be told to fill a gap nobody has had time to fill"
     )
     assert state.awaiting_agent == "wayne"
 
@@ -1764,7 +1811,7 @@ def test_a_named_agent_answering_within_the_beat_takes_the_floor(fc, state):
 
 
 def test_the_moderator_is_cued_once_per_invitation_not_once_per_proposal(fc, state):
-    """The live run printed `back to James` three times for one question.
+    """The live run printed `back to Ricky` three times for one question.
 
     Every proposal re-opens arbitration from the runtime
     (`PanelRuntime._maybe_rearbitrate`), so each of the other two agents landing
@@ -1792,7 +1839,7 @@ def test_the_moderator_is_cued_once_per_invitation_not_once_per_proposal(fc, sta
         Tick(t=24.0),
     )
     assert not [c for c in cmds if isinstance(c, CueModerator)], (
-        "James needs telling once"
+        "Ricky needs telling once"
     )
 
 
@@ -1808,7 +1855,7 @@ def test_an_open_invitation_with_nothing_cues_at_once(fc, state):
     assert state.awaiting_agent is None
 
 
-def test_James_speaking_during_the_beat_stands_the_cue_down(fc, state):
+def test_ricky_speaking_during_the_beat_stands_the_cue_down(fc, state):
     """He filled the gap himself, which is what the beat was hedging against."""
     state, _ = run(
         fc,
@@ -1823,7 +1870,7 @@ def test_James_speaking_during_the_beat_stands_the_cue_down(fc, state):
 
     _, cmds = fc.reduce(state, Tick(t=25.0))
     assert not [c for c in cmds if isinstance(c, CueModerator)], (
-        "cueing James to do what he is already doing prints a stale instruction"
+        "cueing Ricky to do what he is already doing prints a stale instruction"
     )
 
 
@@ -1854,7 +1901,7 @@ def test_a_later_question_re_arms_the_cue(fc, state):
 def test_a_slower_older_generation_does_not_overwrite_a_newer_answer(fc, state):
     """Generations race, so arrival order is not generation order.
 
-    A stream started against James's preamble can finish *after* one started
+    A stream started against Ricky's preamble can finish *after* one started
     against his actual question. Keeping the newest by epoch rather than by
     arrival is what stops the worse answer winning on a technicality.
     """
@@ -2037,7 +2084,7 @@ def test_the_watchdog_clock_does_not_carry_across_turns(fc, state):
 def test_the_panel_carries_on_after_a_stall(fc, state):
     """Recovery is the point: the next question must behave normally.
 
-    A stall is not a state the panel can be left in — James re-asks, the floor
+    A stall is not a state the panel can be left in — Ricky re-asks, the floor
     opens, an agent answers. If any of the stall bookkeeping leaked, this is
     where it shows up.
     """
@@ -2277,30 +2324,180 @@ def test_a_mid_turn_proposal_survives_the_boundary_and_is_granted(fc, state):
     assert [c for c in cmds if isinstance(c, RequestProposals)] == []
 
 
-def test_a_pre_turn_proposal_still_does_not_survive_the_boundary(fc, state):
-    """The other half, and the reason the filter is not simply loosened: a
-    line written before the turn began is an answer to a question the speaker
-    has since spent half a minute answering. It goes, and the boundary asks
-    for a fresh one — which is the old behaviour, now correctly the exception
-    rather than every handover."""
+def test_a_proposal_older_than_the_granted_line_does_not_survive_the_boundary(fc, state):
+    """The other half, and the reason the filter is not simply removed: a line
+    written against an *earlier* moment than the one that just aired is an
+    answer to a question the speaker has since spent half a minute answering.
+    It goes, and the boundary asks for a fresh one — the old behaviour, now
+    correctly the exception rather than every handover.
+
+    Dexter's line here is not stale by `open_proposal_lookback_s` (1.5s < 2.0s
+    against the invitation), so this pins the cutoff itself and not the
+    freshness test standing in for it.
+    """
     state, cmds = run(
         fc,
         state,
         invite(0.0),
-        AgentProposal(t=0.5, agent="dex", utterance="Written before.", signals=strong(),
-                      epoch=1, input_t=0.0),
-        AgentProposal(t=0.6, agent="melia", utterance="Also before.", signals=strong(),
-                      epoch=1, input_t=0.0),
+        AgentProposal(t=0.5, agent="dex", utterance="Written against the preamble.",
+                      signals=weak(), epoch=1, input_t=-1.5),
+        AgentProposal(t=0.6, agent="melia", utterance="Written against the question.",
+                      signals=strong(), epoch=1, input_t=0.0),
         TurnYielded(t=1.0),
     )
     # `_grant` only emits `StartSpeech`; `floor_holder` is not set until the
     # runtime reports the audio actually started.
     granted = next(c for c in cmds if isinstance(c, StartSpeech))
-    state, _ = run(fc, state, AgentSpeechStarted(t=1.6, agent=granted.agent))
-    speaker = state.speaking
-    assert speaker == granted.agent
+    assert granted.agent == "melia"
+    state, _ = run(fc, state, AgentSpeechStarted(t=1.6, agent="melia"))
+    assert state.turn_input_t == 0.0
     state, cmds = fc.reduce(
-        state, AgentSpeechEnded(t=30.0, agent=speaker, completed=True, utterance="…")
+        state, AgentSpeechEnded(t=30.0, agent="melia", completed=True, utterance="…")
     )
     assert [c for c in cmds if isinstance(c, StartSpeech)] == []
     assert [c.reason for c in cmds if isinstance(c, RequestProposals)] == ["agent_turn_ended"]
+
+
+# ------------------------------------------- the handover gap, second pass
+#
+# Added 1 Oct 2026, after three consecutive handovers on a live run each paid
+# the full cold generation the section above exists to remove. Both causes are
+# clock bugs, and neither is visible from the reducer alone — they only appear
+# once you line the floor's timestamps up against where the runtime actually
+# emits `AgentUtteranceProgress` (at the TTS push, i.e. at generation pace):
+#
+#   1. The mid-turn debounce measured from `last_proposal_request_t`, which
+#      the boundary round sets 0.1-0.7s *before* the grant. The turn's whole
+#      text is pushed within ~1.5s of the grant, so every sentence in the turn
+#      fell inside one 2.5s window and no turn opened a round at all.
+#   2. `_agent_ended` cut proposals at `speaking_since`, so the other two
+#      agents' lines from the round that produced the grant — written 110ms
+#      before it on the measured run — were discarded as leftovers.
+
+
+def test_the_first_sentence_of_a_turn_always_asks(fc, state):
+    """Cause (1). The round that granted the turn cannot hold off the round
+    that follows it: different clocks, and this one starts at the turn."""
+    state = _mid_turn(fc, state, speaker="melia", t=1.0)
+    started = state.agents["melia"].speaking_since
+    # Where every boundary round lands, measured: just before the grant.
+    state = replace(state, last_proposal_request_t=started - 0.1)
+    assert state.agent_turn_request_t is None
+
+    state, cmds = fc.reduce(
+        state,
+        AgentUtteranceProgress(
+            t=started + 0.4,
+            agent="melia",
+            text="Reported adoption and actual adoption are different curves.",
+        ),
+    )
+    assert [c.reason for c in cmds if isinstance(c, RequestProposals)] == ["agent_turn"]
+    assert state.agent_turn_request_t == started + 0.4
+
+    # ...and the debounce still holds for the rest of the burst, which is the
+    # half of the old behaviour that was right.
+    state, cmds = fc.reduce(
+        state,
+        AgentUtteranceProgress(
+            t=started + 0.9, agent="melia", text="The gap between them is the whole story."
+        ),
+    )
+    assert [c for c in cmds if isinstance(c, RequestProposals)] == []
+
+
+def test_the_mid_turn_clock_is_reset_by_the_next_turn(fc, state):
+    """The clock is per-turn or it is the bug it replaces: a round opened late
+    in one turn must not swallow the first round of the next."""
+    state = _mid_turn(fc, state, speaker="melia", t=1.0)
+    state, _ = fc.reduce(
+        state,
+        AgentUtteranceProgress(t=2.0, agent="melia", text="One two three four five six."),
+    )
+    assert state.agent_turn_request_t == 2.0
+    state, _ = fc.reduce(
+        state, AgentSpeechEnded(t=30.0, agent="melia", completed=True, utterance="…")
+    )
+    assert state.agent_turn_request_t is None
+
+    state, _ = fc.reduce(state, AgentSpeechStarted(t=31.0, agent="dex"))
+    state, cmds = fc.reduce(
+        state,
+        # 0.4s into the new turn, and well inside the interval measured from
+        # the previous turn's round.
+        AgentUtteranceProgress(t=31.4, agent="dex", text="Six seven eight nine ten eleven."),
+    )
+    assert [c.reason for c in cmds if isinstance(c, RequestProposals)] == ["agent_turn"]
+
+
+def test_a_sibling_of_the_granted_line_survives_the_boundary(fc, state):
+    """Cause (2). One round produces all three lines; one of them is spoken.
+    The other two answer the same moment as the line the room just heard, so
+    they are the floor under the handover when no mid-turn round beat them to
+    it — not leftovers from a moment that has passed."""
+    state, cmds = run(
+        fc,
+        state,
+        invite(0.0),
+        AgentProposal(t=2.0, agent="dex", utterance="Mine is the fleet audit.",
+                      signals=strong(), epoch=1, input_t=0.0),
+        AgentProposal(t=2.1, agent="melia", utterance="Mine is the cladding.",
+                      signals=strong(relevance=0.8), epoch=1, input_t=0.0),
+        TurnYielded(t=2.2),
+    )
+    granted = next(c for c in cmds if isinstance(c, StartSpeech))
+    assert granted.agent == "dex"
+    # The grant lands after the round that wrote it — which is the whole
+    # reason `speaking_since` was the wrong cutoff.
+    state, _ = run(fc, state, AgentSpeechStarted(t=2.9, agent="dex"))
+    assert state.turn_input_t == 0.0
+    assert state.turn_input_t < state.agents["dex"].speaking_since
+
+    # No mid-turn round completes: the turn is 30s of audio written in one
+    # burst, so there is nothing fresher than Melia's sibling line.
+    state, cmds = fc.reduce(
+        state, AgentSpeechEnded(t=32.0, agent="dex", completed=True, utterance="…")
+    )
+    assert [c.agent for c in cmds if isinstance(c, StartSpeech)] == ["melia"]
+    assert [c for c in cmds if isinstance(c, RequestProposals)] == []
+
+
+def test_a_mid_turn_proposal_still_beats_its_own_sibling(fc, state):
+    """The two fixes in one turn, in the order of preference they encode: the
+    sibling is kept, and then superseded by a line written against what the
+    speaker actually said. `_proposal`'s newest-epoch rule does the choosing;
+    all `_agent_ended` has to do is not throw the fallback away first."""
+    state, cmds = run(
+        fc,
+        state,
+        invite(0.0),
+        AgentProposal(t=2.0, agent="dex", utterance="Mine is the fleet audit.",
+                      signals=strong(), epoch=1, input_t=0.0),
+        AgentProposal(t=2.1, agent="melia", utterance="Written before the turn.",
+                      signals=strong(relevance=0.8), epoch=1, input_t=0.0),
+        TurnYielded(t=2.2),
+        AgentSpeechStarted(t=2.9, agent="dex"),
+    )
+    assert next(c for c in cmds if isinstance(c, StartSpeech)).agent == "dex"
+
+    state, cmds = fc.reduce(
+        state,
+        AgentUtteranceProgress(
+            t=3.3, agent="dex", text="Nine hundred agents, approved on thirty simulated calls."
+        ),
+    )
+    assert [c.reason for c in cmds if isinstance(c, RequestProposals)] == ["agent_turn"]
+    written_against = state.last_proposal_request_t
+    state, _ = fc.reduce(
+        state,
+        AgentProposal(t=5.4, agent="melia", utterance="Written against the turn.",
+                      signals=strong(relevance=0.8), epoch=state.speculation_epoch,
+                      input_t=written_against),
+    )
+
+    state, cmds = fc.reduce(
+        state, AgentSpeechEnded(t=32.0, agent="dex", completed=True, utterance="…")
+    )
+    start = next(c for c in cmds if isinstance(c, StartSpeech))
+    assert start.agent == "melia"
+    assert start.utterance == "Written against the turn."

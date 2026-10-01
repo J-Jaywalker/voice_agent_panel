@@ -14,10 +14,10 @@ already know who.
 
 That reasoning still holds exactly as written for the agents' display-only
 sessions, which transcribe each agent's own played audio: one voice, known in
-advance, nothing to diarise. It does **not** hold for James's mic, and the
+advance, nothing to diarise. It does **not** hold for Ricky's mic, and the
 difference is not a change of mind. A microphone on a stage is not a channel
 with one speaker on it — the audience is in the room and the PA bleeds back
-into it — so the wiring cannot answer "is this James?" there, and it never
+into it — so the wiring cannot answer "is this Ricky?" there, and it never
 could; it was simply not being asked. Diarisation on that one socket is
 therefore doing the opposite job from the one it was rejected for: not
 *guessing* identity where the wiring already knew it, but *establishing*
@@ -26,7 +26,7 @@ identity where the wiring cannot. It is configured at exactly one call site
 changed default, because both families share `STTConfig`.
 
 What it buys is a gate rather than a label. Post-enrolment, a segment not
-attributed to James never becomes a `TranscriptUpdated` at all, and his turn
+attributed to Ricky never becomes a `TranscriptUpdated` at all, and his turn
 is the only one that may open arbitration — so an audience question is neither
 transcribed nor answered. See `_emit_transcript`, `_receive`'s `EndOfTurn`
 arm, and `packages/panel_runtime/tests/test_speaker_isolation.py`.
@@ -126,22 +126,22 @@ class STTConfig:
     # the default therefore stays off. Both of this repo's session families
     # inherit it: the agents' display-only pass (`PanelRuntime.agent_stt`)
     # genuinely has one known voice per socket and must never turn this on,
-    # and so did James's mic until speaker enrolment arrived.
+    # and so did Ricky's mic until speaker enrolment arrived.
     #
-    # James's mic is now the one exception and it is configured *explicitly*,
+    # Ricky's mic is now the one exception and it is configured *explicitly*,
     # at one call site, by `PanelSTT.identify()` — never by changing this
     # default, because the two families share this dataclass and a default
     # change would silently diarise the agents' sockets too.
     diarization: str = "none"
     speaker_diarization_config: dict[str, Any] | None = None
     # How readily the engine splits audio into distinct speakers, 0-1, server
-    speaker_sensitivity: float = 0.7
+    speaker_sensitivity: float = 0.5
     # Known speakers to identify in this session, each
     # `{"label": ..., "speaker_identifiers": [...]}` as returned by a previous
     # session's `SpeakersResult`. A matched segment comes back carrying
     # `segment.speaker == label`; anyone unmatched keeps an `S1`-style label.
     # The server rejects a label in its own internal format (`S1`, `S2`,
-    # `UU`), so the labels here are names like "James".
+    # `UU`), so the labels here are names like "Ricky".
     #
     # Setting this is what turns `_AgentSTTSession` into a gate: see
     # `identified_labels` and `_emit_transcript`. Empty — the default, and what
@@ -253,6 +253,13 @@ class STTConfig:
         return cls(**overrides)
 
 
+# Deliberately not in `personas/*.yaml`, and not a hole in "personas are data"
+SHOW_VOCAB: tuple[dict[str, Any], ...] = (
+    {"content": "Speechmatics", "sounds_like": ["speech maticks", "speech matticks"]},
+    {"content": "LLM", "sounds_like": ["ell ell emm", "elelem"]},
+)
+
+
 def vocab_from_cast(cast: PanelCast) -> tuple[dict[str, Any], ...]:
     """Build `additional_vocab` entries from persona pronunciation data.
 
@@ -263,19 +270,26 @@ def vocab_from_cast(cast: PanelCast) -> tuple[dict[str, Any], ...]:
     biases the personas that actually need it (currently just Melia; see
     `personas/melia.yaml`).
 
+    `SHOW_VOCAB` is appended to whatever the cast supplies. It is the one
+    part of this list that is not derived from a persona, for the reason
+    given above that constant.
+
     Args:
         cast: The panel's cast.
 
     Returns:
         One `additional_vocab` entry per persona that declares
-        `sounds_like`, each shaped `{"content": ..., "sounds_like": [...]}`
-        per the schema the agent endpoint's own API reference documents (see
-        this module's docstring).
+        `sounds_like`, plus `SHOW_VOCAB`, each shaped
+        `{"content": ..., "sounds_like": [...]}` per the schema the agent
+        endpoint's own API reference documents (see this module's docstring).
     """
-    return tuple(
-        {"content": persona.canonical_name, "sounds_like": list(persona.sounds_like)}
-        for persona in cast.personas.values()
-        if persona.sounds_like
+    return (
+        tuple(
+            {"content": persona.canonical_name, "sounds_like": list(persona.sounds_like)}
+            for persona in cast.personas.values()
+            if persona.sounds_like
+        )
+        + SHOW_VOCAB
     )
 
 
@@ -383,7 +397,7 @@ class _AgentSTTSession:
         self._on_speakers = on_speakers
         self._running = True
         self._started = False
-        # Non-empty only on James's mic, post-enrolment. This is the whole
+        # Non-empty only on Ricky's mic, post-enrolment. This is the whole
         # switch between "transcribe whatever arrives", which is what every
         # session did before enrolment existed and what the agents'
         # display-only sessions still do, and "transcribe only the enrolled
@@ -586,9 +600,9 @@ class _AgentSTTSession:
           recoverable rather than promoting it to a stop.
         * **no attribution at all** — dropped silently, and deliberately *not*
           reported as a stranger. "Diarization attributed nothing" and
-          "diarization says this is not James" are different facts, and
+          "diarization says this is not Ricky" are different facts, and
           conflating them would let a run of unattributed segments block
-          James's own interrupt. Absence of confirmation is not confirmation
+          Ricky's own interrupt. Absence of confirmation is not confirmation
           of absence; `panel_core` sees no evidence either way and behaves
           exactly as it does today.
 
@@ -597,7 +611,7 @@ class _AgentSTTSession:
         `AddPartialSegment` as reliably as on `AddSegment` is documented
         nowhere for `/v2/agent`, in either direction — the same standing
         uncertainty as `additional_vocab`'s schema was. If partials turn out to
-        carry no `speaker`, they take the third branch above: James's live
+        carry no `speaker`, they take the third branch above: Ricky's live
         partial text stops reaching the console and the wall, his finals still
         land, and content-based barge-in falls back to finals only. His
         *reflex* barge-in is unaffected either way, because that fires on the
@@ -616,7 +630,7 @@ class _AgentSTTSession:
                 )
                 return
             # Counted from partials as well as finals, and on the match rather
-            # than on the text. The failure to avoid is withholding *James's*
+            # than on the text. The failure to avoid is withholding *Ricky's*
             # `EndOfTurn`, which would leave a real question unarbitrated and
             # the panel silent — much the worse of the two errors, since a
             # stranger's turn getting through opens arbitration against a
@@ -662,10 +676,15 @@ class PanelSTT:
     ) -> None:
         """`channels` maps a channel id to the speaker id used on events.
 
-        For the human mics that is `{"James": HUMAN}` today, and a second
+        For the human mics that is `{"ricky": HUMAN}` today, and a second
         entry the day an audience mic is added — which is a wiring change, not
         a code one. The display's agent pass maps each agent id to itself.
         Each entry is its own connection.
+
+        A channel id is a wiring name — it names a socket, appears in logs and
+        task names, and is never compared against a diarization label (see
+        `identify`). `"ricky"` and the enrolled label `"Ricky"` are unrelated
+        strings.
         """
         if not channels:
             raise ValueError("at least one channel is required")
@@ -687,7 +706,7 @@ class PanelSTT:
 
         The single call site that turns diarization on anywhere in the show
         (`PanelRuntime.run`, once enrolment has produced identifiers for
-        James). Deliberately a method rather than a changed `STTConfig`
+        Ricky). Deliberately a method rather than a changed `STTConfig`
         default: both session families share that dataclass, and the agents'
         display-only pass over their own played audio must stay undiarized —
         one voice per socket, identity already a fact about the wiring. A moved
@@ -698,7 +717,7 @@ class PanelSTT:
         apply to nothing and look as though it had.
 
         Args:
-            label: The label matched segments will carry, e.g. "James". Must
+            label: The label matched segments will carry, e.g. "Ricky". Must
                 not be in the server's internal format (`S1`, `S2`, `UU`) —
                 those are rejected on `StartRecognition`.
             speaker_identifiers: Opaque identifiers from a previous session's

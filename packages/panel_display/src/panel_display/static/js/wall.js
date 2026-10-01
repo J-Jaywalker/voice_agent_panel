@@ -15,13 +15,12 @@
 
 import { Orb } from "./orb.js";
 
-// The stage canvas, 16:9. Mirrors --stage-w / --stage-h in tokens.css; the two
+// The stage canvas, 8:3. Mirrors --stage-w / --stage-h in tokens.css; the two
 // have to agree or fitStage() letterboxes against the wrong shape.
 const STAGE_W = 3840;
-const STAGE_H = 2160;
-// The orb's CSS size, mirroring `.orb canvas` in wall.css. Unchanged by the
-// move to 16:9 — the agent row is 1280 tall and the vertical budget still
-// spends 720 of it here.
+const STAGE_H = 1440;
+// The orb's CSS size, mirroring `.orb canvas` in wall.css. The agent lane is
+// 1440 tall and the vertical budget spends 720 of it here.
 const ORB_CSS = 720;
 
 const RECONNECT_MIN_MS = 400;
@@ -62,7 +61,7 @@ const cue = document.querySelector("[data-role=cue]");
 const agents = new Map();
 /** Absolute index of the oldest transcript line currently in the DOM. */
 let renderedFrom = -1;
-/** speaker -> the <p> currently showing that voice's in-progress line. */
+/** speaker -> the bubble row currently showing that voice's in-progress line. */
 const partialNodes = new Map();
 
 // ── Stage fit ─────────────────────────────────────────────────────────────
@@ -70,11 +69,12 @@ const partialNodes = new Map();
 let pixelScale = 1;
 
 /*
- * The wall is 16:9. The browser window, at load-in, will be whatever someone
- * dragged it to, and the display may report a resolution nobody predicted.
- * Laying out at a fixed 3840x2160 and scaling once means every dimension in
- * the stylesheet keeps meaning what it says — 1280px is a third of the width
- * whatever the hardware does — and the stage letterboxes rather than crops.
+ * The wall is 8:3. The browser window, at load-in, will be whatever someone
+ * dragged it to, and the LED processor may report a resolution nobody
+ * predicted. Laying out at a fixed 3840x1440 and scaling once means every
+ * dimension in the stylesheet keeps meaning what it says — 960px is 3m of
+ * wall whatever the hardware does — and the stage letterboxes rather than
+ * crops.
  */
 function fitStage() {
   const scale = Math.min(window.innerWidth / STAGE_W, window.innerHeight / STAGE_H);
@@ -125,13 +125,13 @@ function buildLanes(list) {
  * What the orb should actually show.
  *
  * `state` and `invited` are independent on the wire — an agent can hold the
- * invitation and be idle, which is the beat between James naming someone and
+ * invitation and be idle, which is the beat between Ricky naming someone and
  * that person's first word, and it is worth seeing.
  *
  * Precedence, strongest first: speaking, ducked, invited, thinking, idle.
  * Audible always wins — whoever is on the PA is what the wall is about. And
  * invited beats thinking, which is not obvious: after any question every
- * agent is thinking, so "thinking" is nearly free information, while "James
+ * agent is thinking, so "thinking" is nearly free information, while "Ricky
  * named this one" is the fact the audience needs to follow the floor.
  */
 function visualState(agent) {
@@ -149,27 +149,99 @@ function labelFor(agent, visual) {
 
 // ── Transcript ────────────────────────────────────────────────────────────
 
+/**
+ * What the band calls a speaker. `HUMAN` is hardcoded, like
+ * `PanelSTT({"ricky": "human"})` in panel_runtime: the moderator is not cast
+ * data, there is no persona behind him.
+ */
+function nameFor(speaker) {
+  if (speaker === HUMAN) return "Ricky";
+  const view = agents.get(speaker);
+  return view ? view.name : speaker;
+}
+
+/**
+ * Which side of the band a bubble grows from — moderator left, agents right.
+ *
+ * Read off the speaker and nothing else, so a voice is always on the same
+ * side of the wall. It is the person asking the panel things on one side and
+ * the panel on the other, which is the one distinction worth spending the
+ * only piece of two-sided geometry the band has.
+ */
+function sideFor(speaker) {
+  return speaker === HUMAN ? "left" : "right";
+}
+
+/**
+ * One utterance: a name tag over an accent-tinted bubble.
+ *
+ * `cont` is "the voice before this one was the same voice", which drops the
+ * tag and tightens the gap (see `[data-cont]` in wall.css). An agent's turn
+ * arrives as a run of sentences, so repeating their name under itself is both
+ * noise and 28px spent on every sentence of a column that is narrow enough
+ * now to hold only a handful of bubbles at once.
+ */
+function bubbleRow(speaker, text, cont) {
+  const row = document.createElement("div");
+  row.className = "bubble-row";
+  row.dataset.speaker = speaker;
+  row.dataset.side = sideFor(speaker);
+  row.dataset.cont = String(cont);
+  // `data-accent` drives the fill and the tag's colour in wall.css off the
+  // same `--accent-*` tokens the agent's own lane reads — one set of tokens
+  // naming one agent, wherever on the stage they show up. Ricky holds no
+  // accent seat, so his bubble is left on the band's default.
+  if (speaker !== HUMAN) {
+    const view = agents.get(speaker);
+    row.dataset.accent = view ? view.accent : "";
+  }
+
+  if (!cont) {
+    const tag = document.createElement("span");
+    tag.className = "bubble__tag";
+    tag.textContent = nameFor(speaker);
+    row.appendChild(tag);
+  }
+
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  bubble.textContent = text;
+  row.appendChild(bubble);
+  return row;
+}
+
+/** The bubble itself, for rewriting a partial's text in place. */
+function bubbleOf(row) {
+  return row.lastElementChild;
+}
+
 /*
  * Appends, rather than rebuilding.
  *
  * The lines are a bounded window, so a naive re-render would re-run the
- * entrance animation on every line every time anything changed anywhere on
+ * entrance animation on every bubble every time anything changed anywhere on
  * the wall. `from` is the absolute index of the first line in the window,
  * which is enough to tell "two new lines" from "the same lines again".
  */
 function renderLines(lines, from) {
   const renderedTo = renderedFrom + feed.childElementCount;
+  // Continuation is a fact about the line before this one, which is in the
+  // same array either way. The window's oldest line has no predecessor here
+  // and so keeps its tag — it is under the mask's fade by then.
+  const cont = (i) => i > 0 && lines[i - 1].speaker === lines[i].speaker;
 
   // No overlap with what is on screen: a fresh connection, or a gap big
   // enough that reconciling would be guesswork. Repaint the window.
   if (renderedFrom < 0 || from >= renderedTo) {
-    feed.replaceChildren(...lines.map(lineNode));
+    feed.replaceChildren(...lines.map((line, i) => bubbleRow(line.speaker, line.text, cont(i))));
     renderedFrom = from;
     return;
   }
 
+  // `renderedTo > from` on this branch, so the start index is never 0 and
+  // `lines[i - 1]` is always the line already on screen above it.
   for (let i = renderedTo - from; i < lines.length; i++) {
-    feed.appendChild(lineNode(lines[i]));
+    feed.appendChild(bubbleRow(lines[i].speaker, lines[i].text, cont(i)));
   }
   while (feed.childElementCount > lines.length) {
     feed.removeChild(feed.firstElementChild);
@@ -178,74 +250,38 @@ function renderLines(lines, from) {
 }
 
 /**
- * Attribute a <p> to a speaker: name tag ahead of the text, accent on the tag.
+ * The in-progress bubbles, one per voice still mid-sentence.
  *
- * Four voices sharing one band are only tellable apart by who is named on
- * them once they are off their own lane, and the moderator is one of the four.
- * Only the three agents are accent-coloured — James does not hold one of the
- * three accent seats, so his tag takes the band's quiet default rather than
- * borrowing a colour that already means a specific agent.
+ * Reconciled by speaker rather than rebuilt, and that is not an optimisation:
+ * a partial is replaced on every word, so recreating the node would re-run
+ * `line-in` forty times a sentence and the band would strobe. Only the text
+ * inside the bubble is rewritten; the bubble grows with it, which is the whole
+ * reason the band is drawn in bubbles.
  *
- * Shared by finalised lines and in-progress ones, because both now come from
- * the same place: a real transcription session, one per voice.
- */
-function attribute(p, speaker) {
-  const tag = document.createElement("span");
-  tag.className = "line__speaker";
-  if (speaker === HUMAN) {
-    // Hardcoded, like `PanelSTT({"James": "human"})` in panel_runtime. The
-    // moderator is not cast data — there is no persona behind him.
-    tag.textContent = "James";
-  } else {
-    const view = agents.get(speaker);
-    // `data-accent` drives colour in wall.css off the same `--accent-*` tokens
-    // the agent's own lane reads — one set of tokens naming one agent,
-    // wherever on the stage they show up.
-    p.dataset.accent = view ? view.accent : "";
-    tag.textContent = view ? view.name : speaker;
-  }
-  p.appendChild(tag);
-  return tag;
-}
-
-/**
- * One finalised line in the band. `line.speaker` is `HUMAN` or an agent id —
- * all four share one feed, in the order they were said (see `TranscriptLine`
- * in `wall.py`).
- */
-function lineNode(line) {
-  const p = document.createElement("p");
-  p.className = "line";
-  attribute(p, line.speaker);
-  p.append(" " + line.text);
-  return p;
-}
-
-/**
- * The in-progress lines, one per voice still mid-sentence.
- *
- * Reconciled by speaker rather than rebuilt, and that is not an
- * optimisation: a partial is replaced on every word, so recreating the node
- * would re-run `line-in` forty times a sentence and the band would strobe.
- * Only the text after the name tag is rewritten.
+ * The one case that does rebuild is a change of continuation — the finalised
+ * line above landed and the name tag now has to appear or disappear. That is
+ * once per sentence at most, not once per word.
  */
 function renderPartials(rows) {
   const seen = new Set();
-  for (const row of rows) {
+  const above = feed.lastElementChild;
+  rows.forEach((row, i) => {
     seen.add(row.speaker);
-    let p = partialNodes.get(row.speaker);
-    if (!p) {
-      p = document.createElement("p");
-      p.className = "line line--partial";
-      attribute(p, row.speaker);
-      p.appendChild(document.createTextNode(""));
-      partialNodes.set(row.speaker, p);
+    // Only the first in-progress bubble sits against the finalised feed; a
+    // second one is the barge-in case and follows the first, not the feed.
+    const cont = i === 0 && above !== null && above.dataset.speaker === row.speaker;
+    let node = partialNodes.get(row.speaker);
+    if (!node || node.dataset.cont !== String(cont)) {
+      if (node) node.remove();
+      node = bubbleRow(row.speaker, "", cont);
+      node.dataset.partial = "true";
+      partialNodes.set(row.speaker, node);
     }
-    p.lastChild.nodeValue = " " + row.text;
+    bubbleOf(node).textContent = row.text;
     // Re-appended every pass, so the server's ordering (agents in stage
-    // order, James last) survives a voice dropping out and coming back.
-    partials.appendChild(p);
-  }
+    // order, Ricky last) survives a voice dropping out and coming back.
+    partials.appendChild(node);
+  });
   for (const [speaker, node] of partialNodes) {
     if (seen.has(speaker)) continue;
     node.remove();
@@ -276,12 +312,12 @@ function applyState(message) {
   renderPartials(message.partials || []);
 
   cue.dataset.on = String(Boolean(message.cue));
-  cue.textContent = message.cue ? "over to James" : "";
+  cue.textContent = message.cue ? "over to Ricky" : "";
 }
 
-// James's mic, smoothed in the frame loop below. Not an orb — he is a person
+// Ricky's mic, smoothed in the frame loop below. Not an orb — he is a person
 // standing in the room and does not need one — but the dot beside "moderator"
-// following his voice is what tells the audience the band along the bottom is
+// following his voice is what tells the audience the transcript column is
 // live rather than a caption track running on a delay.
 let humanTarget = 0;
 let humanLevel = 0;
@@ -345,7 +381,7 @@ function frame(now) {
   for (const { orb } of agents.values()) orb.frame(dt, t);
 
   // Same filter shape as the orbs, one tenth of the code: the dot swells and
-  // brightens with James's voice instead of blinking on a VAD boolean.
+  // brightens with Ricky's voice instead of blinking on a VAD boolean.
   humanLevel += (humanTarget - humanLevel) * (1 - Math.exp(-dt / 0.12));
   humanDot.style.transform = `scale(${(1 + 0.55 * humanLevel).toFixed(3)})`;
   humanDot.style.opacity = (0.45 + 0.55 * humanLevel).toFixed(3);

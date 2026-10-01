@@ -1,7 +1,7 @@
 """Speaker enrolment for the moderator's mic.
 
-James's microphone is on a stage. The audience is in the room and the PA
-bleeds back into it, so "audio arrived on this socket" has never meant "James
+Ricky's microphone is on a stage. The audience is in the room and the PA
+bleeds back into it, so "audio arrived on this socket" has never meant "Ricky
 said this" — it was simply never being asked. This module asks it once, before
 the show starts, and hands `panel_runtime.stt` the identifiers that let it
 answer per segment for the rest of the night.
@@ -9,13 +9,13 @@ answer per segment for the rest of the night.
 Two phases, in one continuous mic feed:
 
 **Capture.** A session with `diarization: "speaker"` and
-`speaker_diarization_config.get_speakers: true`. James talks for up to 30
+`speaker_diarization_config.get_speakers: true`. Ricky talks for up to 30
 seconds; the stream is ended and the server replies with `SpeakersResult`,
 one entry per diarised speaker, each carrying opaque `speaker_identifiers`.
 
 **Verification.** A *second* session, configured with those identifiers as a
-known speaker labelled "James". His matched segments come back carrying
-`segment.speaker == "James"`; three finalised ones and enrolment succeeds.
+known speaker labelled "Ricky". His matched segments come back carrying
+`segment.speaker == "Ricky"`; three finalised ones and enrolment succeeds.
 
 That second session is what "get the same speaker back three times" means
 here, and the shape is forced by the API rather than chosen. There is no
@@ -33,7 +33,7 @@ and the server says so with a `Warning` on the session that tries to use
 them. `SpeakerStore` therefore records the model alongside the identifiers and
 treats a stored file from a different model as absent — re-enrolling costs 30
 seconds of rehearsal, while trusting a stale identifier costs a show in which
-nothing James says is recognised as his.
+nothing Ricky says is recognised as his.
 
 **Mid-session `GetSpeakers` polling is deliberately not used.** `final: false`
 is documented only for the standard `/v2` endpoint, against an
@@ -76,7 +76,7 @@ DEFAULT_STORE_PATH = Path(".panel/speakers.json")
 # The label matched segments carry, and the one string `panel_runtime.stt`
 # compares against. Not `S1`/`S2`/`UU` — the server rejects its own internal
 # label format on `StartRecognition`.
-MODERATOR_LABEL = "James"
+MODERATOR_LABEL = "Ricky"
 
 # Hard cap on the capture phase. A cap rather than a target: if nobody ever
 # says anything usable the phase must still end, because the show is waiting
@@ -108,14 +108,14 @@ class EnrolledSpeaker:
     """One enrolled voice, and the model the identifiers are only valid for.
 
     Attributes:
-        label: The label matched segments will carry, e.g. "James".
+        label: The label matched segments will carry, e.g. "Ricky".
         speaker_identifiers: Opaque, model-bound identifiers from
             `SpeakersResult`. Not embeddings — there is nothing to compare
             them with; they are handed back to the server verbatim.
         model: The STT model that produced them. The reason this dataclass
             exists rather than a bare tuple: identifiers outlive the process
             but not a model change, and a stale one is indistinguishable from
-            a good one until nothing James says is recognised.
+            a good one until nothing Ricky says is recognised.
         enrolled_at: ISO 8601, for the operator's benefit. Never compared —
             identifiers do not expire with time, only with the model.
     """

@@ -17,7 +17,7 @@ that ordering actually buys anything is exactly what this bench answers.
 TTS can start; measured end-to-end it sits in series with the ~200ms TTS TTFB.
 
 The budget: agents are asked repeatedly *during* the human's turn (§3.6), so a
-proposal has roughly as long as James's sentence. Anything under ~1.5s is
+proposal has roughly as long as Ricky's sentence. Anything under ~1.5s is
 comfortably speculative. Above that, the last request before end-of-turn will
 not have landed and the panel falls back on a staler candidate.
 

@@ -1,69 +1,67 @@
 /*
  * The wall.
  *
- * Layout is fixed, not responsive: 3840 x 2160 stage pixels, 16:9, scaled once
- * to fit whatever display it lands on (`fitStage`, js/wall.js). Two rows —
- * three 1280px agent lanes across the top, the transcript full-width beneath:
+ * Layout is fixed, not responsive: 3840 x 1440 stage pixels, 8:3, scaled once
+ * to fit whatever display it lands on (`fitStage`, js/wall.js). Four 960px
+ * columns — three agent lanes, then the transcript:
  *
- *   ┌───────────────┬───────────────┬───────────────┐  ┐
- *   │    agent 1    │    agent 2    │    agent 3    │  │ 1280
- *   ├───────────────┴───────────────┴───────────────┤  ┘
- *   │                  transcript                   │    880
- *   └───────────────────────────────────────────────┘
- *   0            1280            2560            3840
+ *   ┌───────────────┬───────────────┬───────────────┬───────────────┐
+ *   │    agent 1    │    agent 2    │    agent 3    │  transcript   │
+ *   └───────────────┴───────────────┴───────────────┴───────────────┘
+ *   0            960            1920            2880            3840
  *
- * Until now this was 3840 x 1440 — 8:3, a 12.00m x 4.50m LED wall at 320px per
- * metre, with the transcript as a fourth 960px column on the left. The sneak
- * preview is an ordinary 16:9 screen at a smaller venue, so the columns became
- * rows. 3840 is still twelve 320px metres across, which is why `--m` survives;
- * the physical figures quoted further down this file (cap heights in cm,
- * viewing distances in m) are the original wall's design intent and no longer
- * describe the preview's actual size. They are kept because they are why the
- * numbers are the numbers, not because they are still measurements.
+ * The transcript sits on the right. The wall this was originally drawn for
+ * had it hard left — see `.lane--transcript` below for the one line that
+ * would put it back there, should that change.
+ *
+ * This briefly ran as two rows instead of four columns — three agent lanes
+ * across the top, the transcript full-width underneath — for a 16:9 sneak
+ * preview at a smaller venue. The transcript picked up a real set of
+ * features during that detour (the chat-bubble presentation, all four
+ * voices in one feed, live partials, the lane state glow) and all of it is
+ * still here; only the row geometry it was drawn into is gone.
  *
  * Nothing in here animates during the show except opacity and colour on a few
  * small labels. Every moving pixel — the orbs — is drawn into a canvas by one
  * requestAnimationFrame loop, which is the difference between a wall that
  * holds 60fps on a mid-range machine and one that does not.
  *
- * Vertical budget, which is tight in the agent row and worth stating so the
- * next person editing a font size knows what they are spending.
+ * Vertical budget, which is tight and worth stating so the next person
+ * editing a font size knows what they are spending.
  *
- * Agent row (--agent-row-h), per lane:
+ * Agent lane, per lane:
  *
  *     12  identity bar (--lane-bar)
- *     96  top padding
+ *     80  top padding
  *     44  eyebrow
  *     28  gap
  *    720  orb canvas
  *     36  gap
  *    194  name plate (88 name + 10 + 45 role + 10 + 41 employer)
- *    150  bottom padding
+ *    320  reserved foot (--foot-clear), deliberately empty
  *   ────
- *   1280  = --agent-row-h, exactly. `.orb` is `flex: 1 1 auto`, so any slack
- *          introduced here silently grows the gap around the orb instead.
+ *   1434  of 1440. Unchanged from the wall this was first drawn for — the
+ *          row detour never touched the agent lane's own numbers, only its
+ *          width (1280px there, 960px here).
  *
- * Transcript row (--transcript-row-h), full width:
+ * Transcript lane, full height, no identity bar:
  *
- *      2  divider (border-top, inside the box)
- *     96  top padding
+ *     80  top padding
  *     44  eyebrow
- *     68  gap
- *    423  feed — 5 lines at 67 (50px / 1.34) with 4 x 22 gaps
- *     28  gap
- *     67  partial, reserved whether or not there is one. A second concurrent
- *          partial (barge-in: James over an agent) takes this to 146 and eats
- *          a line off the feed for as long as it lasts, which is brief.
+ *     40  gap
+ *    900  body (--transcript-body-h): the bubble feed, a 24px gap, and the
+ *          in-progress bubble(s) under it
  *     56  cue foot
- *     96  bottom padding (--foot-clear), deliberately empty
+ *    320  bottom padding (--foot-clear), deliberately empty
  *   ────
- *    880  = --transcript-row-h, exactly. 1280 + 880 = 2160.
+ *   1440  = --stage-h, exactly.
  *
- * Five visible lines rather than the eight the tall left-hand column held.
- * TRANSCRIPT_LINES in wall.py still buffers 14 — it always over-provided and
- * the mask still crops to what fits — but a band this wide needs fewer lines
- * to hold the same number of words, and a short band under three faces reads
- * as a caption strip rather than competing with them for attention.
+ * The body's 900 is not divided between the feed and the in-progress row at a
+ * fixed ratio, and that is the point of it being one budget: whatever is being
+ * said right now takes as much of it as it needs, and the finalised bubbles
+ * above give up the difference by sliding off the top through the mask.
+ * TRANSCRIPT_LINES in wall.py still buffers more lines than fit — it always
+ * over-provided, and the mask crops to whatever is left over.
  */
 
 *,
@@ -109,105 +107,97 @@ body {
   /* `--fit` is written by fitStage(); the translate keeps it centred while it
      scales, so a browser window of any size letterboxes instead of cropping. */
   transform: translate(-50%, -50%) scale(var(--fit, 1));
-  /* Column, not row: agents across the top, transcript underneath. The two
-     children are sized by --agent-row-h and --transcript-row-h, which sum to
-     --stage-h exactly, so nothing here needs to stretch or flex. */
+  /* Row, not column: four lanes side by side. Source order is layout order —
+     the agents first, then the transcript, which is what puts the transcript
+     on the right rather than the left. */
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: stretch;
 
   /*
    * A very wide, very shallow lift toward the centre. Two purposes: it stops
-   * a screen-filling field of flat black reading as a dead panel, and it
-   * seats the three orbs on something. Kept under 4% so it never becomes the
-   * "dark sci-fi interface" the brand guidelines rule out.
+   * 54m² of flat black reading as a dead panel, and it seats the three orbs
+   * on something. Kept under 4% so it never becomes the "dark sci-fi
+   * interface" the brand guidelines rule out.
    *
    * `--bg-lift` is transparent in light mode, so this whole layer costs
    * nothing there — paper does not need rescuing from looking dead, and the
    * same blob on white reads as a mark rather than as depth.
+   *
+   * Centred on the three agent lanes, not the full stage: they now occupy
+   * the first three quarters of the width (0-2880 of 3840), so 37.5% is their
+   * midpoint rather than the stage's — putting the lift under the faces
+   * instead of straddling the transcript column too.
    */
-  /* Centred on the orb row rather than on the stage: the orbs' centre line is
-     at roughly 540 of 2160, and the three lanes now span the full width, so
-     the lift sits under the faces instead of behind the transcript. The 60%
-     vertical extent keeps the same absolute reach it had at 90% of 1440. */
-  background: radial-gradient(120% 60% at 50% 26%, var(--bg-lift) 0%, transparent 68%),
+  background: radial-gradient(120% 90% at 37.5% 46%, var(--bg-lift) 0%, transparent 68%),
     var(--bg-wall);
 }
 
-/* ── Rows ──────────────────────────────────────────────────────────────── */
+/* ── Lanes ─────────────────────────────────────────────────────────────── */
 
 /*
- * The agent row. Three lanes, `--lane-w` each, and 3 x 1280 = 3840 exactly —
- * so this is a plain flex row with nothing to distribute and no wrapping to
- * guard against. If a fourth agent ever joins the cast this is the line that
- * has to change, not the lane.
+ * One column, `--lane-w` wide, full stage height. Shared by all four lanes —
+ * three agents and the transcript — so the base rule lives here and each
+ * variant only states how it differs.
  */
-.lanes {
-  display: flex;
-  flex: 0 0 var(--agent-row-h);
-  height: var(--agent-row-h);
-}
-
-/* One column of the agent row. Centred, because a lane is one face. */
 .lane {
   width: var(--lane-w);
   flex: 0 0 var(--lane-w);
   height: 100%;
-  padding: 96px 64px 150px;
+  padding: 80px 64px var(--foot-clear);
   display: flex;
   flex-direction: column;
   align-items: center;
 }
 
-/* ── Transcript band ───────────────────────────────────────────────────── */
-
-/* A full-width row of the stage. Left-aligned, because a band is a line of
-   reading and reading starts at the same x every time. */
-.band {
-  width: 100%;
+/*
+ * The three agent lanes. `flex: 1 1 auto` rather than a fixed width: three
+ * `--lane-w` columns are 2880 of the stage's 3840, and letting this group
+ * take "whatever is left" keeps that arithmetic in one place rather than
+ * restated on both the group and its lanes. If a fourth agent ever joins the
+ * cast this is the rule that has to change, not the lane.
+ */
+.lanes {
   display: flex;
-  flex-direction: column;
+  flex: 1 1 auto;
 }
 
-.band--transcript {
-  flex: 0 0 var(--transcript-row-h);
-  height: var(--transcript-row-h);
-  padding: 96px 128px var(--foot-clear);
+/*
+ * The transcript column. `align-items: stretch` overrides the base `.lane`'s
+ * centring — the agent lanes centre a face, this lane holds a full-width
+ * feed — and everything else here is the one-time cost of being the lane
+ * with a neighbour on only one side.
+ *
+ * On the right. To put it back on the left — the original wall's
+ * placement — move this `<section>` before `.lanes` in index.html and swap
+ * every `right`/`left` below (background direction, border side).
+ */
+.lane--transcript {
+  align-items: stretch;
   /*
-   * Grounded at the bottom edge and fading out as it approaches the divider,
-   * which is the same relationship the old left-hand column had to it — the
-   * wash is heaviest furthest from the boundary, so the boundary is a seam
-   * between two fields rather than a line drawn on one.
+   * Grounded at the outer (right) edge and fading toward the divider, which
+   * is the same relationship a transcript lane has always had to its
+   * boundary — the wash is heaviest furthest from the seam, so the seam
+   * reads as a boundary between two fields rather than a line drawn on one.
    */
-  background: linear-gradient(
-    to top,
-    var(--bg-lane) 0%,
-    color-mix(in srgb, var(--bg-lane) 40%, transparent) 100%
-  );
+  background: linear-gradient(to left,
+      var(--bg-lane) 0%,
+      color-mix(in srgb, var(--bg-lane) 40%, transparent) 100%);
   /*
-   * The one hard edge, marking the one real structural boundary: people
-   * above, words below. Faded at both ends rather than ruled: 2px of a canvas
-   * scaled to fill a screen is a sub-pixel line at most real fit ratios, and
-   * carried hard to both edges it shimmers. At 3840 wide an unbroken rule
-   * would also read as the underline of a table rather than as the top of its
-   * own field.
+   * The one hard edge, marking the one real structural boundary: people on
+   * the left, words on the right. Faded at both ends rather than ruled — a
+   * 2px rule the full height of a 12m wall would alight on panel seams and
+   * shimmer.
    */
-  border-top: 2px solid transparent;
-  border-image: linear-gradient(
-      to right,
+  border-left: 2px solid transparent;
+  border-image: linear-gradient(to bottom,
       transparent 0%,
-      var(--bg-divider) 6%,
-      var(--bg-divider) 94%,
-      transparent 100%
-    )
-    1;
+      var(--bg-divider) 22%,
+      var(--bg-divider) 72%,
+      transparent 100%) 1;
 }
 
 /* ── Eyebrow (the small status line at the top of every lane) ──────────── */
-
-/* `lane__*` stayed the block name for the three shared bits of chrome — the
-   eyebrow, the foot and the cue — after the transcript stopped being a lane.
-   They are the same element in both rows and renaming them would have been
-   churn across two files for no change in behaviour. */
 
 .lane__eyebrow {
   display: flex;
@@ -265,17 +255,21 @@ body {
  * declaration is the single place an agent's colour is decided on the client.
  *
  * Their split — ink, identity fill, lane wash — is documented in tokens.css.
+ * The wash is a thinning of the identity fill, so `--accent-quiet` is the one
+ * an agent's lane, orb and state cue all come off.
  */
 .lane--agent[data-accent="jade"] {
   --accent: var(--accent-jade);
   --accent-quiet: var(--accent-jade-quiet);
   --accent-wash: var(--accent-jade-wash);
 }
+
 .lane--agent[data-accent="cyan"] {
   --accent: var(--accent-cyan);
   --accent-quiet: var(--accent-cyan-quiet);
   --accent-wash: var(--accent-cyan-wash);
 }
+
 .lane--agent[data-accent="amber"] {
   --accent: var(--accent-amber);
   --accent-quiet: var(--accent-amber-quiet);
@@ -286,9 +280,9 @@ body {
  * The lane *is* the agent, whether or not they are talking.
  *
  * The orb used to carry all of this on its own, and it carried it only while
- * an agent was active — idle was neutral grey. A third of the wall standing
- * empty above someone's name is the wall forgetting whose third it is, so
- * identity moved out of the orb and onto the lane: a bar at the top in
+ * an agent was active — idle was neutral grey. Three metres of wall standing
+ * empty above someone's name is the wall forgetting whose three metres it is,
+ * so identity moved out of the orb and onto the lane: a bar at the top in
  * their colour, and a wash under the whole thing, both permanent.
  *
  * Which frees the orb to spend everything it has on state instead. See the
@@ -301,38 +295,105 @@ body {
 }
 
 /*
- * The wash. Very low, and top-weighted so it belongs to the bar rather than
- * looking like the lane has a different background from its neighbours.
+ * Two washes over the lane, and the split is the whole point: `::before` is
+ * whose lane this is and never moves, `::after` is whether they are talking
+ * and is the only one that animates.
  *
- * It also doubles as the largest state cue on the wall: a full third of the
- * screen deepens when its agent takes the floor. At distance that is the
- * change most likely to be caught out of the corner of an eye, which is how
- * most of this audience will be watching.
+ * One layer used to do both jobs, at 0.3 idle and 1 speaking. That capped how
+ * much colour a lane could carry at rest, and the cap was real rather than
+ * aesthetic — the state cue *was* the difference between the two numbers, so
+ * raising the resting level flattened the cue. The comment here used to record
+ * that 0.3 was as high as it could go for exactly that reason.
  *
- * `z-index: -1` rather than a stack of positioned siblings, because `.stage`
- * has a transform and therefore a stacking context — the wash lands above the
- * stage's own background and below everything in the lane, which is exactly
- * the one layer wanted and costs no rules elsewhere.
+ * The cost was that an agent's identity leaned on the 12px bar at the very top
+ * of the lane, which is the worst place on a stage display to put load-bearing
+ * information: the top edge is the first thing a processor's overscan eats,
+ * and a thin line of high-chroma colour is also what a display's own gamma
+ * flattens first. Below that bar the old wash died out at 64% of the lane, so
+ * the bottom third — the name plate, the part people actually read — had
+ * almost no colour on it at all.
+ *
+ * Separating the layers lets the identity tint be as strong as it needs to be,
+ * but it does *not* on its own leave the cue intact, and the arithmetic that
+ * says otherwise is wrong. Alpha-compositing a second coat of the same pale
+ * wash over a lane already tinted with it moves the result almost not at all:
+ * measured at a 0.78 identity layer, a full extra wash unit was worth 3 units
+ * of luminance at the top of the lane and *zero* at the name plate, against
+ * the 8 or so the old 0.3-to-1 swing used to be worth. The cue has to be a
+ * deeper colour rather than more of the same one — see `::after` below.
+ *
+ * `z-index: -1` on both rather than a stack of positioned siblings, because
+ * `.stage` has a transform and therefore a stacking context — they land above
+ * the stage's own background and below everything in the lane. `::after`
+ * paints over `::before` at the same index by source order, which is the
+ * stacking wanted and costs no rules elsewhere.
+ */
+
+/*
+ * Identity. Permanent, and carried the full height of the lane.
+ *
+ * The falloff is shallow rather than absent: a flat fill makes three hard
+ * coloured panels and a seam down the middle of the wall, where a lane that
+ * fades slightly toward its foot still reads as one section while letting the
+ * three orbs sit on something. What it must not do is reach zero — a lane
+ * tinted at the top and bare at the bottom reads as a gradient somebody
+ * applied, not as a coloured section.
  */
 .lane--agent::before {
   content: "";
   position: absolute;
   inset: 0;
   z-index: -1;
-  background: linear-gradient(to bottom, var(--accent-wash) 0%, transparent 64%);
+  background: linear-gradient(to bottom,
+      var(--accent-wash) 0%,
+      color-mix(in srgb, var(--accent-wash) 70%, transparent) 60%,
+      color-mix(in srgb, var(--accent-wash) 52%, transparent) 100%);
   /*
-   * 0.3 is as low as this can go and still name the lane from the back of the
-   * room, and it has to stay that low: the speaking lane goes to 1, and the
-   * cue is the *difference*. Started at 0.45 and the three lanes read as three
-   * coloured panels with a barely perceptible change when one took the floor.
+   * No `opacity` here. The strength is in `--accent-*-wash` itself, which is
+   * already a thinned ink and already per theme, and the gradient stops above
+   * thin it further down the lane. A second multiplier on top would mean two
+   * numbers to reason about for one colour, and the token's stated percentage
+   * would stop being the percentage you get.
    */
-  opacity: 0.3;
+}
+
+/*
+ * State. Zero at rest, so it contributes nothing to the identity under it
+ * until the agent is on the PA — and then the whole 3m lane deepens. At 20m
+ * that is the change most likely to be caught out of the corner of an eye,
+ * which is how most of this audience will be watching. Top-weighted, so the
+ * deepening reads as coming off the bar and down the lane.
+ *
+ * `--accent-quiet` — the undiluted identity fill the lane's own wash is a
+ * thinning of, laid back over it at a fraction. So the cue is literally "more
+ * of this lane's colour", which is both the right thing to see and the only
+ * thing that registers: deepening a tint needs a stronger form of it, and a
+ * second coat of the tint itself is close to a no-op (the long note above
+ * measured that the hard way).
+ *
+ * `quiet` and not `--accent`, even though the ink is darker and would give a
+ * bigger swing, because the ink is a different *hue* from the wash on two of
+ * the three scales — amber's ink is a brown and cyan's is a teal. A lane that
+ * changes hue when its agent starts talking reads as a different agent, which
+ * is the one thing this surface must never say.
+ */
+.lane--agent::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(to bottom, var(--accent-quiet) 0%, transparent 72%);
+  opacity: 0;
   transition: opacity var(--dur-slow) var(--ease);
 }
 
-.lane--agent[data-state="speaking"]::before,
-.lane--agent[data-state="ducked"]::before {
-  opacity: 1;
+.lane--agent[data-state="speaking"]::after,
+.lane--agent[data-state="ducked"]::after {
+  /* Measured, not chosen: this is the alpha at which a speaking lane lands
+     about 15 L below its own resting colour — roughly twice the swing the old
+     single-layer 0.3-to-1 managed, and enough to catch at the back of a room
+     without the lane going dark enough to want light type. */
+  opacity: 0.2;
 }
 
 /*
@@ -409,7 +470,7 @@ body {
   line-height: 1.25;
   color: var(--text-secondary);
   /* Job titles run long — "Chief AI Ethics & Human Continuity Officer" is
-     comfortable in the 1152px of usable lane width at this size, but not by
+     comfortable in the 832px of usable lane width at this size, but not by
      much — and two lines here would blow the vertical budget above, which is
      balanced to the pixel. Kept to one, and the
      ellipsis is the warning that a longer title needs a smaller size rather
@@ -433,7 +494,7 @@ body {
 /*
  * The moderator's words and the agents', in one feed, in the order they were
  * said. All four arrive the same way: a live Speechmatics session per voice —
- * James's mic, and each agent's own played audio tapped at `Mixer.render`
+ * Ricky's mic, and each agent's own played audio tapped at `Mixer.render`
  * (`PanelRuntime._run_agent_stt`). So the band is timed by speech, and lags
  * the PA by a transcription round trip rather than leading it by however far
  * ahead the model happened to be writing.
@@ -443,36 +504,44 @@ body {
  * an assumed 2.8 words/sec. The estimate drifted against real pacing over a
  * turn, which is the whole reason this is now measured instead.
  *
- * Every line gets a small name tag (`.line__speaker`, wired in wall.js). The
- * three agents' tags are accent-coloured — three voices sharing one feed are
- * only tellable apart by colour once they are off their own lane — and the
- * moderator's takes the quiet default, because he holds no accent seat.
+ * It is drawn as a group chat: every utterance is a bubble, with the speaker's
+ * name tagged above it and their accent tinting the fill. Four voices sharing
+ * one column are only tellable apart by who is named on them once they are
+ * off their own lane, and a bubble carries that attribution in its own shape
+ * rather than by prefixing it to the words — which matters here, because the
+ * other thing a bubble does is have a size. A sentence growing word by word
+ * grows its own box, so the audience can see the feed is live and can see how
+ * much of it belongs to whoever is talking now.
+ *
+ * The moderator sits on the left and the agents on the right — of this
+ * column, not of the stage. It is the one piece of two-sided geometry
+ * available within it, and it buys the distinction that matters most on
+ * stage: the person asking the panel things, and the panel. Ricky takes the
+ * left because reading starts there and his line is the one that opens an
+ * exchange.
  */
 
 .transcript {
-  flex: 1 1 auto;
+  /*
+   * A fixed body rather than `flex: 1 1 auto`, so the in-progress bubble has
+   * something definite to be capped against. See `--transcript-body-h`.
+   */
+  flex: 0 0 var(--transcript-body-h);
+  height: var(--transcript-body-h);
   min-height: 0;
+  /* The gap under the eyebrow. A margin and not padding, because the 900
+     above is the readable height and border-box padding would spend it. */
+  margin-top: 40px;
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
-  gap: 28px;
-  padding: 68px 0 0;
   /*
-   * The band is 3584px of usable width; the text is not.
-   *
-   * At 50px, 3584px is somewhere north of 130 characters on a line, and past
-   * roughly 90 the eye loses the start of the next line on the return sweep —
-   * which is exactly the failure a support surface cannot afford, because
-   * anyone reading it is already behind the audio. 2560px is about 95
-   * characters, which is the top of the comfortable range and still lets a
-   * full moderator question land on two lines rather than three.
-   *
-   * The right-hand ~1000px is left empty on purpose. It is where the cue sits
-   * (see `.band--transcript .lane__foot`), and it gives the band an open side
-   * so it reads as a caption strip under the faces rather than as a fourth
-   * full-width block of content.
+   * Bottom-anchored. The newest bubble sits on the floor of the column and
+   * everything older is pushed up from underneath it — which is what makes
+   * "the most recent thing is always fully visible" a property of the layout
+   * rather than something the client has to compute.
    */
-  max-width: 2560px;
+  justify-content: flex-end;
+  gap: 24px;
 }
 
 .transcript__feed {
@@ -480,25 +549,154 @@ body {
   flex-direction: column;
   /*
    * Bottom-anchored *inside its own box*, and that is load-bearing rather
-   * than cosmetic. The feed is a shrinkable flex item, so once it holds more
-   * than fits it gets squashed — and a squashed box with top-aligned content
-   * clips the newest line off the bottom, which is the one line that matters.
-   * Ending the content at the bottom pushes the overflow off the top instead,
-   * which is where the mask is waiting for it.
+   * than cosmetic. The feed is the shrinkable item of the two — the
+   * in-progress row below it is not (see `flex: 0 0 auto` there) — so a long
+   * partial squashes this box and nothing else. A squashed box with
+   * top-aligned content would clip its newest bubble off the bottom, which is
+   * the one bubble that matters. Ending the content at the bottom pushes the
+   * overflow off the top instead, which is where the mask is waiting for it.
    */
   justify-content: flex-end;
+  flex: 1 1 auto;
   min-height: 0;
-  gap: 22px;
+  gap: 10px;
   overflow: hidden;
   /*
-   * The mask does the leaving — a line that scrolls off a hard edge on a wall
-   * this size snaps.
+   * The mask does the leaving — a bubble that scrolls off a hard edge on a
+   * wall this size snaps.
    */
   mask-image: linear-gradient(to bottom, transparent 0%, #000 26%, #000 100%);
 }
 
-.line {
-  margin: 0;
+/*
+ * In-progress bubbles, one per live voice. Usually there is exactly one;
+ * during a barge-in there are two, because Ricky's mic and the interrupted
+ * agent's socket are both mid-sentence for a few hundred milliseconds.
+ *
+ * `flex: 0 0 auto` is the fix for partials running off the bottom of the
+ * screen. This row is as tall as its content and refuses to shrink, so a
+ * partial that grows to four lines takes four lines and the feed above pays
+ * for it. It used to be a shrinkable item with visible overflow, which meant
+ * a long partial was compressed into a box too small for it and then drawn
+ * outside that box, off the foot of the wall — the words still being spoken
+ * were the ones nobody could read.
+ *
+ * `max-height` is the backstop for the pathological case, a partial longer
+ * than the whole column: the feed is already at zero by then, so the clip and
+ * the mask here do to the partial's own first lines what the feed's mask does
+ * to old bubbles. `min-height` reserves one untagged bubble whether or not
+ * anything is being said, so the feed does not lift every time a sentence
+ * finalises.
+ */
+.transcript__partials {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  flex: 0 0 auto;
+  gap: 10px;
+  min-height: var(--bubble-min-h);
+  /* The body less the 24px gap above this row, which is charged whether or not
+     the feed has anything left in it. */
+  max-height: calc(var(--transcript-body-h) - 24px);
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, transparent 0%, #000 18%, #000 100%);
+}
+
+/* ── Bubbles ───────────────────────────────────────────────────────────── */
+
+/*
+ * One utterance: the name tag, then the bubble. A column, so the tag sits
+ * over the bubble rather than inside it — a tag inside the fill would be a
+ * label on a card, and the thing being drawn here is a person speaking.
+ *
+ * `data-side` is written by wall.js from the speaker alone (`sideFor`), and
+ * `align-items` is the whole of what it does: the row stretches to the
+ * transcript lane's full width and the bubble is as wide as its words, so the
+ * alignment decides which edge of the lane it grows from.
+ */
+.bubble-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  animation: line-in var(--dur-slow) var(--ease) both;
+}
+
+.bubble-row[data-side="right"] {
+  align-items: flex-end;
+}
+
+/*
+ * Consecutive bubbles from one voice. An agent's turn arrives as a run of
+ * sentences, so this is the common case rather than the exception, and it is
+ * worth 18px a sentence: `data-cont` rows drop the name tag and sit on the
+ * feed's own tight 10px gap, and only a change of speaker adds this 18px on
+ * top of it — 28px between rows, total. Same grouping a group chat does, for
+ * the same reason — repeating a name under itself is noise, and the column's
+ * vertical budget does not have room to spare for it.
+ */
+.bubble-row+.bubble-row:not([data-cont="true"]) {
+  margin-top: 18px;
+}
+
+/*
+ * The name tag. Small and uppercase like the lane eyebrows, because it is
+ * doing the same job they do — naming a speaker — and the side padding sets
+ * it over the first letter of the bubble's own text rather than its edge.
+ */
+.bubble__tag {
+  margin: 0 0 8px;
+  padding: 0 28px;
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  /* The default is the moderator's. He carries a tag for the same reason the
+   * agents do — four voices in one feed — but not an accent: the three
+   * accents each name one agent, and giving Ricky a fourth colour would imply
+   * a fourth seat on the panel. Quiet grey says "attribution", not
+   * "identity". The three rules below override it for the agents. */
+  color: var(--text-quiet);
+}
+
+.bubble-row[data-accent="jade"] .bubble__tag {
+  color: var(--accent-jade);
+}
+
+.bubble-row[data-accent="cyan"] .bubble__tag {
+  color: var(--accent-cyan);
+}
+
+.bubble-row[data-accent="amber"] .bubble__tag {
+  color: var(--accent-amber);
+}
+
+.bubble {
+  /*
+   * The transcript lane is 832px of usable width inside its padding (960
+   * `--lane-w` less the `.lane`'s 64px each side) — a good deal narrower than
+   * the 3584px the full-width band had to work with, and this bubble no
+   * longer has a second side of the wall standing empty opposite it to borrow
+   * from.
+   *
+   * At 50px that is only a handful of words per line, so an ordinary sentence
+   * now wraps to four or five lines rather than one or two. That is accepted,
+   * not fixed: this column is read from the same distance the band always
+   * was, and shrinking the type to keep a sentence on fewer lines would undo
+   * the one thing that made it legible from the back of the room in the first
+   * place. `--transcript-body-h` pays for the extra lines by holding fewer
+   * bubbles on screen at once, not by holding the same number smaller.
+   *
+   * max-width stops short of the full 832 so the bubble keeps a visible inset
+   * on its far side even when a long line wraps all the way out to the lane's
+   * measure — the gap is what still reads as "a side" at that point, not the
+   * corner radius.
+   */
+  max-width: 760px;
+  padding: 20px 28px;
+  border-radius: var(--bubble-radius);
+  background: var(--bg-bubble);
+  font-size: 50px;
+  font-weight: 400;
   /*
    * 50px = 15.6cm em box, ~11cm cap height at 320px/m. Comfortable to roughly
    * 20m and legible to about 27m by the usual cap-height/viewing-distance rule
@@ -506,90 +704,78 @@ body {
    * is *hearing* these words, so the transcript is a support and an
    * accessibility surface, not the thing anyone is reading from the back row.
    * If the room turns out deeper than that, this is the number to raise and
-   * TRANSCRIPT_LINES in wall.py is what pays for it.
+   * --transcript-body-h is what pays for it.
    */
-  font-size: 50px;
-  font-weight: 400;
-  line-height: 1.34;
+  line-height: 1.3;
   color: var(--text-secondary);
-  animation: line-in var(--dur-slow) var(--ease) both;
 }
 
-/* The most recent finalised line is the one still in play. */
-.line:last-child {
+/* The squared corner points the bubble at whoever said it. See
+   `--bubble-notch` for why it is 6px while the other three are 28px. */
+.bubble-row[data-side="left"] .bubble {
+  border-bottom-left-radius: var(--bubble-notch);
+}
+
+.bubble-row[data-side="right"] .bubble {
+  border-bottom-right-radius: var(--bubble-notch);
+}
+
+/*
+ * The fill is the speaker's own wash, so the bubble is tinted by who is
+ * talking rather than by anything about the line. The text colour deliberately
+ * is not: conflating the accent with freshness (the rule below) would mean an
+ * agent's words change colour the moment a newer bubble lands after them,
+ * which reads as the agent's identity fading rather than as the line getting
+ * older. The fill marks who, the ink marks when.
+ *
+ * Thinned to 55% of the lane figure, which is the one place a bubble and its
+ * lane deliberately disagree. They are the same statement about the same
+ * agent, but not the same object: a lane is a 3m field read at a glance from
+ * thirty metres, where the only failure is ambiguity, and a bubble is a small
+ * shape carrying 50px of body text on a neutral column, where the failure is
+ * the fill competing with the words inside it. One thinning for all three,
+ * applied on top of per-scale sources that are already level with each
+ * other — so the three bubbles stay as mutually distinct as the three lanes,
+ * just quieter.
+ */
+.bubble-row[data-accent="jade"] .bubble {
+  background: color-mix(in srgb, var(--accent-jade-wash) 55%, transparent);
+}
+
+.bubble-row[data-accent="cyan"] .bubble {
+  background: color-mix(in srgb, var(--accent-cyan-wash) 55%, transparent);
+}
+
+/* And no exception for amber, which until now needed one at every use. Its
+   step 4 had twice jade's chroma; `--accent-amber-quiet` is level with the other
+   two by construction, so one rule covers three agents. */
+.bubble-row[data-accent="amber"] .bubble {
+  background: color-mix(in srgb, var(--accent-amber-wash) 55%, transparent);
+}
+
+/* The most recent finalised bubble is the one still in play. */
+.bubble-row:last-child .bubble {
   color: var(--text-primary);
 }
 
 /*
- * The name tag ahead of an agent's line. Small and uppercase like the lane
- * eyebrows, because it is doing the same job they do — naming a speaker —
- * just inline instead of pinned above an orb.
+ * Quieter than a finalised bubble, and no entrance animation: this node is
+ * reused and rewritten on every word (see `renderPartials` in wall.js), so an
+ * animation here would fire forty times a sentence. Italic is the second cue,
+ * so a glance at the band alone — no colour perception needed — still tells a
+ * partial from a finalised line.
  *
- * Deliberately not the sentence's own colour: the accent marks *who*, and
- * conflating it with freshness (the rule above) would mean an agent's line
- * changes colour the moment a newer line lands after it, which reads as the
- * agent's identity fading rather than as the line getting older. Colouring
- * only the tag keeps those two signals apart.
- *
- * Placed after `.line:last-child` in the cascade so an agent's most recent
- * line still gets its tag's accent — the two rules have equal specificity and
- * source order is the only thing deciding between them here.
+ * Placed after `.bubble-row:last-child` on purpose: a partial is the last
+ * child of `.transcript__partials`, so that rule matches it too, and the two
+ * selectors have equal specificity. Source order is the only thing deciding
+ * between them.
  */
-.line__speaker {
-  margin-right: 0.4em;
-  font-weight: 600;
-  font-size: 0.6em;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  /* The default is the moderator's. He carries a tag for the same reason the
-   * agents do — four voices in one feed — but not an accent: the three
-   * accents each name one agent, and giving James a fourth colour would
-   * imply a fourth seat on the panel. Quiet grey says "attribution", not
-   * "identity". The three rules below override it for the agents. */
-  color: var(--text-quiet);
-}
-
-.line[data-accent="jade"] .line__speaker {
-  color: var(--accent-jade);
-}
-.line[data-accent="cyan"] .line__speaker {
-  color: var(--accent-cyan);
-}
-.line[data-accent="amber"] .line__speaker {
-  color: var(--accent-amber);
-}
-
-/*
- * In-progress lines, one per live voice. Usually there is exactly one; during
- * a barge-in there are two, because James's mic and the interrupted agent's
- * socket are both mid-sentence for a few hundred milliseconds.
- *
- * `min-height` reserves one line whether or not anything is being said, so
- * the feed above does not jump every time a sentence finalises. A second
- * concurrent partial does push the feed up by a line — rare, brief, and
- * honest about the fact that two people are talking.
- */
-.transcript__partials {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  min-height: 67px;
-}
-
-.line.line--partial {
-  /* `.line.line--partial`, not `.line--partial`: a partial is always the
-   * only child of `.transcript__partials`, so `.line:last-child` (above)
-   * matches it too and — at equal specificity — a single-class selector
-   * here would lose to that two-class one regardless of source order,
-   * painting every partial in `--text-primary` instead of quiet grey.
-   *
-   * Quieter than a finalised line, and no entrance animation: this node is
-   * reused and rewritten on every word (see `renderPartials` in wall.js), so
-   * an animation here would fire forty times a sentence. Italic is the
-   * second cue, so a glance at the band alone (no colour perception needed)
-   * still tells a partial from a finalised line. */
+.bubble-row[data-partial="true"] .bubble {
   color: var(--text-quiet);
   font-style: italic;
+}
+
+.bubble-row[data-partial="true"] {
   animation: none;
 }
 
@@ -598,6 +784,7 @@ body {
     opacity: 0;
     transform: translateY(16px);
   }
+
   to {
     opacity: 1;
     transform: none;
@@ -610,19 +797,6 @@ body {
   height: 56px;
   display: flex;
   align-items: center;
-}
-
-/*
- * Bottom right, opposite the "moderator" eyebrow at top left.
- *
- * In the old narrow column the cue sat directly under the text and that was
- * the only place it could go. A 3840px band with a 2560px measure has a
- * standing gap on the right, and putting the cue in it does two things: it
- * anchors the far corner so the band is not visibly lopsided, and it moves
- * the one message addressed to James away from the words he is reading.
- */
-.band--transcript .lane__foot {
-  justify-content: flex-end;
 }
 
 .lane__cue {

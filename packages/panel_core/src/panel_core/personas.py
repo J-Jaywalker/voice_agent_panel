@@ -51,7 +51,7 @@ class Persona(BaseModel):
     # sound; this says what they must not do with a turn. Added 21 Sept 2026:
     # Dexter was closing on the moral of an anecdote instead of opening on
     # the anecdote, and Melia was narrating her own position in the
-    # conversation ("I'll wait to hear where James's pointing this") rather
+    # conversation ("I'll wait to hear where Ricky's pointing this") rather
     # than holding one. Both are delivery faults, not stance or style faults,
     # so neither was fixable by editing `stance` or `communication_style`.
     delivery: list[str] = Field(default_factory=list)

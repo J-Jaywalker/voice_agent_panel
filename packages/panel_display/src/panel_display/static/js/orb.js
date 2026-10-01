@@ -182,6 +182,24 @@ const BAR_MAX = 84;
 // say. This is the stub length.
 const BAR_FLOOR = 9;
 
+// How far toward the ink the mark starts, before `active` carries it the rest
+// of the way.
+//
+// The mark is drawn in the agent's own colour and the lane behind it is now a
+// wash of that same colour, so at `quiet` the mark is a tint on a tint. That
+// was survivable while the lane was near-neutral and is not now: measured on
+// the demo, Wayne's mark came out at 1.28:1 against its own disc and 1.45:1
+// against his lane, because amber's quiet step is a bright yellow and the
+// amber lane is sand. His orb read as empty from across the room.
+//
+// Starting the walk part way toward the ink keeps the state language — it is
+// still one hue getting denser, never a different colour arriving — while
+// putting a floor under the contrast. With the raised `mark` alpha in `ORB`,
+// the three marks now measure 2.24 / 2.24 / 2.10 against their lanes: all
+// clear of 2:1 and within 0.14 of each other, where they used to spread from
+// 1.45 to 1.68.
+const MARK_INK_FLOOR = 0.5;
+
 // Per-state targets, all interpolated rather than switched.
 //   active — pigment density, 0..1. *Not* "how coloured" any more: an idle
 //            orb is fully its agent's hue, it is simply at its lightest.
@@ -271,8 +289,14 @@ const ORB = {
     seat: 0.55,
     bar: 0.4,
     barGain: 0.6,
-    mark: 0.5,
-    markGain: 0.5,
+    // 0.78, not the 0.5 this was while the lanes were near-neutral. Half the
+    // mark's pixels were the disc showing through, which is why deepening its
+    // *colour* alone moved the measured contrast by 0.1 and no further. The
+    // cost is that the mark's own idle-to-speaking range narrows to 0.78-1.0;
+    // the orb spends four redundant axes on that question (count, weight, ink,
+    // motion) and the brand mark being legible at rest outranks one of them.
+    mark: 0.78,
+    markGain: 0.22,
     ripple: 0.3,
   },
   dark: {
@@ -480,6 +504,14 @@ export class Orb {
     // an audience sees is the agent's own colour getting stronger — never a
     // different colour arriving.
     const colour = mix(this.quiet, this.ink, active);
+    // The mark walks the same two densities, but from a floor rather than from
+    // zero. It is the one element that has to stay legible against a lane now
+    // washed in this agent's *own* colour, and at `quiet` it was not: amber's
+    // quiet is a bright yellow, so Wayne's mark at idle was a half-alpha
+    // yellow on a sand lane and his orb read as empty. Starting the walk part
+    // way toward the ink is the fix that keeps the state language — it is
+    // still one hue getting stronger, just never at its lightest.
+    const markColour = mix(this.quiet, this.ink, MARK_INK_FLOOR + (1 - MARK_INK_FLOOR) * active);
 
     ctx.clearRect(0, 0, this.size, this.size);
 
@@ -488,7 +520,7 @@ export class Orb {
     this._pulseRings(ctx, c, colour, active);
     this._seat(ctx, c);
     this._corona(ctx, c, t, colour, active);
-    this._mark(ctx, c, level, colour, active);
+    this._mark(ctx, c, level, markColour, active);
   }
 
   /**

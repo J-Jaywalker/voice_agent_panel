@@ -20,7 +20,7 @@ from .state import PanelState
 
 # Global guardrail. The structural fix from FEASIBILITY.md 4.2: the agents are
 # not Speechmatics people and have no basis for claims about them, so there is
-# nothing to constrain. James delivers any product claim.
+# nothing to constrain. Ricky delivers any product claim.
 GUARDRAILS = """
 You are a fictional character on a live stage panel in front of a real audience.
 
@@ -130,7 +130,7 @@ How you regard the others on the panel:
 {relationships}
 
 You are one of three AI agents on a panel with a human moderator, Ricardo
-("James"). James runs the floor. When he speaks, you stop talking, immediately
+("Ricky"). Ricky runs the floor. When he speaks, you stop talking, immediately
 and without complaint. When he names you, you answer him directly.
 
 You will be asked, repeatedly and while others are still talking, whether you
@@ -149,15 +149,15 @@ def build_turn_prompt(state: PanelState, persona: Persona) -> str:
 
     invitation = state.invitation
     if invitation is None and state.partial:
-        # James is still talking, so the floor cannot have opened yet — the
+        # Ricky is still talking, so the floor cannot have opened yet — the
         # controller only reads an invitation off a *final* segment. Saying
         # "he has not opened the floor" here is technically true and
         # practically a lie: this is the speculative pass whose whole job is
         # to have an answer ready before he finishes, and told it will not be
-        # speaking, an agent writes a holding line ("Take your time, James")
+        # speaking, an agent writes a holding line ("Take your time, Ricky")
         # which a direct question then airs unconditionally.
         addressed = (
-            "\nJames is still mid-sentence — this is what he has said so far. "
+            "\nRicky is still mid-sentence — this is what he has said so far. "
             "Answer the question he is plainly getting to, as if he had "
             "finished asking it. Do not write a line about him still talking, "
             "and never offer to wait: if he turns out not to be asking you "
@@ -165,31 +165,31 @@ def build_turn_prompt(state: PanelState, persona: Persona) -> str:
         )
     elif invitation is None:
         addressed = (
-            "\nJames has NOT opened the floor — he is making a point, not asking a "
+            "\nRicky has NOT opened the floor — he is making a point, not asking a "
             "question. You will almost certainly not be speaking. Score yourself "
             "low unless this is genuinely the one thing that must be said.\n"
         )
     elif invitation.agent == persona.id:
-        addressed = "\nJames has just addressed YOU directly. Answer him.\n"
+        addressed = "\nRicky has just addressed YOU directly. Answer him.\n"
     elif invitation.agent:
         addressed = (
-            f"\nJames has just addressed {invitation.agent}, not you. "
+            f"\nRicky has just addressed {invitation.agent}, not you. "
             "Unless you strongly disagree, score yourself low and let them answer.\n"
         )
     else:
-        addressed = "\nJames has opened the floor to the panel.\n"
+        addressed = "\nRicky has opened the floor to the panel.\n"
 
     # Two cases the branches above cannot see, in precedence order: asked
     # while another agent is mid-turn, and asked straight after one finished.
     #
-    # Agents pass turns to each other without James re-opening the floor
+    # Agents pass turns to each other without Ricky re-opening the floor
     # (`FloorController._maybe_rearbitrate`), and every one of those lands in
     # the open-floor branch above, which says nothing about who just spoke.
     # Left at that, an agent replying to an agent reliably writes a *reply* —
     # it takes the last speaker's own words and returns them reframed, which
     # reads as sharp, contains nothing the audience did not already have, and
     # is the exact failure the evidence rule in GUARDRAILS exists to stop.
-    # Suppressed while James has a partial in flight: on the speculative pass
+    # Suppressed while Ricky has a partial in flight: on the speculative pass
     # the last final is stale by construction and he is about to be the one
     # being answered.
     last = state.transcript[-1] if state.transcript else None
@@ -202,7 +202,7 @@ def build_turn_prompt(state: PanelState, persona: Persona) -> str:
         # generation for one. The agent has to know it is writing the *next*
         # turn, not competing for this one: told nothing, it writes as though
         # the floor were open now and produces either an interruption or an
-        # answer to James that ignores the thirty seconds in between.
+        # answer to Ricky that ignores the thirty seconds in between.
         exchange = (
             f"\n{live} is speaking right now and you are not going to cut in — "
             "nobody here interrupts anybody. What you write is the line you "
@@ -220,7 +220,7 @@ def build_turn_prompt(state: PanelState, persona: Persona) -> str:
         and last.speaker in state.agents
     ):
         exchange = (
-            f"\n{last.speaker} spoke last, not James. If you take this you are "
+            f"\n{last.speaker} spoke last, not Ricky. If you take this you are "
             "adding to the panel's answer, not marking their homework. Bring "
             "something they did not have — a figure, a date, a count off your "
             "own work, a deployment you were in. Rephrasing their point back at "
@@ -250,7 +250,7 @@ write the short thing you would actually say out loud instead.""".strip()
 # --------------------------------------------------------------------------
 #
 # An LLM answer to the question `FloorController._detect` answers with regex:
-# *who did James just invite to speak?* Rendered here, from cast data, for the
+# *who did Ricky just invite to speak?* Rendered here, from cast data, for the
 # same reason every other prompt is — personas are the source of truth, and the
 # classifier has to know the panel's names, jobs and areas of authority to
 # resolve "I'd love the financial view on that" to Wayne, which no pattern can.
@@ -339,31 +339,31 @@ def build_address_prompt(cast: PanelCast) -> str:
 
     return f"""You decide who the moderator of a live panel has just invited to speak.
 
-James is the human moderator. The panel:
+Ricky is the human moderator. The panel:
 
 {panel}
 {alias_block}
 Answer with exactly one verdict:
 
-{chr(10).join(f"- {persona.name.upper()} — James is inviting {persona.name} specifically." for persona in cast.personas.values())}
-- {OPEN_VERDICT} — James is inviting the panel as a body, nobody in particular.
-- {NO_VERDICT} — James invited nobody. He is making a point, thinking aloud,
+{chr(10).join(f"- {persona.name.upper()} — Ricky is inviting {persona.name} specifically." for persona in cast.personas.values())}
+- {OPEN_VERDICT} — Ricky is inviting the panel as a body, nobody in particular.
+- {NO_VERDICT} — Ricky invited nobody. He is making a point, thinking aloud,
   checking in on his own sentence, talking to the room or the AV desk, or asking
   permission to interrupt. The floor stays closed.
 - {AMBIGUOUS_VERDICT} — two or more panellists are invited in the same way and
   there is no basis to choose between them. Do not guess; a human will decide.
-  If James names two or more panellists, the answer is {AMBIGUOUS_VERDICT} and
+  If Ricky names two or more panellists, the answer is {AMBIGUOUS_VERDICT} and
   never {OPEN_VERDICT}, however jointly he phrases it — "can you take that
   between you?" is still two named people, and only one of them can hold a
   microphone. {OPEN_VERDICT} is for an invitation that names nobody at all.
-- {INTRO_VERDICT} — James is asking the panel, as a body, to say who they are.
+- {INTRO_VERDICT} — Ricky is asking the panel, as a body, to say who they are.
 
 How to decide:
 
 Grammatical role decides the addressee, never position in the sentence. A name
 can appear first and be the one person who must NOT speak.
 
-Strongest role wins. Being the subject of James's request ("can Melia take
+Strongest role wins. Being the subject of Ricky's request ("can Melia take
 that?", "over to Melia", "what about Melia?", "let's hear from Melia") beats
 being addressed directly ("Melia, what do you think?"), which beats being merely
 mentioned. So "Sorry Dexter, can you let Melia finish?" is MELIA.
@@ -371,10 +371,10 @@ mentioned. So "Sorry Dexter, can you let Melia finish?" is MELIA.
 A name mentioned but not addressed invites nobody. "Sorry for interrupting
 Dexter" and "I'm cutting off Dexter there" are {NO_VERDICT}. Someone being stood
 down is not being invited: "Sorry, Dexter, can I just interrupt?" is
-{NO_VERDICT}, because the request is James's own. But "Sorry, Dexter, can you
+{NO_VERDICT}, because the request is Ricky's own. But "Sorry, Dexter, can you
 wrap up?" is DEXTER, because the request is put to Dexter.
 
-A question is not automatically an invitation. James checking his own sentence —
+A question is not automatically an invitation. Ricky checking his own sentence —
 "is that okay?", "does that work?", "right?", "does that make sense?" — invites
 nobody. Neither does asking to speak himself: "can I just jump in?" is
 {NO_VERDICT}. But permission wrapped around a real request still invites the
@@ -385,31 +385,31 @@ finish your point." are invitations. "Let me elaborate on that." is not.
 
 Asking for more without naming anyone is {OPEN_VERDICT}, not {NO_VERDICT}.
 "Say more about that.", "go on", "tell us more" hand the floor back to the panel
-and let it work out who picks it up. James asking to elaborate *himself* — "let
+and let it work out who picks it up. Ricky asking to elaborate *himself* — "let
 me expand on that" — is still {NO_VERDICT}.
 
 A statement invites nobody, however interesting it is.
 
 {INTRO_VERDICT} is the one-shot round where every panellist says who they are,
-and only James asking for that starts it. "Right, let's do quick
+and only Ricky asking for that starts it. "Right, let's do quick
 introductions.", "Could you introduce yourselves for the audience?", "Tell us
 who you are and what you do." and "Who have we got with us tonight?" are all
 {INTRO_VERDICT}.
 
 Greeting the room is not asking for introductions. "Welcome to the panel.",
 "Good evening, thanks for coming.", "Right, let's get started." and "Lovely to
-have you all here." are {NO_VERDICT}. So is James introducing *himself* — "My
-name is James." — and James introducing the panel on their behalf — "joining me
+have you all here." are {NO_VERDICT}. So is Ricky introducing *himself* — "My
+name is Ricky." — and Ricky introducing the panel on their behalf — "joining me
 tonight are Dexter, Melia and Wayne." A welcome that merely sounds like it is
 about to be followed by "...so tell us who you are" is still {NO_VERDICT}.
 Waiting for the actual request costs one sentence; starting early runs three
-agents through their introductions over the top of James's opener.
+agents through their introductions over the top of Ricky's opener.
 
 Asking one panellist to introduce themselves is that panellist, not
 {INTRO_VERDICT}. "Dexter, tell us a bit about yourself." is DEXTER.
 {INTRO_VERDICT} is the whole panel, once.
 
-James need not use a name. If he asks for something squarely inside one
+Ricky need not use a name. If he asks for something squarely inside one
 panellist's authority — "what does the financial side say?" — name that
 panellist. Only do this when one of them is the obvious owner; if two could
 answer, that is {OPEN_VERDICT}.
