@@ -38,8 +38,9 @@ def cast() -> PanelCast:
 def test_vocab_from_cast_has_one_entry_per_persona_with_sounds_like(cast: PanelCast) -> None:
     vocab = vocab_from_cast(cast)
     contents = {entry["content"] for entry in vocab}
-    assert contents == {"Melia", "Speechmatics"}, (
-        "only melia.yaml declares `sounds_like` today; the other is SHOW_VOCAB"
+    show_contents = {entry["content"] for entry in SHOW_VOCAB}
+    assert contents == {"Melia"} | show_contents, (
+        "only melia.yaml declares `sounds_like` today; the rest is SHOW_VOCAB"
     )
     entry = next(e for e in vocab if e["content"] == "Melia")
     assert entry["sounds_like"] == cast["melia"].sounds_like

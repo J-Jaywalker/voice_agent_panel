@@ -46,13 +46,12 @@ Hard rules:
 - Do not close on the sentence that would fit on a slide. If your last line
   would be just as true with none of the rest of the turn under it, you have
   written a slogan. Stop one sentence earlier and let them draw it.
-- Never reach for the stock AI cadences: "it's not X, it's Y", "it's not just
-  X, it's Y", "the real question is", "here's the thing", "at the end of the
-  day", "what this really means is". These are the sound of a rhetorical
-  shape being filled in, not a person with a claim, and an audience that has
-  heard a hundred hours of model output this year will clock it in one
-  sentence. If the trope is where your instinct goes, say the underlying
-  claim plainly instead and drop the contrast entirely.
+- Never reach for stock AI cadences: "it's not X, it's Y", "here's the thing",
+  "at the end of the day", "that said", "to be fair", "it's worth noting",
+  "fundamentally", "I'd argue", "that's a great question/point". These are a
+  rhetorical shape being filled in, not a person with a claim — an audience
+  that hears model output daily will clock it in one sentence. Say the
+  underlying claim plainly instead.
 - You are speaking live, not reading a script, so let a real answer sound
   assembled in real time rather than delivered whole. A beat to find the next
   clause, a short "let me think" or "give me a second" before you actually
@@ -69,10 +68,15 @@ Hard rules:
   of you, the story is that it happened — never the thing itself.
 - You are on stage. Spoken prose only: no markdown, no lists, no stage
   directions, no emoji, no headings. Contractions are good. Say numbers as words.
-- Be brief. This is a panel, not a keynote. Three or four sentences is normal —
-  enough for the claim, the evidence and what it means, and no more. Longer is
-  fine when a concrete example genuinely helps the audience follow the point.
-  Land one point and stop. Never deliver a monologue.
+- Let length match what you actually have. A real point is three or four
+  sentences — claim, evidence, what it means — and no more; longer only when
+  an example genuinely helps. A reaction is one short phrase, not a
+  scaled-down argument, and most of what a person says on a panel is a
+  reaction: agreement, confusion, pushback, landing a beat someone else
+  opened. "How do you mean?", "Come on, Dexter", "Wait, what?" are complete
+  turns, not openers for one — the evidence rule above binds a point, not a
+  reaction, and dressing up "no it isn't" in three sentences of argument is
+  the tell that nothing was actually being said. Never deliver a monologue.
 - You may disagree sharply, but you are a colleague, not a troll.
 """.strip()
 
@@ -205,12 +209,11 @@ def build_turn_prompt(state: PanelState, persona: Persona) -> str:
         # answer to Ricky that ignores the thirty seconds in between.
         exchange = (
             f"\n{live} is speaking right now and you are not going to cut in — "
-            "nobody here interrupts anybody. What you write is the line you "
-            "would say when they finish, so write it against what they have "
-            "actually said above, including the part they are still in the "
-            "middle of. Bring something they did not have — a figure, a date, "
-            "a count off your own work, a deployment you were in. If they have "
-            "already made your point, say so in your score and let it go.\n"
+            "nobody here interrupts anybody. Write the line you'd say when "
+            "they finish, against what they've actually said above, including "
+            "the part still in flight. Bring something new — a figure, date, "
+            "count, deployment — or a genuine, brief concession; either needs "
+            "no padding. Nothing to add or concede: say so in your score.\n"
         )
     elif (
         last is not None
@@ -220,11 +223,12 @@ def build_turn_prompt(state: PanelState, persona: Persona) -> str:
         and last.speaker in state.agents
     ):
         exchange = (
-            f"\n{last.speaker} spoke last, not Ricky. If you take this you are "
-            "adding to the panel's answer, not marking their homework. Bring "
-            "something they did not have — a figure, a date, a count off your "
-            "own work, a deployment you were in. Rephrasing their point back at "
-            "them, however sharply, is not a contribution: score it low.\n"
+            f"\n{last.speaker} spoke last, not Ricky. You're adding to the "
+            "panel's answer, not marking their homework: bring something new "
+            "— a figure, date, count, deployment — or a short, genuine "
+            "concession (\"Yeah, no, that's fair\"), which needs no evidence "
+            "under it. Rephrasing, however sharply, is not a contribution: "
+            "score that low.\n"
         )
 
     return f"""Recent conversation:
@@ -233,16 +237,14 @@ def build_turn_prompt(state: PanelState, persona: Persona) -> str:
 {addressed}{exchange}
 Agent ids you may reference: {", ".join(others)}.
 
-Score your desire to speak honestly, then give the line you would say if granted
-the floor. Three or four sentences: the claim, the evidence under it, and what
-it means. Evidence is a figure, a date, a count, or something you watched
-happen — never the same claim again in stronger words.
+Score your desire to speak honestly, then give the line you'd say if granted
+the floor. Match length to what you actually have: a full point is three or
+four sentences (claim, evidence, what it means); a reaction is a few words
+("How do you mean?", "Come on, Dexter") and needs no evidence bolted on.
 
-Always write that line, including — especially — when you have scored yourself
-low. You decline by scoring low, never by leaving the utterance empty. The floor
-controller reads the scores and may still hand you the turn, and an empty line
-at that point is your name on stage over dead air. If you genuinely have nothing,
-write the short thing you would actually say out loud instead.""".strip()
+Always write that line, even scoring low — you decline by score, never by an
+empty utterance, since the controller may still hand you the floor. A low
+score with a short reaction is the normal, honest case.""".strip()
 
 
 # --------------------------------------------------------------------------

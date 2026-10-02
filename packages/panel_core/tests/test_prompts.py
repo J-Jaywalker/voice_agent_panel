@@ -196,7 +196,7 @@ def test_replying_to_another_agent_demands_something_they_did_not_have() -> None
     """
     prompt = build_turn_prompt(_after("wayne", "Fix the channel."), _persona())
     assert "wayne spoke last, not Ricky" in prompt
-    assert "Rephrasing their point back at them" in prompt
+    assert "rephrasing, however sharply, is not a contribution" in prompt.lower()
 
 
 def test_the_speculative_pass_is_never_treated_as_an_exchange() -> None:
