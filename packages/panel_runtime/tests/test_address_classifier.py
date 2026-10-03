@@ -5,13 +5,18 @@ the prompt against the regex's acceptance corpus, and that needs a real model.
 What is testable offline is everything this module was written for, which is
 the *latency and correctness machinery* around the call:
 
-- the verdict resolves at the first content delta, not at the end of the
-  message, and `classify` returns there while the reason is still arriving;
+- the verdict resolves as soon as it closes, not at the end of the message, and
+  `classify` returns there while the reason is still arriving;
+- a verdict naming several panellists comes back naming all of them, which is
+  the thing a complete name being a legal prefix of a set could silently break;
 - a speculative verdict for the same text is reused at zero cost, and costs one
   API call rather than two;
 - a speculative verdict for a *prefix* of the final is never reused. This is
   the correctness footgun, not a performance nicety: a partial of "Wayne" looks
   like a vocative, and the completed sentence can name somebody else entirely;
+- nor is one from a *different exchange*, which is the same footgun on the
+  other axis: "the other two" means a different two after Dexter's turn than
+  after Melia's, so the conversation context is part of the cache key;
 - a response the model got wrong is treated as unavailable — fall back to the
   regex — rather than guessed at;
 - the speculation gates actually gate.
@@ -33,9 +38,10 @@ PERSONA_DIR = Path(__file__).resolve().parents[3] / "personas"
 class _FakeStream:
     """Replays one response a chunk at a time, like `text_stream` does."""
 
-    def __init__(self, chunks: list[str], stall: float) -> None:
+    def __init__(self, chunks: list[str], stall: float, stall_from: int) -> None:
         self._chunks = chunks
         self._stall = stall
+        self._stall_from = stall_from
 
     async def __aenter__(self) -> Self:
         return self
@@ -47,10 +53,13 @@ class _FakeStream:
     def text_stream(self):
         async def gen():
             for index, chunk in enumerate(self._chunks):
-                # Everything after the verdict token is deliberately slow, so a
+                # Everything from `stall_from` on is deliberately slow, so a
                 # test that passes only because the whole message arrived at
-                # once cannot pass at all.
-                await asyncio.sleep(self._stall if index else 0)
+                # once cannot pass at all. The verdict can take more than one
+                # chunk to close — "MELIA" is also the first half of
+                # "MELIA+WAYNE" — so which chunk the stall starts at is the
+                # test's business, not this class's.
+                await asyncio.sleep(self._stall if index >= self._stall_from else 0)
                 yield chunk
 
         return gen()
@@ -64,9 +73,12 @@ class _FakeClient:
     from `messages.stream()` at 1.x and sending it raises `TypeError`.
     """
 
-    def __init__(self, responses: list[list[str]], *, stall: float = 0.0) -> None:
+    def __init__(
+        self, responses: list[list[str]], *, stall: float = 0.0, stall_from: int = 1
+    ) -> None:
         self._responses = responses
         self._stall = stall
+        self._stall_from = stall_from
         self.calls: list[dict] = []
         outer = self
 
@@ -74,7 +86,9 @@ class _FakeClient:
             def stream(self, **kwargs):
                 outer.calls.append(kwargs)
                 index = min(len(outer.calls) - 1, len(outer._responses) - 1)
-                return _FakeStream(outer._responses[index], outer._stall)
+                return _FakeStream(
+                    outer._responses[index], outer._stall, outer._stall_from
+                )
 
         self.messages = _Messages()
 
@@ -103,10 +117,14 @@ def cast() -> PanelCast:
 
 
 def _classifier(
-    cast: PanelCast, responses: list[list[str]], *, stall: float = 0.0
+    cast: PanelCast,
+    responses: list[list[str]],
+    *,
+    stall: float = 0.0,
+    stall_from: int = 1,
 ) -> tuple[AddressClassifier, _FakeClient]:
     classifier = AddressClassifier(cast, api_key="test-key")
-    client = _FakeClient(responses, stall=stall)
+    client = _FakeClient(responses, stall=stall, stall_from=stall_from)
     classifier._client = client
     return classifier, client
 
@@ -120,16 +138,25 @@ async def _settle(classifier: AddressClassifier, *, timeout: float = 2.0) -> Non
         await asyncio.wait({inflight})
 
 
-def test_the_verdict_resolves_at_the_first_delta(cast):
-    """Time to verdict is time to first token, which is the whole argument.
+def test_the_verdict_resolves_before_the_reason(cast):
+    """Time to verdict is time to the verdict, not to the message.
 
-    The reason is stalled for five seconds behind the token. `classify` has to
-    come back with the verdict anyway — if it ever waits for the completed
-    message, the classifier costs a full generation instead of a first token
-    and there is no latency case for doing this at all.
+    The reason is stalled for five seconds behind the verdict. `classify` has
+    to come back with the verdict anyway — if it ever waits for the completed
+    message, the classifier costs a full generation instead of a few tokens and
+    there is no latency case for doing this at all.
+
+    It resolves on the separator rather than on the name, which is the one
+    thing a verdict naming several panellists costs: "MELIA" is a complete
+    verdict and also a legal prefix of "MELIA+WAYNE", so the only way to know
+    which is to see one more character. About one model token, and nothing at
+    all when the answer was already speculated.
     """
     classifier, client = _classifier(
-        cast, [["MELIA", " - named as the subject of the request."]], stall=5.0
+        cast,
+        [["MEL", "IA", " -", " named as the subject of the request."]],
+        stall=5.0,
+        stall_from=3,
     )
 
     async def body():
@@ -141,10 +168,53 @@ def test_the_verdict_resolves_at_the_first_delta(cast):
     outcome = asyncio.run(body())
 
     assert outcome.verdict == "MELIA"
-    assert outcome.agent == "melia"
+    assert outcome.agents == ("melia",)
     assert outcome.source == "fresh"
     assert outcome.reason == "", "the floor must not have waited on prose"
     assert len(client.calls) == 1
+
+
+def test_a_verdict_naming_two_panellists_resolves_to_both(cast):
+    """"MELIA+WAYNE" is one verdict naming two people, and resolves to both.
+
+    The reason is stalled behind the whole set, so a decoder that stopped at
+    the first complete name would come back with Melia alone — which would
+    silently bar the panellist Ricky had just invited.
+    """
+    classifier, _ = _classifier(
+        cast,
+        [["MELIA", "+WAYNE", " -", " both asked to take it."]],
+        stall=5.0,
+        stall_from=3,
+    )
+
+    async def body():
+        try:
+            return await asyncio.wait_for(
+                classifier.classify("Melia and Wayne, between you?"), 1.0
+            )
+        finally:
+            await classifier.close()
+
+    outcome = asyncio.run(body())
+
+    assert outcome.verdict == "MELIA+WAYNE"
+    assert outcome.agents == ("melia", "wayne")
+
+
+def test_a_verdict_with_no_reason_at_all_still_resolves(cast):
+    """A bare "MELIA" and nothing else is a complete answer.
+
+    There is no terminator to close the set, so this is the one case the
+    end-of-stream decode exists for. Without it the commonest *short* reply the
+    model can give would be undecodable and fail closed to the regex.
+    """
+    classifier, _ = _classifier(cast, [["MELIA"]])
+
+    outcome = asyncio.run(classifier.classify("Melia, carry on."))
+
+    assert outcome.verdict == "MELIA"
+    assert outcome.agents == ("melia",)
 
 
 def test_the_request_shape_is_the_one_the_sdk_accepts(cast):
@@ -168,6 +238,60 @@ def test_the_request_shape_is_the_one_the_sdk_accepts(cast):
     assert "effort" not in kwargs
     assert kwargs["system"][0]["cache_control"] == {"type": "ephemeral"}
     assert 'RICKY SAID: "Adoption is uneven."' in kwargs["messages"][0]["content"]
+
+
+def test_the_context_rides_in_the_user_turn_not_the_system_prompt(cast):
+    """Prompt caching depends on the system block never changing.
+
+    The conversation context is the one input to this classifier that moves as
+    the panel talks. Putting it in the cached block would re-prefill the whole
+    prompt on every turn, which is a cost the latency budget has no room for —
+    and it is also the thing that would break first and least visibly.
+    """
+    classifier, client = _classifier(cast, [["MELIA+WAYNE", " -", " the other two."]])
+    context = "PANEL ACTIVITY — spoken recently, most recent first: Dexter."
+
+    asyncio.run(classifier.classify("The other two?", context=context))
+
+    (kwargs,) = client.calls
+    assert context not in kwargs["system"][0]["text"]
+    assert context in kwargs["messages"][0]["content"]
+    # Context first, so the utterance is read against it.
+    assert kwargs["messages"][0]["content"].startswith(context)
+
+
+def test_a_verdict_is_never_reused_across_a_different_exchange(cast):
+    """"The other two" means a different two once somebody else has spoken.
+
+    Same words, same turn-level cache, different answer — so the cache key
+    carries the context as well as the utterance. Keyed on the words alone,
+    the second question here would be served the first one's verdict, putting
+    the one panellist Ricky had just heard from straight back on the PA.
+    """
+    classifier, client = _classifier(
+        cast,
+        [["MELIA+WAYNE", " - all but Dexter."], ["DEXTER+WAYNE", " - all but Melia."]],
+    )
+    after_dexter = "PANEL ACTIVITY — spoken recently, most recent first: Dexter."
+    after_melia = "PANEL ACTIVITY — spoken recently, most recent first: Melia."
+
+    async def body():
+        classifier.speculate("I'd like to hear from the other two", context=after_dexter)
+        await _settle(classifier)
+        first = await classifier.classify(
+            "I'd like to hear from the other two", context=after_dexter
+        )
+        second = await classifier.classify(
+            "I'd like to hear from the other two", context=after_melia
+        )
+        return first, second
+
+    first, second = asyncio.run(body())
+
+    assert first.agents == ("melia", "wayne")
+    assert first.source == "speculative_hit", "the same exchange reuses the answer"
+    assert second.agents == ("dex", "wayne")
+    assert len(client.calls) == 2, "the second question had to be asked"
 
 
 def test_a_speculative_verdict_for_the_same_text_is_free(cast):
@@ -213,7 +337,7 @@ def test_a_speculative_verdict_is_never_reused_for_a_longer_final(cast):
     outcome = asyncio.run(body())
 
     assert outcome.verdict == "MELIA"
-    assert outcome.agent == "melia"
+    assert outcome.agents == ("melia",)
     assert outcome.source == "recomputed", "speculation ran, against text since revised"
     assert len(client.calls) == 2
 
@@ -231,7 +355,7 @@ def test_an_undecodable_response_is_unavailable_not_a_guess(cast):
     outcome = asyncio.run(classifier.classify("Melia, carry on."))
 
     assert outcome.verdict is None
-    assert outcome.agent is None
+    assert outcome.agents == ()
     assert outcome.source == "unavailable"
 
 

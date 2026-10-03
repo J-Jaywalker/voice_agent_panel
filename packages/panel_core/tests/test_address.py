@@ -22,10 +22,17 @@ Three roles, in strict precedence:
     VOCATIVE            "Melia, can you continue?", "what do you think, Wayne?"
     OBLIQUE             "sorry for interrupting Dexter" — never an addressee
 
-and one non-outcome: two agents at the same top role is **ambiguous**, which
-keeps the floor closed and puts the tie in front of the operator. A missed
-invitation costs one beat. A wrong one puts an agent on the PA over Ricky in
-front of 400 people.
+and two agents at the same top role are **both addressed** — "Melia and Wayne,
+can you take that between you?" invites both of them and bars the third, which
+is a real invitation and not a tie. It used to come out ambiguous, close the
+floor and wait for an operator to break it; both of them answering is what
+Ricky asked for, and the operator console does not exist. What is still refused
+is *picking* between two agents at the same role. A missed invitation costs one
+beat. A wrong one puts an agent on the PA over Ricky in front of 400 people.
+
+`AMBIGUOUS` has no rows here any more. Nothing in the regex path can conclude
+"somebody was invited and we cannot say who" — that verdict belongs to the
+classifier, and `test_llm_address.py` is where it is tested.
 """
 
 from __future__ import annotations
@@ -36,11 +43,11 @@ import pytest
 from panel_core import (
     HUMAN,
     AgentProposal,
+    AgentSpeechEnded,
+    AgentSpeechStarted,
     CueModerator,
     FloorConfig,
     FloorController,
-    HandsRaised,
-    HumanSpeechStarted,
     PanelCast,
     PanelState,
     Signals,
@@ -55,7 +62,8 @@ from panel_core.state import InvitationSource
 
 PERSONA_DIR = Path(__file__).resolve().parents[3] / "personas"
 
-# Outcomes that are not an agent id.
+# Outcomes that are not a single agent id. A *set* of agents is written as the
+# ids joined by "+", in cast order — see `resolve`.
 OPEN = "<open to the panel>"
 CLOSED = "<floor stays closed>"
 AMBIGUOUS = "<ambiguous — operator decides>"
@@ -106,13 +114,19 @@ def said(text: str, t: float = 0.0) -> TranscriptUpdated:
 
 
 def resolve(fc: FloorController, state: PanelState, text: str) -> str:
-    """Feed Ricky's words to the reducer and report what the floor opened to."""
+    """Feed Ricky's words to the reducer and report what the floor opened to.
+
+    One agent is their id; several are the ids joined by "+", which is how the
+    corpus writes a group invitation. `invitation.agent` is deliberately not
+    used here — it is None for an open floor *and* for a group, and reading it
+    would have scored "Melia and Wayne" as OPEN.
+    """
     state, _ = fc.reduce(state, said(text))
     if state.address_conflict:
         return AMBIGUOUS
     if state.invitation is None:
         return CLOSED
-    return state.invitation.agent or OPEN
+    return "+".join(state.invitation.agents) or OPEN
 
 
 # --------------------------------------------------------------- the corpus
@@ -198,10 +212,22 @@ CORPUS: list[tuple[str, str, AddressRole | None]] = [
     ("We continue to invest in this.", CLOSED, None),
     ("Let me elaborate on that.", CLOSED, None),
     ("She's quite introverted.", CLOSED, None),
-    # --- two agents in the same role: we do not guess -----------------------
-    ("Melia, Dexter, thoughts?", AMBIGUOUS, None),
-    ("Can Melia and Wayne both take that?", AMBIGUOUS, None),
-    ("Melia and Wayne, can you take that between you?", AMBIGUOUS, None),
+    # --- two agents in the same role: both of them were asked ---------------
+    #
+    # Reported as a tie until 2 Oct 2026, which closed the floor on a question
+    # Ricky had plainly put to two people. The invitation now opens to exactly
+    # those two and bars the third; `test_a_group_invitation_*` below is the
+    # behaviour, and `Invitation.admits` is where it lives.
+    ("Melia, Dexter, thoughts?", "dex+melia", AddressRole.VOCATIVE),
+    ("Can Melia and Wayne both take that?", "melia+wayne", AddressRole.SUBJECT_OF_REQUEST),
+    (
+        "Melia and Wayne, can you take that between you?",
+        "melia+wayne",
+        AddressRole.VOCATIVE,
+    ),
+    # Naming everybody is not a group — there is nobody left to bar, so it is
+    # the open floor it has always been.
+    ("Dexter, Melia, Wayne — thoughts?", OPEN, None),
 ]
 
 
@@ -275,7 +301,7 @@ def test_an_open_question_supersedes_a_named_invitation_once_the_window_passes(f
     state, _ = fc.reduce(state, said("Sorry Dexter, can Melia speak?", t=0.0))
     later = fc.config.invitation_supersede_window_s + 0.1
     state, _ = fc.reduce(state, said("So what does everyone think?", t=later))
-    assert state.invitation.agent is None, "a new beat, a new invitation"
+    assert state.invitation.agents == (), "a new beat, a new invitation"
 
 
 def test_a_fresh_address_always_supersedes(fc, state):
@@ -286,57 +312,109 @@ def test_a_fresh_address_always_supersedes(fc, state):
     assert state.invitation.agent == "wayne"
 
 
-# ------------------------------------------------ ambiguity is an outcome
+# ----------------------------------- two names is an invitation to two people
 
 
-def test_two_agents_in_the_same_role_keeps_the_floor_closed(fc, state):
-    """We do not guess between them. The operator does.
+def test_two_agents_in_the_same_role_are_both_invited(fc, state):
+    """"Melia, Dexter, thoughts?" is a question put to two people.
 
-    Ricky can fix a missed invitation in one beat. He cannot un-say an agent
-    that spoke over him in front of 400 people.
+    Both of them answer and the third stays out. The old behaviour — tie,
+    closed floor, operator decides — refused a question Ricky had asked
+    perfectly clearly, and refused it to a console that was never built.
     """
     state, cmds = fc.reduce(state, said("Melia, Dexter, thoughts?"))
-    assert state.invitation is None, "the floor stays closed"
-    assert state.address_conflict == ("dex", "melia")
+    invitation = state.invitation
+    assert invitation is not None
+    assert invitation.agents == ("dex", "melia")
+    assert invitation.agent is None, "a group has no single addressee"
+    assert invitation.is_group
+    assert invitation.source is InvitationSource.ADDRESS
+    assert state.address_conflict == (), "two names is not a tie"
 
     paints = [c for c in cmds if isinstance(c, StateChanged)]
-    assert paints, "the tie is surfaced immediately, not at the end of the turn"
-    assert paints[-1].extra["address_conflict"] == ("dex", "melia")
-
-    state, _ = fc.reduce(
-        state, AgentProposal(t=0.5, agent="dex", utterance="Historically...", signals=strong())
-    )
-    _, cmds = fc.reduce(state, TurnYielded(t=1.0))
-    assert not [c for c in cmds if isinstance(c, StartSpeech)]
-    assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [
-        CueReason.AMBIGUOUS_ADDRESS
-    ]
-    assert [c for c in cmds if isinstance(c, HandsRaised)], "Ricky sees who wanted it"
+    assert paints[-1].extra["invited_agents"] == ("dex", "melia")
+    assert paints[-1].extra["invited"] is None, "...and no single invitee to show"
 
 
-def test_a_resolved_tie_does_not_haunt_later_turns(fc, state):
-    """Regression: a tie is about one utterance, not about the rest of the show.
+def test_a_group_invitation_bars_the_agent_it_left_out(fc, state):
+    """The third panellist does not chip in, however good his line.
 
-    A conflict left standing turns every later "Ricky made a remark" cue into
-    a spurious `ambiguous_address`, which would send the operator hunting for
-    a tie that no longer exists.
+    This is the whole difference between naming two and opening the floor: on
+    an open floor every agent is owed a turn, and here the one Ricky left out
+    is owed nothing. If he gets one, the second name meant nothing.
     """
-    state, _ = fc.reduce(state, said("Melia, Dexter, thoughts?"))
-    assert state.address_conflict
+    state, _ = run(
+        fc,
+        state,
+        said("Melia and Wayne, can you take that between you?"),
+        AgentProposal(
+            t=0.5, agent="dex", utterance="Security is the real issue.", signals=strong()
+        ),
+    )
+    assert state.invitation.agents == ("melia", "wayne")
 
-    state, _ = fc.reduce(state, said("Melia, can you take that?", t=1.0))
-    assert state.address_conflict == (), "a clean address resolves the tie"
-    assert state.invitation.agent == "melia"
+    state, cmds = fc.reduce(state, TurnYielded(t=1.0))
+    assert not [c for c in cmds if isinstance(c, StartSpeech)], "Dexter was not asked"
+    # Nobody who *was* asked has answered yet, so the floor holds the beat for
+    # both of them rather than cueing Ricky in the same millisecond.
+    assert state.awaiting_agents == ("melia", "wayne")
+    assert not [c for c in cmds if isinstance(c, CueModerator)]
 
-    # ...and so does Ricky simply carrying on talking.
-    state, _ = fc.reduce(state, said("Melia, Dexter, thoughts?", t=2.0))
-    assert state.address_conflict
-    state, _ = fc.reduce(state, HumanSpeechStarted(t=3.0))
-    assert state.address_conflict == ()
+    # Either of them answering ends the beat — one question, two people who
+    # could answer it.
+    state, _ = fc.reduce(
+        state, AgentProposal(t=1.1, agent="wayne", utterance="Cost, mainly.", signals=strong())
+    )
+    assert state.awaiting_agents == ()
 
-    state, _ = fc.reduce(state, said("That is roughly where we are.", t=4.0))
-    _, cmds = fc.reduce(state, TurnYielded(t=5.0))
-    assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [CueReason.NO_INVITATION]
+
+def test_a_group_invitation_lets_the_named_agents_talk_to_each_other(fc, state):
+    """Turns alternating between the two, and nobody else in them.
+
+    `Invitation.admits` lets a group member take a second turn — the once-each
+    rule is for an open floor — and the recency penalty in the scoring is what
+    makes it alternate rather than letting the stronger line run the exchange.
+    The handovers are `_agent_ended`'s, not Ricky's: he asked them to take it
+    between them and then said nothing.
+    """
+
+    def every_agent_proposes(state: PanelState, t: float) -> PanelState:
+        """A fresh line from all three, so exclusion is a decision not a gap."""
+        for agent in ("melia", "wayne", "dex"):
+            state, _ = fc.reduce(
+                state,
+                AgentProposal(t=t, agent=agent, utterance="A point.", signals=strong()),
+            )
+        return state
+
+    state, _ = fc.reduce(state, said("Melia and Wayne, can you take that between you?"))
+    state = every_agent_proposes(state, 0.5)
+
+    t = 1.0
+    state, cmds = fc.reduce(state, TurnYielded(t=t))
+    pending = [c.agent for c in cmds if isinstance(c, StartSpeech)]
+    granted: list[str] = []
+    cues: list[CueReason] = []
+    while pending:
+        agent = pending.pop(0)
+        granted.append(agent)
+        state, _ = fc.reduce(state, AgentSpeechStarted(t=t, agent=agent))
+        state = every_agent_proposes(state, t + 0.5)
+        state, cmds = fc.reduce(
+            state, AgentSpeechEnded(t=t + 1.0, agent=agent, completed=True, utterance="Said.")
+        )
+        t += 2.0
+        pending.extend(c.agent for c in cmds if isinstance(c, StartSpeech))
+        cues.extend(c.reason for c in cmds if isinstance(c, CueModerator))
+
+    assert "dex" not in granted, "the agent Ricky left out never speaks"
+    assert set(granted) == {"melia", "wayne"}
+    assert len(granted) > 2, "one turn each is not an exchange"
+    assert granted[0] != granted[1], "they alternate rather than one running the floor"
+    # The safety valve ends it, not the invitation running out of agents —
+    # which is the same thing that bounds any agent-to-agent exchange.
+    assert len(granted) == fc.config.max_consecutive_agent_turns
+    assert cues == [CueReason.AGENT_TURN_LIMIT]
 
 
 # ---------------------------------------------------------- invitation TTL

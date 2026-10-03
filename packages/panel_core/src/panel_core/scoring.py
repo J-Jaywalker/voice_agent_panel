@@ -204,12 +204,16 @@ class FloorConfig:
     # arrives back as an `AddressDetected` event, which is what keeps the
     # reducer a pure function of events and a recording replayable.
     #
-    # It exists because a regex can never resolve a *descriptive* reference —
-    # "what does the financial side make of that?" is Wayne, and no pattern
-    # over the transcript knows that. Measured at 153/153 on the regression
-    # corpus (`packages/panel_runtime/tests/bench_address.py` against
-    # `packages/panel_core/tests/test_address.py`) with p50 526ms to verdict,
-    # which is why it is a dial and not yet the default: 526ms of that sits in
+    # It exists because a regex can never resolve a reference that lives
+    # outside the sentence. Two kinds: a *descriptive* one — "what does the
+    # financial side make of that?" is Wayne, and only `personas/wayne.yaml`
+    # knows that — and a *conversational* one — "I'd like to hear from the
+    # other two" is a different pair depending on who just spoke, which is
+    # what `prompts.build_address_context` supplies. Measured at 156/156 on the
+    # regression corpus and 75/75 on the new-capability set
+    # (`packages/panel_runtime/tests/bench_address.py --repeat 3` against
+    # `packages/panel_core/tests/test_address.py`) with p50 611ms to verdict,
+    # which is why it is a dial and not yet the default: 611ms of that sits in
     # series with arbitration unless speculation on partials has already hidden
     # it, and the on-stage cache-hit rate is still unmeasured.
     #

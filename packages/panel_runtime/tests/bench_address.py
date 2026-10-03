@@ -7,8 +7,8 @@
 Two questions, and the second one is the one that kills the idea if it fails.
 
 **Is it more accurate?** Scored against `CORPUS` in
-`packages/panel_core/tests/test_address.py` — 50 rows of real moderator phrasing
-with the outcome each one is allowed to produce. That file is the spec for the
+`packages/panel_core/tests/test_address.py` — every row a real thing a moderator
+says on stage, with the outcome each one is allowed to produce. That file is the spec for the
 regex detector, so it is also the only fair regression bar for anything
 replacing it. Imported rather than copied: two versions of an eval set means the
 one you are not looking at is wrong.
@@ -16,10 +16,17 @@ one you are not looking at is wrong.
 **Is it fast enough?** The classifier would sit where `_apply_detection` sits —
 on the final that opens the floor, which is the moment we have spent this whole
 project clearing. So the number reported is **time to verdict**, not time to
-completion: the stream is decoded at the first content delta, which
-`address_verdicts` keeps unambiguous by giving every token a distinct initial.
-Time to completion is reported too, but nothing waits on it — the reason text is
-for the operator console.
+completion: the stream is decoded as soon as the set of names provably closes,
+which `address_verdicts` keeps cheap by giving every token a distinct initial
+and `decode_address_verdict` pays one character for (a complete name is also a
+legal prefix of "MELIA+WAYNE"). Time to completion is reported too, but nothing
+waits on it — the reason text is for the operator console.
+
+**Does the context help?** Rows may carry a conversation context — who the
+panel has just heard from — in exactly the shape `prompts.build_address_context`
+renders at runtime. That is what makes "I'd like to hear from the other two"
+answerable at all, and those rows live in `NEW_CAPABILITY` with the rest of
+what no regex can do.
 
 Budget: `EndOfTurn` lands within a few ms of the naming final, so this is in
 series with arbitration and TTS. Under ~250ms is free (speculation on partials
@@ -52,10 +59,16 @@ from panel_core.prompts import (
     INTRO_VERDICT,
     NO_VERDICT,
     OPEN_VERDICT,
+    VERDICT_JOIN,
     address_verdicts,
     build_address_prompt,
     decode_address_verdict,
 )
+
+# Private on purpose, imported on purpose: the user turn the classifier is
+# scored against has to be byte-identical to the one it runs, and this is the
+# same single-sourcing argument as importing `CORPUS` rather than copying it.
+from panel_runtime.address import _user_turn as user_turn
 from panel_runtime.config import anthropic_base_url
 
 # Haiku 4.5 is a pre-4.6 model: `thinking`, `output_config` and `effort` are all
@@ -77,38 +90,74 @@ TIMEOUT_S = 5.0
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CORPUS_PATH = REPO_ROOT / "packages" / "panel_core" / "tests" / "test_address.py"
 
-# What the regex was never asked to do. The first three are the capability
-# argument for the whole change; the last two are traps that come *with* it —
-# "introverted" must not start the introduction round, and Ricky talking to the
-# AV desk must not put an agent on the PA.
-NEW_CAPABILITY: list[tuple[str, str]] = [
-    ("What does the financial side make of that?", "wayne"),
-    ("I'd love the ethics view on this one.", "melia"),
-    ("Who owns the security question here?", "dex"),
-    ("Right, let's do quick introductions.", INTRO_VERDICT),
-    ("Could you introduce yourselves for the audience?", INTRO_VERDICT),
-    ("Who have we got with us tonight?", INTRO_VERDICT),
-    ("Can we get the slides up?", NO_VERDICT),
-    ("She's quite introverted, actually.", NO_VERDICT),
-    ("Sorry, can we fix the mic on Dexter?", NO_VERDICT),
+# What the regex was never asked to do. The descriptive references and the
+# context-dependent rows are the capability argument for the whole change; the
+# traps come *with* it — "introverted" must not start the introduction round,
+# and Ricky talking to the AV desk must not put an agent on the PA.
+#
+# A third column is the conversation context, in the shape
+# `prompts.build_address_context` renders. "" means none, which is how most
+# rows run and how the classifier is asked before the panel has spoken.
+_AFTER_DEXTER = (
+    "PANEL ACTIVITY — spoken recently, most recent first: Dexter. "
+    "Not heard from: Melia, Wayne."
+)
+_AFTER_DEXTER_AND_MELIA = (
+    "PANEL ACTIVITY — spoken recently, most recent first: Melia, Dexter. "
+    "Not heard from: Wayne."
+)
+
+NEW_CAPABILITY: list[tuple[str, str, str]] = [
+    ("What does the financial side make of that?", "wayne", ""),
+    ("I'd love the ethics view on this one.", "melia", ""),
+    ("Who owns the security question here?", "dex", ""),
+    # --- several panellists, named ------------------------------------------
+    # Reported as AMBIGUOUS until 2 Oct 2026, which closed the floor on a
+    # question Ricky had plainly put to two people.
+    ("Melia and Wayne, can you take that between you?", "melia+wayne", ""),
+    ("Melia, Dexter, thoughts?", "dex+melia", ""),
+    ("Can Melia and Wayne both take that?", "melia+wayne", ""),
+    ("Dexter, Melia, Wayne — thoughts?", OPEN_VERDICT, ""),
+    ("All three of you, then.", OPEN_VERDICT, ""),
+    # --- several panellists, resolvable only from the context ---------------
+    # The reason the classifier is given one at all. Each of these is
+    # genuinely ambiguous as a sentence and obvious in the room.
+    ("I'd like to hear from the other two.", "melia+wayne", _AFTER_DEXTER),
+    ("You two — where does that leave you?", "melia+wayne", _AFTER_DEXTER),
+    ("What about the rest of you?", "melia+wayne", _AFTER_DEXTER),
+    ("And the one we haven't heard from?", "wayne", _AFTER_DEXTER_AND_MELIA),
+    ("Carry on.", "dex", _AFTER_DEXTER),
+    # ...and the context must not invent an invitation out of a statement.
+    ("That is roughly where the market sits.", NO_VERDICT, _AFTER_DEXTER),
+    # --- introductions ------------------------------------------------------
+    ("Right, let's do quick introductions.", INTRO_VERDICT, ""),
+    ("Could you introduce yourselves for the audience?", INTRO_VERDICT, ""),
+    ("Who have we got with us tonight?", INTRO_VERDICT, ""),
+    ("Can we get the slides up?", NO_VERDICT, ""),
+    ("She's quite introverted, actually.", NO_VERDICT, ""),
+    ("Sorry, can we fix the mic on Dexter?", NO_VERDICT, ""),
     # A welcome is not a request for introductions. Seen live 21 Sept: "Welcome
     # to the panel." came back INTRO and ran the whole round over the top of
     # Ricky's next sentence, "My name is Ricky."
-    ("Welcome to the panel.", NO_VERDICT),
-    ("Good evening, thanks for coming.", NO_VERDICT),
-    ("My name is Ricky.", NO_VERDICT),
-    ("Joining me tonight are Dexter, Melia and Wayne.", NO_VERDICT),
+    ("Welcome to the panel.", NO_VERDICT, ""),
+    ("Good evening, thanks for coming.", NO_VERDICT, ""),
+    ("My name is Ricky.", NO_VERDICT, ""),
+    ("Joining me tonight are Dexter, Melia and Wayne.", NO_VERDICT, ""),
     # One panellist asked to introduce themselves is that panellist, not a round.
-    ("Dexter, tell us a bit about yourself.", "dex"),
+    ("Dexter, tell us a bit about yourself.", "dex", ""),
 ]
 
 
-def load_corpus() -> list[tuple[str, str]]:
+def load_corpus() -> list[tuple[str, str, str]]:
     """Read `CORPUS` out of the test module without copying it.
 
     The tests directory is not a package, so this goes through the file path.
     Importing the module runs its top level — a `pytest` import and a list
     literal — which is harmless and keeps the eval set single-sourced.
+
+    Returns `(text, expected, context)` rows. The regression corpus has no
+    context by construction: it is the regex's acceptance set, and the regex
+    never had any.
     """
     spec = importlib.util.spec_from_file_location("_corpus", CORPUS_PATH)
     if spec is None or spec.loader is None:
@@ -122,17 +171,34 @@ def load_corpus() -> list[tuple[str, str]]:
         module.CLOSED: NO_VERDICT,
         module.AMBIGUOUS: AMBIGUOUS_VERDICT,
     }
-    return [(text, sentinels.get(expected, expected)) for text, expected, _role in module.CORPUS]
+    return [
+        (text, sentinels.get(expected, expected), "")
+        for text, expected, _role in module.CORPUS
+    ]
 
 
 def expected_token(expected: str, verdicts: dict[str, str | None]) -> str:
-    """Normalise an expectation — agent id or verdict token — to a token."""
-    if expected in verdicts:
-        return expected
-    for token, agent_id in verdicts.items():
-        if agent_id == expected:
-            return token
-    raise ValueError(f"cannot express {expected!r} as a verdict")
+    """Normalise an expectation to a canonical verdict.
+
+    An expectation is a verdict token, an agent id, or several agent ids joined
+    by `VERDICT_JOIN` — "melia+wayne", which is how both corpora write a
+    question put to two panellists.
+    """
+    parts = expected.split(VERDICT_JOIN)
+    tokens: list[str] = []
+    for part in parts:
+        if part in verdicts:
+            tokens.append(part)
+            continue
+        named = next((t for t, agent_id in verdicts.items() if agent_id == part), None)
+        if named is None:
+            raise ValueError(f"cannot express {part!r} as a verdict")
+        tokens.append(named)
+    # Canonical order is the vocabulary's own, which is cast order — the same
+    # order `decode_address_verdict` sorts a decoded set into, so a comparison
+    # of the two strings is a comparison of the two sets.
+    order = {token: index for index, token in enumerate(verdicts)}
+    return VERDICT_JOIN.join(sorted(tokens, key=order.__getitem__))
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,8 +223,15 @@ async def classify(
     verdicts: dict[str, str | None],
     text: str,
     want: str,
+    context: str = "",
 ) -> Result:
-    """One streamed classification, timed at the verdict rather than the end."""
+    """One streamed classification, timed at the verdict rather than the end.
+
+    The user turn is built by `panel_runtime.address._user_turn`, imported
+    rather than reproduced: the prompt the classifier is *scored* against has
+    to be the prompt it runs, and two copies of it means the one you are not
+    looking at is wrong — the same argument as importing the corpus.
+    """
     started = time.perf_counter()
     buffer = ""
     got: str | None = None
@@ -168,7 +241,7 @@ async def classify(
             model=model,
             max_tokens=MAX_TOKENS,
             system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": f'RICKY SAID: "{text}"'}],
+            messages=[{"role": "user", "content": user_turn(text, context)}],
         ) as stream:
             async for delta in stream.text_stream:
                 buffer += delta
@@ -176,6 +249,12 @@ async def classify(
                     got = decode_address_verdict(buffer, verdicts)
                     if got is not None:
                         verdict_ms = (time.perf_counter() - started) * 1000
+        if got is None:
+            # The stream ended with the verdict still open — a reply of one
+            # verdict and no reason. Same final decode the runtime does.
+            got = decode_address_verdict(buffer, verdicts, final=True)
+            if got is not None:
+                verdict_ms = (time.perf_counter() - started) * 1000
     except Exception as exc:  # noqa: BLE001 — a bench reports failures, it does not raise them
         elapsed = (time.perf_counter() - started) * 1000
         return Result(text, want, None, "", 0.0, elapsed, repr(exc))
@@ -190,19 +269,20 @@ async def run_set(
     model: str,
     system: str,
     verdicts: dict[str, str | None],
-    cases: list[tuple[str, str]],
+    cases: list[tuple[str, str, str]],
     repeat: int,
     concurrency: int,
 ) -> list[Result]:
     gate = asyncio.Semaphore(concurrency)
 
-    async def one(text: str, want: str) -> Result:
+    async def one(text: str, want: str, context: str) -> Result:
         async with gate:
             return await asyncio.wait_for(
-                classify(client, model, system, verdicts, text, want), TIMEOUT_S * 2
+                classify(client, model, system, verdicts, text, want, context),
+                TIMEOUT_S * 2,
             )
 
-    jobs = [one(text, want) for _ in range(repeat) for text, want in cases]
+    jobs = [one(*case) for _ in range(repeat) for case in cases]
     return list(await asyncio.gather(*jobs))
 
 
@@ -224,12 +304,12 @@ def report(name: str, results: list[Result], *, verbose: bool) -> int:
 
     for r in failed:
         got = r.got or ("ERROR " + r.error if r.error else "no verdict")
-        print(f"  ✗ want {r.want:<9} got {got:<9} | {r.text}")
+        print(f"  ✗ want {r.want:<13} got {got:<13} | {r.text}")
         if r.reason:
             print(f"      model said: {r.reason}")
     if verbose:
         for r in passed:
-            print(f"  ✓ {r.got:<9} {r.verdict_ms:5.0f}ms | {r.text}")
+            print(f"  ✓ {r.got:<13} {r.verdict_ms:5.0f}ms | {r.text}")
     return len(failed)
 
 
@@ -238,8 +318,14 @@ async def main_async(args: argparse.Namespace) -> int:
     verdicts = address_verdicts(cast)
     system = build_address_prompt(cast)
 
-    corpus = [(text, expected_token(want, verdicts)) for text, want in load_corpus()]
-    new_cases = [(text, expected_token(want, verdicts)) for text, want in NEW_CAPABILITY]
+    corpus = [
+        (text, expected_token(want, verdicts), context)
+        for text, want, context in load_corpus()
+    ]
+    new_cases = [
+        (text, expected_token(want, verdicts), context)
+        for text, want, context in NEW_CAPABILITY
+    ]
 
     print(f"model:     {args.model}")
     print(f"endpoint:  {anthropic_base_url()}")
@@ -266,8 +352,8 @@ async def main_async(args: argparse.Namespace) -> int:
     report("new capability (not in the regression score)", new_results, verbose=args.verbose)
 
     print(
-        "\nThe regression corpus is the bar: the regex passes 50/50 by construction, "
-        "so anything below that is a trade, not an upgrade."
+        f"\nThe regression corpus is the bar: the regex passes {len(corpus)}/{len(corpus)} "
+        "by construction, so anything below that is a trade, not an upgrade."
     )
     return 1 if regressions else 0
 

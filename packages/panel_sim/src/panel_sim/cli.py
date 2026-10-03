@@ -239,7 +239,7 @@ class Simulation:
         returned: the beat can only be resolved one way and there is nothing to
         be gained by paying it out in real time.
         """
-        if self.state.awaiting_agent is None:
+        if not self.state.awaiting_agents:
             return
         self.clock += self.fc.config.invited_agent_grace_s
         self.emit(Tick(t=self.clock))
@@ -274,7 +274,7 @@ class Simulation:
 def _describe(invitation) -> str:
     if invitation is None:
         return "closed"
-    who = invitation.agent or "panel"
+    who = "+".join(invitation.agents) or "panel"
     return f"{who}×{invitation.turns_remaining}({invitation.source.value})"
 
 

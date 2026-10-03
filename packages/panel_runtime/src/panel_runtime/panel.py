@@ -60,6 +60,7 @@ import json
 import queue
 import re
 import time
+from collections.abc import Iterable
 from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -95,7 +96,7 @@ from panel_core import (
     TranscriptUpdated,
     TurnYielded,
 )
-from panel_core.prompts import AMBIGUOUS_VERDICT
+from panel_core.prompts import AMBIGUOUS_VERDICT, build_address_context
 from panel_display import DISPLAY_PORT, DisplayServer
 from rich.console import Console
 from rich.live import Live
@@ -143,17 +144,27 @@ HEARTBEAT_INTERVAL_S = 0.5
 # nothing, and the audience hears the dead air this project spent a week
 # removing. So one event — and only that one — waits.
 #
-# 0.7s against a measured p50 of 526ms and p95 of 781ms to verdict
-# (`tests/bench_address.py`, dev box). Deliberately *inside* the p95 rather than
-# outside it, because the hold is not free in either direction: every
-# millisecond of it is silence on stage, and the fallback when it expires is the
-# regex detector, which is correct for all 153 rows of the regression corpus.
-# The trade is "the slowest few per cent of verdicts lose the new capability"
-# against "every single turn pays the tail", and the first is much the cheaper.
-# Re-measure on the venue rig before trusting either number (CLAUDE.md
+# 0.9s against a measured p50 of 611ms, p95 of 728ms and max of 1408ms to
+# verdict (`tests/bench_address.py --repeat 3`, 231 calls, dev box).
+#
+# **This is 0.7 raised, and both halves of that number moved.** The verdict got
+# slower: a verdict may now name several panellists, so it is decoded one
+# character past the last name rather than at the first delta, which measured
+# +115ms p50 (`prompts.decode_address_verdict`). And the fallback got more
+# expensive: an expired hold hands the question to the regex, which is still
+# correct for every row of the regression corpus but cannot resolve "I'd like
+# to hear from the other two" at all — that phrasing is the capability the
+# classifier is there for, and it has no regex answer to fall back to.
+#
+# The hold is not a fixed delay — it ends when the verdict lands — so raising
+# the ceiling costs nothing on a normal turn and only buys the tail. What it
+# does cost is silence on stage in the case where the classifier is genuinely
+# slow, which is why it is 0.9 and not 2.0: past about a second the audience
+# hears a gap, and a cued moderator is a better outcome than a late invitation.
+# Re-measure on the venue rig before trusting any of it (CLAUDE.md
 # § Deployment) — this dial is the first thing to move if the tail is worse
 # there.
-ADDRESS_HOLD_TIMEOUT_S = 0.7
+ADDRESS_HOLD_TIMEOUT_S = 0.9
 
 # How often the video wall is handed a fresh set of audio envelopes.
 #
@@ -167,7 +178,7 @@ DISPLAY_LEVEL_INTERVAL_S = 1 / 30
 
 # How `AddressVerdict.source` reads on the console. Whether a verdict was
 # already decided before Ricky stopped talking is the open question about this
-# whole approach — free at a cache hit, ~500ms in series with arbitration at a
+# whole approach — free at a cache hit, ~600ms in series with arbitration at a
 # fresh call — and nothing measures it today, so every verdict prints one line.
 _ADDRESS_SOURCE_LABELS = {
     "speculative_hit": "cache hit",
@@ -409,9 +420,9 @@ class PanelRuntime:
         self._last_intro_done = False
         # Diagnostic-only state for `_show_state_change`: what was last
         # printed, so a repaint that changed nothing stays silent.
-        self._last_invitation: tuple[str | None, str | None] = (None, None)
+        self._last_invitation: tuple[tuple[str, ...], str | None] = ((), None)
         self._last_address_conflict: tuple[str, ...] = ()
-        self._last_awaiting: str | None = None
+        self._last_awaiting: tuple[str, ...] = ()
         # True from the moment a synthetic TurnYielded is queued until its
         # arbitration resolves. Blocks a second proposal from queuing another
         # one in the meantime — without it, two proposals landing back to
@@ -693,26 +704,29 @@ class PanelRuntime:
             self._last_intro_done = True
             self._print("  [dim]intros: all done[/]")
 
-        invited = command.extra.get("invited")
+        # `invited_agents`, not `invited`: the latter is None for both an open
+        # floor and a named pair, and "invited the panel" is the wrong thing to
+        # print when Ricky named two of the three.
+        invited = tuple(command.extra.get("invited_agents") or ())
         source = command.extra.get("invitation_source")
         if (invited, source) != self._last_invitation:
             self._last_invitation = (invited, source)
             if source is None:
                 self._print("  [dim]floor: closed (no live invitation)[/]")
             else:
-                who = self.cast[invited].name if invited else "the panel"
+                who = self._names(invited) or "the panel"
                 role = command.extra.get("invitation_role") or "-"
                 rule = command.extra.get("invitation_rule") or "-"
                 self._print(
                     f"  [dim]floor: invited {who} — {source}/{role} ({rule})[/]"
                 )
 
-        awaiting = command.extra.get("awaiting")
+        awaiting = tuple(command.extra.get("awaiting_agents") or ())
         if awaiting != self._last_awaiting:
             self._last_awaiting = awaiting
             if awaiting:
                 self._print(
-                    f"  [dim]… holding for {self.cast[awaiting].name} "
+                    f"  [dim]… holding for {self._names(awaiting)} "
                     f"({self.fc.config.invited_agent_grace_s:.1f}s)[/]"
                 )
 
@@ -720,10 +734,14 @@ class PanelRuntime:
         if conflict != self._last_address_conflict:
             self._last_address_conflict = conflict
             if conflict:
-                names = ", ".join(self.cast[a].name for a in conflict)
                 self._print(
-                    f"  [yellow]✋ ambiguous address:[/] {names} [dim](floor stays closed)[/]"
+                    f"  [yellow]✋ ambiguous address:[/] {self._names(conflict)} "
+                    "[dim](floor stays closed)[/]"
                 )
+
+    def _names(self, agent_ids: Iterable[str]) -> str:
+        """Agent ids as the names a human reads, comma-separated."""
+        return ", ".join(self.cast[a].name for a in agent_ids if a in self.cast.personas)
 
     # --------------------------------------------------------------- proposals
 
@@ -1410,12 +1428,20 @@ class PanelRuntime:
         the answer to the question Ricky is still asking is usually already
         cached by the time he finishes it. Finals go to `classify()`, whose
         verdict becomes an `AddressDetected` event.
+
+        Both carry the conversation context with them —
+        `prompts.build_address_context`, read off the state *this* segment was
+        heard against. "I'd like to hear from the other two" is not resolvable
+        from the sentence, and this is the only thing that tells the classifier
+        who just spoke. It is part of the classifier's cache key, so a verdict
+        decided during one exchange is never served to the next.
         """
         classifier = self._address
         if classifier is None or event.speaker != HUMAN:
             return
+        context = build_address_context(self.state, self.cast)
         if not event.is_final:
-            classifier.speculate(event.text)
+            classifier.speculate(event.text, context=context)
             return
 
         # One classification outstanding at a time. A turn arrives as several
@@ -1423,7 +1449,7 @@ class PanelRuntime:
         # is answering text that has since been extended.
         previous = self._address_task
         self._address_task = asyncio.create_task(
-            self._classify_address(classifier, event.text, t=event.t),
+            self._classify_address(classifier, event.text, context=context, t=event.t),
             name="address-classify",
         )
         if previous is not None and not previous.done():
@@ -1435,7 +1461,7 @@ class PanelRuntime:
             previous.cancel()
 
     async def _classify_address(
-        self, classifier: AddressClassifier, text: str, *, t: float
+        self, classifier: AddressClassifier, text: str, *, context: str, t: float
     ) -> None:
         """Classify one human final and emit the verdict as an event.
 
@@ -1452,12 +1478,12 @@ class PanelRuntime:
         try:
             try:
                 outcome = await asyncio.wait_for(
-                    classifier.classify(text), ADDRESS_HOLD_TIMEOUT_S
+                    classifier.classify(text, context=context), ADDRESS_HOLD_TIMEOUT_S
                 )
             except TimeoutError:
                 outcome = AddressVerdict(
                     verdict=None,
-                    agent=None,
+                    agents=(),
                     reason=f"no verdict within {ADDRESS_HOLD_TIMEOUT_S * 1000:.0f}ms",
                     latency_ms=(time.monotonic() - started) * 1000.0,
                     source="timeout",
@@ -1495,10 +1521,13 @@ class PanelRuntime:
             t=t,
             text=text,
             verdict=outcome.verdict,
-            agent=outcome.agent,
-            # The verdict token is one word and cannot name who tied. The floor
-            # needs a non-empty set to report `AMBIGUOUS_ADDRESS` at all, so the
-            # cast stands in for "between these, and we cannot say which".
+            # One agent, or several when Ricky named a group. Not a tie —
+            # `conflict` below is the tie, and the two never co-occur.
+            agents=outcome.agents,
+            # The verdict token cannot name who it could not choose between.
+            # The floor needs a non-empty set to report `AMBIGUOUS_ADDRESS` at
+            # all, so the cast stands in for "between these, and we cannot say
+            # which".
             conflict=self.cast.ids() if outcome.verdict == AMBIGUOUS_VERDICT else (),
             reason=outcome.reason,
             latency_ms=outcome.latency_ms,
@@ -1564,9 +1593,13 @@ class PanelRuntime:
         measures it, on stage or in rehearsal.
         """
         who = detected.verdict or "unavailable"
-        persona = self.cast.personas.get(detected.agent or "")
-        if persona is not None:
-            who = f"{who} → {persona.name}"
+        named = [
+            self.cast.personas[a].name
+            for a in detected.agents
+            if a in self.cast.personas
+        ]
+        if named:
+            who = f"{who} → {' + '.join(named)}"
         label = _ADDRESS_SOURCE_LABELS.get(detected.source, detected.source)
         line = f"  [dim]⌖ address: {who}  {detected.latency_ms:.0f}ms ({label})[/]"
         if detected.reason:

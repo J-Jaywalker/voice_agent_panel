@@ -130,14 +130,21 @@ class AddressDetected:
             path.
         text: The final it was computed from, verbatim, so a replay can be
             audited against the verdict it produced.
-        verdict: A verdict token from `prompts.address_verdicts()`, or None
-            meaning the classifier was unavailable — timed out, errored, or
-            went off-script — and the regex must decide instead. None is not
+        verdict: A verdict from `prompts.address_verdicts()` — one token, or
+            several agent tokens joined by `prompts.VERDICT_JOIN` — or None
+            meaning the classifier was unavailable: timed out, errored, or
+            went off-script, and the regex must decide instead. None is not
             "nobody was invited"; that is `NO_VERDICT`, which is a real answer.
-        agent: The agent id `verdict` resolved to, or None.
-        conflict: The agents that tied for addressee, for `AMBIGUOUS_VERDICT`.
-            The verdict token cannot name them — it is one word — so the
-            runtime supplies the candidates it could not choose between.
+        agents: The agent ids `verdict` resolved to, in cast order. Empty for
+            the four non-agent verdicts. More than one is Ricky naming a
+            group, which is a real invitation and not a tie — the floor opens
+            to exactly those agents (`Invitation.admits`).
+        conflict: The agents the classifier could not choose *between*, for
+            `AMBIGUOUS_VERDICT`. Distinct from `agents`, which is who it chose:
+            a verdict naming two agents invites both, while a conflict naming
+            two means we cannot tell which one was meant and the floor stays
+            closed. The verdict token cannot carry the candidates — it is one
+            word — so the runtime supplies them.
         reason: The model's own short justification, for the operator console.
             Routinely empty: it streams *behind* the verdict and the floor
             never waits on prose, so only a verdict that was already cached
@@ -153,7 +160,7 @@ class AddressDetected:
     t: float
     text: str
     verdict: str | None = None
-    agent: str | None = None
+    agents: tuple[str, ...] = ()
     conflict: tuple[str, ...] = ()
     reason: str = ""
     latency_ms: float = 0.0

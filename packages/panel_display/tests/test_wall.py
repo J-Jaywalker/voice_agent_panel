@@ -177,6 +177,52 @@ def test_an_open_floor_marks_the_whole_panel(wall: WallState):
     assert all(a["invited"] for a in wall.snapshot()["agents"])
 
 
+def test_a_group_invitation_marks_the_two_it_names_and_not_the_third(wall: WallState):
+    """Ricky naming two panellists is a fourth state, not an open floor.
+
+    `invited` is None for a group as well as for an open floor, so reading it
+    alone would light all three and tell the audience the floor was open to
+    everyone when it was not. `invited_agents` is the authoritative set.
+    """
+    wall.apply_command(
+        state_changed(
+            invited=None,
+            invited_agents=("melia", "wayne"),
+            invitation_source="address",
+        )
+    )
+    assert wall.snapshot()["open_floor"] is False
+    assert painted(wall, "melia")["invited"] is True
+    assert painted(wall, "wayne")["invited"] is True
+    assert painted(wall, "dex")["invited"] is False
+
+
+def test_a_group_beat_reads_as_thinking_for_both(wall: WallState):
+    wall.apply_command(
+        state_changed(
+            invited=None,
+            invited_agents=("melia", "wayne"),
+            invitation_source="address",
+            awaiting=None,
+            awaiting_agents=("melia", "wayne"),
+        )
+    )
+    assert painted(wall, "melia")["state"] == THINKING
+    assert painted(wall, "wayne")["state"] == THINKING
+    assert painted(wall, "dex")["state"] == IDLE
+
+
+def test_a_log_written_before_the_set_existed_still_replays(wall: WallState):
+    """`invited` alone is the pre-2-Oct shape, and a rehearsal log keeps it."""
+    wall.apply_command(
+        state_changed(invited="melia", invitation_source="address", awaiting="melia")
+    )
+    assert wall.snapshot()["open_floor"] is False
+    assert painted(wall, "melia")["invited"] is True
+    assert painted(wall, "melia")["state"] == THINKING
+    assert painted(wall, "dex")["invited"] is False
+
+
 def test_a_closed_floor_clears_every_mark(wall: WallState):
     wall.apply_command(state_changed(invited="dex", invitation_source="address"))
     wall.apply_command(state_changed(invited=None, invitation_source=None))

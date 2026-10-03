@@ -466,13 +466,20 @@ class StubAddressClassifier:
         self.delay = delay
         self.speculated: list[str] = []
         self.classified: list[str] = []
+        # The conversation context the runtime handed over with each call,
+        # paired with the text. "The other two" is only resolvable against it,
+        # so a runtime that stopped passing it would silently lose that whole
+        # capability with every one of these tests still green.
+        self.contexts: list[str] = []
         self.resets = 0
 
-    def speculate(self, partial_text: str) -> None:
+    def speculate(self, partial_text: str, *, context: str = "") -> None:
         self.speculated.append(partial_text)
+        self.contexts.append(context)
 
-    async def classify(self, text: str) -> AddressVerdict:
+    async def classify(self, text: str, *, context: str = "") -> AddressVerdict:
         self.classified.append(text)
+        self.contexts.append(context)
         if self.delay:
             await asyncio.sleep(self.delay)
         return self.outcome
@@ -484,10 +491,10 @@ class StubAddressClassifier:
         return None
 
 
-def _verdict(token: str | None, agent: str | None = None) -> AddressVerdict:
+def _verdict(token: str | None, *agents: str) -> AddressVerdict:
     return AddressVerdict(
         verdict=token,
-        agent=agent,
+        agents=agents,
         reason="stubbed",
         latency_ms=7.0,
         source="fresh",
@@ -568,7 +575,7 @@ def test_turn_yielded_waits_for_the_address_verdict(monkeypatch):
     ]
     detected = emitted[1]
     assert detected.verdict == "MELIA"
-    assert detected.agent == "melia"
+    assert detected.agents == ("melia",)
     assert detected.text == final.text
     # Dated to the question, not to the verdict's arrival — otherwise
     # `named_proposal_lookback_s` and the invitation TTL would measure
@@ -678,6 +685,36 @@ def test_partials_speculate_and_finals_classify(monkeypatch):
     assert classifier.classified == [final.text]
 
 
+def test_the_classifier_is_told_who_has_been_speaking(monkeypatch):
+    """"The other two" is only resolvable against who just spoke.
+
+    The runtime is the only thing that can supply that — `panel_core` renders
+    the line but has no socket, and the classifier has no state. If this stops
+    being passed, every test in this section still passes and the one
+    capability the change was for is silently gone.
+    """
+    classifier = StubAddressClassifier(_verdict("MELIA+WAYNE", "melia", "wayne"))
+    runtime = _address_runtime(monkeypatch, classifier)
+
+    async def body():
+        # Put a Dexter turn in the transcript the honest way, through the
+        # reducer, so the context is read off real state.
+        runtime.state, _ = runtime.fc.reduce(
+            runtime.state,
+            AgentSpeechEnded(t=0.0, agent="dex", completed=True, utterance="My point."),
+        )
+        return await _drive_stt(
+            runtime,
+            [_partial("I'd like to hear from", t=0.1), _final("the other two.", t=0.2)],
+        )
+
+    asyncio.run(body())
+
+    assert classifier.contexts, "nothing was classified at all"
+    assert all("Dexter" in context for context in classifier.contexts)
+    assert all("Not heard from: Melia, Wayne" in context for context in classifier.contexts)
+
+
 def test_the_turn_boundary_resets_the_classifier(monkeypatch):
     """Its speculation gates are per-turn state.
 
@@ -748,6 +785,37 @@ def test_a_verdict_carries_all_the_way_to_a_granted_turn(monkeypatch):
 
     assert runtime.state.turn_id == 1, "exactly one turn was granted"
     assert runtime.state.floor_holder == "wayne" or runtime.state.speaking == "wayne"
+
+
+def test_a_joined_verdict_carries_its_whole_set_to_the_reducer(monkeypatch):
+    """The set survives the wire, not just the first name in it.
+
+    `AddressVerdict.agents` -> `AddressDetected.agents` -> `Invitation.agents`
+    is three hops through two packages, and dropping the second name anywhere
+    along it would look exactly like a correct single-agent invitation.
+    """
+    classifier = StubAddressClassifier(_verdict("MELIA+WAYNE", "melia", "wayne"))
+    runtime = _address_runtime(monkeypatch, classifier)
+    final = _final("I'd like to hear from the other two.", t=5.0)
+
+    emitted = asyncio.run(_drive_stt(runtime, [final, TurnYielded(t=5.01)]))
+
+    detected = next(e for e in emitted if isinstance(e, AddressDetected))
+    assert detected.verdict == "MELIA+WAYNE"
+    assert detected.agents == ("melia", "wayne")
+    assert detected.conflict == (), "a named set is not a tie"
+
+    # `_drive_stt` runs the STT pump only, so the events are reduced here —
+    # the same `FloorController` the runtime holds, in the order it emitted
+    # them.
+    state = runtime.state
+    for event in emitted:
+        state, _ = runtime.fc.reduce(state, event)
+
+    invitation = state.invitation
+    assert invitation is not None
+    assert invitation.agents == ("melia", "wayne")
+    assert invitation.is_group
 
 
 # --------------------------------------------------------------------------

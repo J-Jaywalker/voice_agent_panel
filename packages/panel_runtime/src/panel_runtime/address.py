@@ -2,16 +2,25 @@
 
 Answers the one question `FloorController._detect` answers with regex: *who did
 Ricky just invite to speak?* The regex is accurate on the phrasings it was
-written for — 153/153 of `packages/panel_core/tests/test_address.py`, by
-construction — and structurally incapable of resolving a descriptive reference.
-"What does the financial side make of that?" is Wayne, and no pattern over the
-transcript can know that, because the fact that makes it true lives in
-`personas/wayne.yaml`.
+written for — every row of `packages/panel_core/tests/test_address.py`, by
+construction — and structurally incapable of resolving a reference that lives
+outside the sentence. "What does the financial side make of that?" is Wayne,
+and no pattern over the transcript can know that, because the fact that makes
+it true lives in `personas/wayne.yaml`.
 
 This module is the network half. The decision half stays in `panel_core`, which
 never sees a socket: the verdict is emitted as an `AddressDetected` event and
 reduced there, so a recorded session still replays identically through modified
 floor logic.
+
+A verdict may name **more than one** panellist ("MELIA+WAYNE"). Ricky asking
+two of them to take something between them is an invitation to exactly those
+two, not a tie to be broken, and resolving "I'd like to hear from the other
+two" is the second thing only a model can do here — the sentence is ambiguous
+in isolation and obvious given that Dexter just spoke. That conversational half
+of the question is `prompts.build_address_context`, supplied per call by
+`PanelRuntime` and folded into the cache key below; the system prompt stays
+byte-identical, because prompt caching depends on it.
 
 **Latency is the whole design.** The classifier sits exactly where
 `_apply_detection` sits — on the final that opens the floor, which is the moment
@@ -19,10 +28,16 @@ this project has spent months clearing. `~/git/FDE/amazon_alexa_demo/wake.py` is
 the reference implementation and solves the identical problem; this mirrors its
 structure, and it is worth reading before changing any of this:
 
-- the verdict is decoded from the **first content delta** rather than the
-  finished message. `prompts.address_verdicts` enforces a distinct initial per
-  token, so one character normally settles it and time-to-verdict equals
-  time-to-first-token;
+- the verdict is decoded from the stream as soon as the set of names is
+  provably closed, rather than from the finished message.
+  `prompts.address_verdicts` enforces a distinct initial per token, so one
+  character still settles *which* panellist — but a complete name is also a
+  legal prefix of a pair, so the decoder needs one character past the last
+  name. Measured paired against the old decode-at-first-delta behaviour over
+  the same 77 streams, that is **+115ms p50** (0-190ms), zero on the
+  speculative path. See `prompts.decode_address_verdict` for the numbers and
+  for why a fixed-width encoding that saves the delta was not worth its cost
+  in accuracy;
 - the human-readable reason keeps streaming in a background task and is filed
   against the cache entry when it lands. Nothing ever waits on prose;
 - interim transcripts are speculatively classified while Ricky is still
@@ -85,6 +100,7 @@ from panel_core.prompts import (
     address_verdicts,
     build_address_prompt,
     decode_address_verdict,
+    resolve_address_verdict,
 )
 
 from .config import anthropic_base_url
@@ -131,23 +147,25 @@ class AddressVerdict:
     """One classification of one utterance.
 
     Attributes:
-        verdict: A token from `prompts.address_verdicts()`, or None meaning the
-            classifier was not consulted or could not answer. None is the
-            fail-closed value and means "let the regex decide"; it is never
-            "nobody was invited", which is `NO_VERDICT`.
-        agent: The agent id `verdict` resolves to, or None for the four
-            non-agent verdicts.
+        verdict: A canonical verdict from `prompts.address_verdicts()` — one
+            token, or several agent tokens joined by `VERDICT_JOIN` — or None
+            meaning the classifier was not consulted or could not answer. None
+            is the fail-closed value and means "let the regex decide"; it is
+            never "nobody was invited", which is `NO_VERDICT`.
+        agents: The agent ids `verdict` resolves to, in cast order. Empty for
+            the four non-agent verdicts; more than one when Ricky named a
+            group.
         reason: The model's own short justification, or "". Only a verdict
             whose stream had already finished carries one — the floor never
             waits on prose.
-        latency_ms: Time to the *verdict token*, not to completion. Zero on a
-            cache hit, because the decision predates the question.
+        latency_ms: Time to the *verdict*, not to completion. Zero on a cache
+            hit, because the decision predates the question.
         source: How it was obtained. This is the field the on-stage cache-hit
             rate is read off.
     """
 
     verdict: str | None
-    agent: str | None
+    agents: tuple[str, ...]
     reason: str
     latency_ms: float
     source: VerdictSource
@@ -156,9 +174,8 @@ class AddressVerdict:
 def _normalise(text: str) -> str:
     """Lowercase, drop punctuation and collapse whitespace.
 
-    This is the cache key. Punctuation becomes a space rather than being
-    deleted so that token boundaries survive — "melia's" must not collapse into
-    one token.
+    Punctuation becomes a space rather than being deleted so that token
+    boundaries survive — "melia's" must not collapse into one token.
 
     Args:
         text: Raw transcript text.
@@ -170,24 +187,49 @@ def _normalise(text: str) -> str:
     return _WHITESPACE_RE.sub(" ", lowered).strip()
 
 
-def _user_turn(text: str) -> str:
+def _cache_key(text: str, context: str) -> str:
+    """The cache key: the utterance *and* the conversation it was asked in.
+
+    Keyed on both halves because the verdict depends on both. "I'd like to hear
+    from the other two" resolves to a different pair after Dexter's turn than
+    after Melia's, and a key over the words alone would serve the first answer
+    to the second question — silently, and with the one panellist Ricky just
+    heard from back on the PA.
+
+    Returns "" when the utterance normalises away, which callers treat as
+    nothing to classify.
+    """
+    normalised = _normalise(text)
+    if not normalised:
+        return ""
+    return f"{_normalise(context)}|{normalised}" if context else normalised
+
+
+def _user_turn(text: str, context: str = "") -> str:
     """Render the per-utterance user message.
 
     Kept byte-identical in shape to `tests/bench_address.py`, which is where
-    the 153/153 accuracy figure was measured — the prompt the classifier is
-    scored against has to be the prompt it runs. Double quotes are folded to
-    single so a transcript containing one cannot close the delimiter early;
-    Speechmatics segments do not contain them, so in practice this changes
-    nothing and is only a guard.
+    the accuracy figure was measured — the prompt the classifier is scored
+    against has to be the prompt it runs. Double quotes are folded to single so
+    a transcript containing one cannot close the delimiter early; Speechmatics
+    segments do not contain them, so in practice this changes nothing and is
+    only a guard.
+
+    The context line goes *before* the utterance, and in the user turn rather
+    than the system prompt: it changes as the panel talks, and the system
+    prompt is cached for the whole show.
 
     Args:
         text: The transcript segment.
+        context: `prompts.build_address_context` output, or "" when the panel
+            has not spoken yet and there is nothing to say.
 
     Returns:
         The user message body.
     """
     segment = (text or "").strip().replace('"', "'")
-    return f'RICKY SAID: "{segment}"'
+    said = f'RICKY SAID: "{segment}"'
+    return f"{context}\n{said}" if context else said
 
 
 def _extract_reason(buffer: str) -> str:
@@ -209,7 +251,7 @@ def _unavailable(*, latency_ms: float = 0.0) -> AddressVerdict:
     """The fail-closed verdict: no answer, so the regex decides."""
     return AddressVerdict(
         verdict=None,
-        agent=None,
+        agents=(),
         reason="",
         latency_ms=latency_ms,
         source="unavailable",
@@ -281,7 +323,7 @@ class AddressClassifier:
 
     # -- public API ---------------------------------------------------
 
-    def speculate(self, partial_text: str) -> None:
+    def speculate(self, partial_text: str, *, context: str = "") -> None:
         """Fire-and-forget speculative classification of an interim result.
 
         Called from the STT pump, so it must never block and never raise.
@@ -290,30 +332,37 @@ class AddressClassifier:
 
         Args:
             partial_text: The interim transcript so far.
+            context: `prompts.build_address_context` for the moment this
+                partial was heard in. Part of the cache key, so a speculation
+                is only ever reused against the exchange it was made in.
         """
         try:
-            self._speculate(partial_text)
+            self._speculate(partial_text, context)
         except Exception as exc:  # noqa: BLE001 — the hot path must not raise
             log.debug("address: speculation suppressed: %r", exc)
 
-    async def classify(self, text: str) -> AddressVerdict:
-        """Classify a finalised utterance, returning at the verdict token.
+    async def classify(self, text: str, *, context: str = "") -> AddressVerdict:
+        """Classify a finalised utterance, returning at the verdict.
 
-        Returns as soon as the leading token is decodable, which is normally
-        the first content delta. The trailing reason keeps streaming in a
+        Returns as soon as the leading verdict is decodable — see
+        `prompts.decode_address_verdict`, which is one character past the last
+        name rather than the first content delta, because a complete name is
+        also a legal prefix of a pair. The trailing reason keeps streaming in a
         background task; the floor is never blocked on it.
 
         Args:
             text: The finalised transcript segment.
+            context: `prompts.build_address_context` for the moment it was
+                said in, which is what resolves "the other two".
 
         Returns:
             An `AddressVerdict`. On empty input, timeout, API failure or a
-            response that never decodes to a known token, it fails closed with
-            `verdict=None` and `source="unavailable"`, which tells the reducer
-            to fall back to the regex.
+            response that never decodes to a known verdict, it fails closed
+            with `verdict=None` and `source="unavailable"`, which tells the
+            reducer to fall back to the regex.
         """
         entered = time.perf_counter()
-        key = _normalise(text)
+        key = _cache_key(text, context)
         if not key:
             return _unavailable()
 
@@ -350,7 +399,9 @@ class AddressClassifier:
         # Anything still running is for text that has since been revised.
         self._cancel_inflight()
         source: VerdictSource = "recomputed" if self._spec_attempted else "fresh"
-        return await self._classify_once(text, key=key, source=source, store=False)
+        return await self._classify_once(
+            text, context, key=key, source=source, store=False
+        )
 
     def reset(self) -> None:
         """Clear the cache and the speculation gates. Call on turn boundaries.
@@ -384,9 +435,9 @@ class AddressClassifier:
 
     # -- speculation --------------------------------------------------
 
-    def _speculate(self, partial_text: str) -> None:
+    def _speculate(self, partial_text: str, context: str) -> None:
         """Apply the speculation gates and launch a call if they all pass."""
-        key = _normalise(partial_text)
+        key = _cache_key(partial_text, context)
         if not key:
             return
         if key in self._cache:
@@ -396,8 +447,12 @@ class AddressClassifier:
 
         # `wake.py`'s gate 1 — "the wake word must plausibly be in there" — has
         # no analogue here and is deliberately absent; see the module docstring.
-        # Gate: the partial must have actually grown.
-        words = len(key.split())
+        # Gate: the partial must have actually grown. Counted off the utterance
+        # and not off `key`, which also carries the context line: the gate is
+        # about how much more Ricky has said, and charging it the context's
+        # constant handful of words would make the first speculation of a turn
+        # depend on how much the panel has been talking.
+        words = len(_normalise(partial_text).split())
         if words < self._last_spec_words + _SPECULATION_MIN_WORD_GROWTH:
             return
 
@@ -412,14 +467,14 @@ class AddressClassifier:
         self._spec_attempted = True
         self._inflight_key = key
         self._inflight = asyncio.get_running_loop().create_task(
-            self._run_speculation(partial_text, key), name="address-speculate"
+            self._run_speculation(partial_text, context, key), name="address-speculate"
         )
 
-    async def _run_speculation(self, text: str, key: str) -> None:
+    async def _run_speculation(self, text: str, context: str, key: str) -> None:
         """Classify an interim result and cache it if it succeeds."""
         try:
             verdict = await self._classify_once(
-                text, key=key, source="speculative_hit", store=True
+                text, context, key=key, source="speculative_hit", store=True
             )
         except asyncio.CancelledError:
             raise
@@ -450,16 +505,18 @@ class AddressClassifier:
     async def _classify_once(
         self,
         text: str,
+        context: str,
         *,
         key: str,
         source: VerdictSource,
         store: bool,
     ) -> AddressVerdict:
-        """Run one streamed classification and return at the verdict token.
+        """Run one streamed classification and return at the verdict.
 
         Args:
             text: The segment to classify.
-            key: Its normalised form — the cache key.
+            context: The conversation context for the user turn.
+            key: The cache key for `(text, context)`.
             source: Provenance to stamp on the returned verdict.
             store: Whether to cache the result. True for speculation only: a
                 *fresh* verdict must not be cached, or a repeat call would be
@@ -475,7 +532,8 @@ class AddressClassifier:
         # The stream runs in its own task so this coroutine can return the
         # moment the verdict resolves while the reason keeps arriving.
         worker = loop.create_task(
-            self._stream(text, key, started, verdict_future), name="address-stream"
+            self._stream(text, context, key, started, verdict_future),
+            name="address-stream",
         )
         self._background.add(worker)
         worker.add_done_callback(self._background.discard)
@@ -495,7 +553,7 @@ class AddressClassifier:
 
         verdict = AddressVerdict(
             verdict=token,
-            agent=self._verdicts.get(token),
+            agents=resolve_address_verdict(token, self._verdicts),
             reason="",
             latency_ms=latency_ms,
             source=source,
@@ -507,17 +565,19 @@ class AddressClassifier:
     async def _stream(
         self,
         text: str,
+        context: str,
         key: str,
         started: float,
         verdict_future: asyncio.Future[tuple[str, float]],
     ) -> None:
-        """Stream one completion, resolving the verdict at the first delta.
+        """Stream one completion, resolving the verdict as soon as it closes.
 
         Args:
             text: The segment to classify.
-            key: Its normalised form, for filing the reason.
+            context: The conversation context for the user turn.
+            key: The cache key, for filing the reason.
             started: `time.perf_counter()` at call time.
-            verdict_future: Resolved with `(token, latency_ms)`.
+            verdict_future: Resolved with `(verdict, latency_ms)`.
         """
         buffer = ""
         token: str | None = None
@@ -535,7 +595,7 @@ class AddressClassifier:
                         "cache_control": {"type": "ephemeral"},
                     }
                 ],
-                messages=[{"role": "user", "content": _user_turn(text)}],
+                messages=[{"role": "user", "content": _user_turn(text, context)}],
             ) as stream:
                 async for delta in stream.text_stream:
                     buffer += delta
@@ -556,6 +616,17 @@ class AddressClassifier:
             else:
                 log.warning("address: reason stream failed: %r", exc)
             return
+
+        if token is None:
+            # The stream ended with the verdict still open. Usually that means
+            # a reply of exactly one verdict and no reason — "MELIA" — where
+            # the terminator that would have closed the set never arrived,
+            # which `final=True` resolves. There is no ambiguity left to
+            # protect against: nothing more can join the set.
+            token = decode_address_verdict(buffer, self._verdicts, final=True)
+            if token is not None and not verdict_future.done():
+                elapsed = (time.perf_counter() - started) * 1000.0
+                verdict_future.set_result((token, elapsed))
 
         if token is None:
             # The model went off-script: the leading word decoded to no known

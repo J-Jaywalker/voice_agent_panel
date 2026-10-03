@@ -104,38 +104,70 @@ Who did Ricky just invite? Answered by `claude-haiku-4-5` in
 (`panel --llm-address`). **Off by default**; with the flag off the classifier is
 never even constructed and the regex in `floor.py` runs instead.
 
-Why a model at all: a regex cannot resolve a *descriptive* reference. "What does
-the financial side make of that?" is Wayne, and no pattern over the transcript
-can know that — the fact that makes it true lives in `personas/wayne.yaml`.
+Why a model at all: a regex cannot resolve a reference that lives outside the
+sentence, and there are two kinds.
 
-Seven verdict tokens, rendered from the cast: `DEXTER` / `MELIA` / `WAYNE` /
-`OPEN` / `NONE` / `AMBIGUOUS` / `INTRO`. `address_verdicts()` raises if two share
-an initial, because the whole latency argument rests on decoding from the first
-content delta.
+*Descriptive*: "What does the financial side make of that?" is Wayne, and no
+pattern over the transcript can know that — the fact that makes it true lives in
+`personas/wayne.yaml`.
+
+*Conversational*: "I'd like to hear from the other two" is Melia and Wayne after
+Dexter's turn and a different pair after Melia's. The sentence names nobody and
+contains nothing to count against, so the classifier is given one line of
+context per call — `prompts.build_address_context`, who the panel has heard from
+recently, most recent first — supplied by `PanelRuntime` off real state. It goes
+in the **user turn**, never the system prompt, which is cached for the whole
+show and must stay byte-identical; and it is part of the classifier's cache key,
+so a verdict decided during one exchange is never served to the next.
+
+Verdict vocabulary, rendered from the cast: `DEXTER` / `MELIA` / `WAYNE` /
+`OPEN` / `NONE` / `AMBIGUOUS` / `INTRO`, **plus any two or more of the names
+joined by `+`** — `MELIA+WAYNE`. `address_verdicts()` raises if two tokens share
+an initial, so one character still settles which panellist.
+
+A joined verdict is a real invitation to exactly those panellists and not a tie:
+`Invitation.agents` holds the set, `admits()` bars everyone outside it and drops
+the once-each limit inside it, and the two of them take the exchange in turns
+until `max_consecutive_agent_turns`. Naming the whole panel normalises to `OPEN`
+— there is nobody left to bar. This replaced `AMBIGUOUS` for two names, which
+closed the floor on a question Ricky had plainly asked two people and referred
+it to an operator console that does not exist; `AMBIGUOUS` now means only "we
+cannot tell *who* was invited", and only the classifier can produce it.
 
 Latency design — the verdict sits exactly where the floor opens, which is the
 moment this project spent weeks clearing:
 
-- decoded from the **first content delta**, not the finished message. Time-to-verdict ≈ time-to-first-token;
+- decoded **from the stream as soon as the set of names provably closes**, not from the finished message. That is one character past the last name, because a complete name is also a legal prefix of a pair: measured paired over the same 77 streams, **+115ms p50** (0-190ms) against the old decode-at-first-delta rule, and zero on the speculative path;
 - the human-readable reason keeps streaming in the background and is never waited on;
 - partials are **speculatively classified** while Ricky is still talking, so the common case at finalisation is a cache hit at zero measured cost;
-- an in-flight speculation for *exactly* the finalised text is **joined**, not cancelled;
+- an in-flight speculation for *exactly* the finalised text **and the same context** is **joined**, not cancelled;
 - **fails closed to the regex** (`verdict=None`) on timeout or error — never invents a `NONE`, which would silently swallow a real invitation.
 
-One event waits on it: `TurnYielded`, bounded by `ADDRESS_HOLD_TIMEOUT_S = 0.7`
+One event waits on it: `TurnYielded`, bounded by `ADDRESS_HOLD_TIMEOUT_S = 0.9`
 (`panel.py`). `EndOfTurn` lands within a few ms of the final, so without the hold
 the floor arbitrates before the invitation exists — floor closed, Ricky cued,
 dead air. `TranscriptUpdated` is never held; it drives the barge-in content check
 and speculative generation.
 
-Measured 153/153 on the regression corpus (`tests/bench_address.py` against
-`panel_core/tests/test_address.py`), p50 526ms / p95 781ms to verdict, dev box.
-The hold is deliberately *inside* p95: the tail costs the new capability on a few
-per cent of turns, versus every turn paying it.
+Measured 156/156 on the regression corpus and 75/75 on the new-capability set
+(`tests/bench_address.py --repeat 3` against `panel_core/tests/test_address.py`),
+p50 611ms / p95 728ms / max 1408ms to verdict, dev box. The hold was raised from
+0.7 because both halves moved: the verdict is 115ms slower, and an expired hold
+now loses capability the regex has no answer for at all rather than merely a
+descriptive reference it would have got right by luck.
+
+The prompt is a fixed budget, and that is measured rather than aesthetic. The
+first draft of the multi-addressee and context rules scored 52/52 on the
+regression corpus and flipped "Who have we got with us tonight?" from `INTRO` to
+`NONE`, 6/6, with that phrasing listed verbatim in the `INTRO` rules. No single
+sentence of the new material was responsible; halving its length did not help;
+moving it did not help. Making the `INTRO` rule explicit about that phrasing
+did. A new rule here competes with the existing ones, so `bench_address.py` is
+how you find out what one cost.
 
 **Open question:** the on-stage cache-hit rate is unmeasured. `AddressVerdict.source`
 and the `⌖ address:` console line exist to read it off; nothing aggregates it yet.
-That number decides whether this is free or ~500ms in series. Re-measure on the
+That number decides whether this is free or ~600ms in series. Re-measure on the
 venue rig (§ Deployment).
 
 ### 3.8 Agent-to-agent conversation

@@ -21,6 +21,7 @@ Floor hierarchy, in strict order:
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from enum import Enum
 
@@ -285,16 +286,21 @@ class _RoleHit:
 class _Detection:
     """What an utterance invites, and on what grounds.
 
-    ``conflict`` is non-empty when two different agents tied at the top role.
-    That is a first-class outcome, not a failure: the floor stays closed and
-    the operator is shown the tie.
+    ``agents`` holds every agent found at the top role, which is usually one
+    and legitimately more: "Melia and Wayne, can you take that between you?"
+    addresses both, and both answering is what Ricky asked for. It used to
+    report that case as a tie and close the floor — the operator was supposed
+    to break it, on a console that does not exist — and a second name is not
+    actually ambiguous about anything. Being unable to tell *which* panellist
+    was meant still is, and still closes the floor, but only the classifier
+    can produce it (``AMBIGUOUS_VERDICT``); no pattern over a transcript
+    reaches that conclusion.
     """
 
     strength: int = 0
-    agent: str | None = None
+    agents: tuple[str, ...] = ()
     role: str = ""
     rule: str = ""
-    conflict: tuple[str, ...] = ()
 
 # The one-shot introduction round. Deliberately not folded into _HANDOVER_RE:
 # this is usually a statement, not a question, and it must guarantee every
@@ -747,9 +753,16 @@ class FloorController:
         The counterpart to `_apply_detection`, and deliberately the *only*
         thing that differs between the two paths. Everything downstream of the
         invitation — precedence, the supersede window, the cue latch, the
-        ambiguity outcome, the one-shot introduction round — is the same code
-        in both cases, so flipping `FloorConfig.llm_address_detection` changes
-        who answers "who did Ricky address?" and nothing else about the floor.
+        ambiguity outcome, the one-shot introduction round, and the scope a
+        named set opens the floor to — is the same code in both cases, so
+        flipping `FloorConfig.llm_address_detection` changes who answers "who
+        did Ricky address?" and nothing else about the floor.
+
+        A verdict may name several agents (`AddressDetected.agents`), which is
+        an invitation to exactly those agents and not an ambiguity: see
+        `Invitation.admits`. That is also the one thing the classifier can do
+        that the regex path can only approximate, because "the other two" is
+        resolvable from the conversation and not from the sentence.
 
         Ignored outright when the flag is off. That is what makes a recording
         replayable both ways: the same log can be run through the classifier's
@@ -779,12 +792,17 @@ class FloorController:
             return state, []
 
         if verdict == AMBIGUOUS_VERDICT:
-            # Which agents tied cannot come out of the verdict token — it is
-            # one word. The runtime supplies the candidates it could not choose
-            # between; an empty tuple would quietly degrade `_turn_yielded` to
-            # `CueReason.NO_INVITATION` and show the operator nothing, so the
-            # whole cast stands in for "ambiguous, and we cannot say between
-            # whom". Either way the floor stays closed and a human decides.
+            # Narrower than it used to be: naming two panellists is now a real
+            # verdict that invites both, so this is only "we cannot tell *who*
+            # was invited" — a description fitting more than one of them with
+            # nothing to separate them.
+            #
+            # Which agents it could not separate cannot come out of the verdict
+            # token. The runtime supplies the candidates; an empty tuple would
+            # quietly degrade `_turn_yielded` to `CueReason.NO_INVITATION` and
+            # show the operator nothing, so the whole cast stands in for
+            # "ambiguous, and we cannot say between whom". Either way the floor
+            # stays closed and a human decides.
             return self._ambiguous_address(state, event.conflict or tuple(state.agents))
 
         if verdict == INTRO_VERDICT:
@@ -799,7 +817,7 @@ class FloorController:
             return self._install_invitation(
                 state,
                 Invitation(
-                    agent=None,
+                    agents=(),
                     turns_remaining=self.config.open_invitation_turns,
                     source=InvitationSource.OPEN,
                     t=event.t,
@@ -809,15 +827,26 @@ class FloorController:
                 t=event.t,
             )
 
-        if event.agent in state.agents:
+        # One name or several, through the same code: a verdict naming two
+        # panellists is Ricky inviting both of them, not a tie. The set is
+        # intersected with the cast and normalised to an open floor if it
+        # covers everybody — see `_named_scope`.
+        named = self._named_scope(state, event.agents)
+        if named is not None:
             return self._install_invitation(
                 state,
                 Invitation(
-                    agent=event.agent,
-                    turns_remaining=self.config.address_invitation_turns,
-                    source=InvitationSource.ADDRESS,
+                    agents=named,
+                    turns_remaining=(
+                        self.config.address_invitation_turns
+                        if named
+                        else self.config.open_invitation_turns
+                    ),
+                    source=(
+                        InvitationSource.ADDRESS if named else InvitationSource.OPEN
+                    ),
                     t=event.t,
-                    role=_LLM_ADDRESS_ROLE,
+                    role=_LLM_ADDRESS_ROLE if named else _LLM_OPEN_ROLE,
                     rule=_llm_rule(verdict),
                 ),
                 t=event.t,
@@ -893,7 +922,9 @@ class FloorController:
                 # nothing" is not yet a fact — it is a measurement taken before
                 # anyone could have answered. `_tick` cues Ricky if the grace
                 # runs out; a proposal landing first cancels it in `_proposal`.
-                state = replace(state, awaiting_agent=invitation.agent, awaiting_since=event.t)
+                state = replace(
+                    state, awaiting_agents=invitation.agents, awaiting_since=event.t
+                )
             elif not state.moderator_cued:
                 # Cue once per invitation, not once per failed arbitration. Every
                 # proposal re-drives arbitration from the runtime, so an
@@ -925,28 +956,29 @@ class FloorController:
     ) -> bool:
         """Is this a silence worth holding a beat for, or one to report at once?
 
-        Only for an agent Ricky named. An open invitation that nobody wants is a
-        real answer — the panel declining as a body — and the score floor
+        Only for the agents Ricky named. An open invitation that nobody wants
+        is a real answer — the panel declining as a body — and the score floor
         already decided it; waiting would just delay a decision that was made
         correctly. A named agent is the opposite: a direct question bypasses the
         score floor entirely, so "no candidate" almost always means "not written
-        yet" rather than "nothing to say".
+        yet" rather than "nothing to say". Two named agents are the same case
+        twice over, and the beat is held for either of them answering.
 
         The wait is armed once per invitation. `awaiting_since` is not refreshed
         on a second failed arbitration, and a spent cue is not re-armed, or a
-        stream of proposals from the other two agents could hold the beat open
-        indefinitely while the one agent Ricky actually asked stays silent.
+        stream of proposals from the agents Ricky did *not* ask could hold the
+        beat open indefinitely while the ones he did stay silent.
         """
-        if invitation.agent is None or state.moderator_cued:
+        if not invitation.agents or state.moderator_cued:
             return False
-        if state.awaiting_agent is not None:
+        if state.awaiting_agents:
             return True  # already waiting on them; leave the original clock alone
         return reason is CueReason.INVITED_AGENT_SILENT
 
     def _cue_overdue(
         self, state: PanelState, now: float
     ) -> tuple[PanelState, list[Command]]:
-        """The named agent never answered. Hand the beat to Ricky, once.
+        """Nobody Ricky named ever answered. Hand the beat to Ricky, once.
 
         Evaluated on `Tick` (100ms in this runtime) for the same reason
         `invitation_ttl_s` is: the reducer owns the decision but may not read a
@@ -955,9 +987,8 @@ class FloorController:
         turn is not mis-addressed, and only the TTL reaps one nobody ever acts
         on.
         """
-        agent = state.awaiting_agent
         since = state.awaiting_since
-        if agent is None or since is None:
+        if not state.awaiting_agents or since is None:
             return state, []
         if now - since < self.config.invited_agent_grace_s:
             return state, []
@@ -1012,7 +1043,10 @@ class FloorController:
         # same event (`PanelRuntime._maybe_rearbitrate`). All that matters here
         # is that the beat is over and Ricky must not now be told the agent was
         # silent.
-        if state.awaiting_agent == event.agent:
+        # Any of the named agents answering ends the beat: "Melia and Wayne,
+        # take that between you" is one question, and one of them having a line
+        # ready is the answer it was waiting for.
+        if event.agent in state.awaiting_agents:
             state = state.not_awaiting()
 
         # A proposal arriving while another *agent* is speaking is just stored.
@@ -1453,7 +1487,7 @@ class FloorController:
         ):
             return self._commit_human_interrupt(state, t=event.t)
 
-        if state.awaiting_agent is not None:
+        if state.awaiting_agents:
             # Checked ahead of the TTL: this is a sub-second beat and the TTL is
             # 25 seconds, so they can never contend, but the cue must not be
             # held up behind invitation bookkeeping.
@@ -1540,7 +1574,10 @@ class FloorController:
                 state = replace(
                     state,
                     invitation=Invitation(
-                        agent=event.agent,
+                        # `OperatorCommand.agent` is one id or None — the
+                        # console opens the floor for one panellist or for the
+                        # room. There is no multi-select to carry across.
+                        agents=(event.agent,) if event.agent else (),
                         turns_remaining=max(1, event.turns),
                         source=InvitationSource.OPERATOR,
                         t=event.t,
@@ -1636,11 +1673,7 @@ class FloorController:
         only displaces a live ADDRESS once
         `FloorConfig.invitation_supersede_window_s` has passed.
         """
-        invitation, conflict = self._detect_invitation(text, t=t)
-
-        if conflict:
-            return self._ambiguous_address(state, conflict)
-
+        invitation = self._detect_invitation(state, text, t=t)
         if invitation is None:
             return state, []
 
@@ -1649,15 +1682,47 @@ class FloorController:
     def _ambiguous_address(
         self, state: PanelState, conflict: tuple[str, ...]
     ) -> tuple[PanelState, list[Command]]:
-        """Two agents addressed the same way. Stay closed and show the tie.
+        """We cannot tell who was addressed. Stay closed and show the tie.
 
         Ambiguity is an outcome, not a failure. Nothing already specific is
         revoked, no invitation is minted, and the operator gets the choice.
-        Shared by both detection paths so a tie behaves identically however it
-        was found.
+
+        Reachable only from the classifier (`AMBIGUOUS_VERDICT`). It is *not*
+        what two names produces — that is a group invitation, and both of them
+        answer. This is for a reference that fits more than one panellist with
+        nothing in the sentence or the conversation to separate them, which the
+        regex path cannot conclude and so never asks for.
         """
         state = replace(state, address_conflict=conflict)
         return state, [self._paint(state)]
+
+    def _named_scope(
+        self, state: PanelState, agents: Iterable[str]
+    ) -> tuple[str, ...] | None:
+        """Normalise a detected set of addressees into an invitation's scope.
+
+        Shared by both detection paths, so "Melia and Wayne" opens the same
+        floor whether a regex or a model worked it out.
+
+        Args:
+            state: Current panel state, for the cast and its order.
+            agents: The agent ids the detector believes were addressed, in any
+                order, possibly containing ids this cast has nobody for.
+
+        Returns:
+            * The addressed agents in cast order, for a genuine subset.
+            * `()` when the set covers every agent on the panel. Naming all of
+              them *is* opening the floor — there is nobody left to bar — and
+              an invitation that said otherwise would quietly lose the
+              once-each guarantee `Invitation.admits` gives an open floor.
+            * `None` when nothing in the set is on this panel at all, which is
+              not a scope but a detection the caller must refuse.
+        """
+        wanted = set(agents)
+        named = tuple(agent_id for agent_id in state.agents if agent_id in wanted)
+        if not named:
+            return None
+        return () if len(named) >= len(state.agents) else named
 
     def _install_invitation(
         self, state: PanelState, invitation: Invitation, *, t: float
@@ -1744,8 +1809,8 @@ class FloorController:
         """Pick a winner from within the invitation, or None for silence.
 
         Returns the winner and, when there is none, *why* — "nobody proposed"
-        and "the one agent Ricky named had nothing to say" are different
-        problems, and a rehearsal that cannot tell them apart cannot be tuned.
+        and "the agents Ricky named had nothing to say" are different problems,
+        and a rehearsal that cannot tell them apart cannot be tuned.
 
         Never called with an introduction invitation — `_turn_yielded` routes
         that round to `_advance_introductions` instead, since scoring exists
@@ -1753,7 +1818,7 @@ class FloorController:
         """
         candidates = self._eligible(state, invitation)
         if not candidates:
-            if invitation.agent is not None and not invitation.spoken:
+            if invitation.agents and not invitation.spoken:
                 return None, CueReason.INVITED_AGENT_SILENT
             return None, CueReason.NO_PROPOSALS
 
@@ -1762,9 +1827,15 @@ class FloorController:
         # has no business overruling a direct question put to a specific
         # panellist. Once `invitation.spoken` is non-empty this branch is
         # skipped entirely — see below.
-        if invitation.agent is not None and not invitation.spoken:
-            if invitation.agent not in candidates:
-                return None, CueReason.INVITED_AGENT_SILENT
+        #
+        # `candidates` is already confined to the named set by
+        # `Invitation.admits`, so "the one Ricky named" and "the two Ricky
+        # named" are the same code from here down: the freshness test, the
+        # bypassed score floor and the handoff all apply per named agent, and
+        # with two of them in scope scoring picks which goes first. The second
+        # one is not forgotten — `admits` keeps the floor inside the set for
+        # the rest of the invitation.
+        if invitation.agents and not invitation.spoken:
             # ...but it has to be an answer to *this* question. Speculation runs
             # ahead of the final that opens the floor, so a proposal is normally
             # a second or two older than the invitation and that is exactly what
@@ -1786,31 +1857,49 @@ class FloorController:
             # invitation is a human deciding, at the console, that this agent
             # should speak with whatever it has; that is the backstop for a
             # missed cue and second-guessing its freshness would break it.
-            if invitation.source is InvitationSource.ADDRESS and self._stale(
-                candidates[invitation.agent], invitation
-            ):
+            if invitation.source is InvitationSource.ADDRESS:
+                candidates = {
+                    a: p for a, p in candidates.items() if not self._stale(p, invitation)
+                }
+            if not candidates:
                 return None, CueReason.INVITED_AGENT_SILENT
+
+            # With one name there is nothing to score. With two, scoring picks
+            # who opens — which is what it is for, and the only thing in the
+            # system that can say which of them has the better line ready.
+            scored = sorted(
+                ((self._score(state, a, p, now=now), a) for a, p in candidates.items()),
+                reverse=True,
+            )
+            first = scored[0][1]
+
             # ...but a handoff is still honoured. "Melia's the one to follow
             # here" is information the panel generated about itself, and
             # throwing it away is how a named grant ends up answering a
             # question its own agent just said it was the wrong one for. The
             # score floor stays bypassed: a direct question deserves an answer.
-            deferred = candidates[invitation.agent].signals.defer_to
-            # Evaluated against the *unrestricted* eligible set: a named
-            # invitation admits only the named agent, so the handoff target is
-            # by construction outside `candidates`.
-            unrestricted = self._eligible(state, None)
+            deferred = candidates[first].signals.defer_to
+            # Where the handoff may land depends on how many names Ricky used.
+            # One name is him picking a respondent, and the respondent saying
+            # "wrong person" is useful information about the whole panel — so
+            # the target is drawn from the *unrestricted* eligible set, which
+            # is where it necessarily is, since a one-name invitation admits
+            # only its addressee. Two names is him drawing a boundary: he has
+            # already left somebody out, and the panel may not put them back
+            # in. So a group's handoffs stay inside the group, where they are
+            # the exchange arranging its own order rather than overruling him.
+            targets = candidates if invitation.is_group else self._eligible(state, None)
             if (
                 deferred
-                and deferred != invitation.agent
-                and deferred in unrestricted
+                and deferred != first
+                and deferred in targets
                 # The handoff target gets the same freshness test as the agent
                 # who named it: a direct question is still being answered, and
                 # the score floor is still bypassed.
-                and not self._stale(unrestricted[deferred], invitation)
+                and not self._stale(targets[deferred], invitation)
             ):
                 return deferred, None
-            return invitation.agent, None
+            return first, None
 
         # Either a genuinely open floor, or a named invitation whose addressee
         # has already answered. Both get the freshness test — OPERATOR is the
@@ -1884,54 +1973,47 @@ class FloorController:
         return [HandsRaised(agents=tuple((a, round(sc, 3)) for sc, a in scored))]
 
     def _detect_invitation(
-        self, text: str, *, t: float
-    ) -> tuple[Invitation | None, tuple[str, ...]]:
+        self, state: PanelState, text: str, *, t: float
+    ) -> Invitation | None:
         """Did Ricky actually open the floor, and to whom?
 
         A statement invites nobody, however interesting it is — that is the
         whole rule, and it is one a moderator can hold in his head on stage:
         *ask a question and the panel answers; make a point and they let you
-        make it.* Naming an agent narrows the invitation to them.
-
-        Returns the invitation (or None) and any set of agents that tied for
-        addressee. A tie yields no invitation at all: see `_detect`.
+        make it.* Naming agents narrows the invitation to them.
         """
         detection = self._detect(text)
 
-        if detection.conflict:
-            return None, detection.conflict
-
-        if detection.agent is not None:
-            return (
-                Invitation(
-                    agent=detection.agent,
-                    turns_remaining=self.config.address_invitation_turns,
-                    source=InvitationSource.ADDRESS,
-                    t=t,
-                    role=detection.role,
-                    rule=detection.rule,
-                ),
-                (),
+        named = self._named_scope(state, detection.agents) if detection.agents else None
+        if named:
+            return Invitation(
+                agents=named,
+                turns_remaining=self.config.address_invitation_turns,
+                source=InvitationSource.ADDRESS,
+                t=t,
+                role=detection.role,
+                rule=detection.rule,
             )
 
-        if detection.strength >= _STRENGTH_OPEN:
-            return (
-                Invitation(
-                    agent=None,
-                    turns_remaining=self.config.open_invitation_turns,
-                    source=InvitationSource.OPEN,
-                    t=t,
-                    role="open",
-                    rule=detection.rule,
-                ),
-                (),
+        # `named == ()` is a detection that named the whole panel, which is an
+        # open floor with a rule string worth keeping; `None` with a strength
+        # at or above `_STRENGTH_OPEN` is an open question that named nobody.
+        # Both end up here, and both are the same invitation.
+        if named == () or detection.strength >= _STRENGTH_OPEN:
+            return Invitation(
+                agents=(),
+                turns_remaining=self.config.open_invitation_turns,
+                source=InvitationSource.OPEN,
+                t=t,
+                role="open",
+                rule=detection.rule,
             )
-        return None, ()
+        return None
 
     # ------------------------------------------------------------- detection
 
     def _detect(self, text: str) -> _Detection:
-        """Resolve a whole final transcript to at most one addressee.
+        """Resolve a whole final transcript to the agents it addresses.
 
         Clause by clause, then combined by *precedence* rather than recency: an
         agent named as the subject of a request outranks one merely in vocative
@@ -1939,9 +2021,13 @@ class FloorController:
         oblique role ("sorry for interrupting Dexter") outranks nothing at all
         because it can never be an addressee.
 
-        Two different agents at the same top strength is a genuine ambiguity
-        and is reported as one. Guessing between them is the failure mode this
-        whole function exists to remove.
+        Every agent at the top strength is an addressee. Usually that is one.
+        When it is two — "Melia and Wayne, can you take that between you?",
+        which `_classify_clause` already classifies as one coordinated group —
+        both of them were asked, and the invitation opens to both and to
+        nobody else. What this function still refuses to do is *pick* between
+        agents at the same role, which is the failure mode it was written for;
+        inviting all of them is not picking.
         """
         hits: list[_RoleHit] = []
         open_rule = ""
@@ -1954,23 +2040,18 @@ class FloorController:
         if addressed:
             top = max(h.strength for h in addressed)
             winners = {h.agent: h for h in addressed if h.strength == top}
-            if len(winners) > 1:
-                # Ambiguity, not a coin toss. The floor stays closed.
-                first = next(iter(winners.values()))
-                return _Detection(
-                    strength=top,
-                    agent=None,
-                    role=first.role.value,
-                    rule="ambiguous_" + first.rule,
-                    conflict=tuple(sorted(winners)),
-                )
-            only = next(iter(winners.values()))
+            first = next(iter(winners.values()))
             return _Detection(
-                strength=top, agent=only.agent, role=only.role.value, rule=only.rule
+                strength=top,
+                agents=tuple(sorted(winners)),
+                role=first.role.value,
+                # The rule string is provenance, and a rehearsal log should be
+                # able to see at a glance that a second name was involved.
+                rule=("group_" if len(winners) > 1 else "") + first.rule,
             )
 
         if open_rule:
-            return _Detection(strength=_STRENGTH_OPEN, agent=None, role="open", rule=open_rule)
+            return _Detection(strength=_STRENGTH_OPEN, role="open", rule=open_rule)
         return _Detection()
 
     def _classify_clause(self, clause: str, *, is_question: bool) -> list[_RoleHit]:
@@ -2077,7 +2158,7 @@ class FloorController:
         state = replace(
             state,
             invitation=Invitation(
-                agent=None,
+                agents=(),
                 turns_remaining=len(agents),
                 source=InvitationSource.INTRODUCTION,
                 t=t,
@@ -2214,6 +2295,13 @@ class FloorController:
             # `admits()` opens the floor on for everyone else.
             invitation = state.invitation.spent(t=now, agent_id=agent_id)
             live_agents = {a for a, rt in state.agents.items() if not rt.muted}
+            # Deliberately against the whole live panel and not against the
+            # invitation's own scope. A *group* invitation therefore never
+            # closes here — the panellist Ricky left out never speaks, so the
+            # set never covers the panel — and runs its `turns_remaining`
+            # instead, which is what gives the two of them a second turn each.
+            # Closing it as soon as both had spoken once would make "take that
+            # between you" mean one line each, which is not an exchange.
             if set(invitation.spoken) >= live_agents:
                 # Every live agent has now had a turn this invitation — close
                 # it outright rather than let it sit on `turns_remaining` a
@@ -2249,7 +2337,14 @@ class FloorController:
             speaking=state.speaking,
             turn_id=state.turn_id,
             extra={
+                # Two keys for one fact, and the pair is the point: `invited`
+                # is the sole addressee and None for both an open floor and a
+                # named group, so anything that has to tell those apart reads
+                # `invited_agents` — empty for an open floor, one or more names
+                # otherwise. `invited` stays because every existing renderer
+                # reads it and a one-name invitation is still the common case.
                 "invited": invitation.agent if invitation else None,
+                "invited_agents": invitation.agents if invitation else (),
                 "invitation_turns": invitation.turns_remaining if invitation else 0,
                 # Provenance for the operator console and the rehearsal log: a
                 # rehearsal has to be able to see *why* the floor opened where
@@ -2262,7 +2357,10 @@ class FloorController:
                 # cues Ricky. Visible because a rehearsal needs to tell "the
                 # panel is about to answer" from "the panel is not going to",
                 # which from the console used to look identical.
-                "awaiting": state.awaiting_agent,
+                "awaiting": state.awaiting_agents[0]
+                if len(state.awaiting_agents) == 1
+                else None,
+                "awaiting_agents": state.awaiting_agents,
                 "consecutive_agent_turns": state.consecutive_agent_turns,
                 "killed": state.killed,
                 "intro_remaining": state.intro_queue,

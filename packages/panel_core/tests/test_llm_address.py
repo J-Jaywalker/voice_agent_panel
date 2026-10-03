@@ -40,6 +40,7 @@ from panel_core import (
     CueModerator,
     FloorConfig,
     FloorController,
+    HumanSpeechStarted,
     PanelCast,
     PanelState,
     Signals,
@@ -103,18 +104,23 @@ def said(text: str, t: float = 0.0) -> TranscriptUpdated:
 
 def verdict(
     token: str | None,
-    agent: str | None = None,
-    *,
+    *agents: str,
     text: str = "Melia, can you continue?",
     t: float = 0.1,
     conflict: tuple[str, ...] = (),
 ) -> AddressDetected:
-    """What the runtime emits once the classifier has answered."""
+    """What the runtime emits once the classifier has answered.
+
+    `agents` is varargs because a verdict can name more than one panellist:
+    `verdict("MELIA+WAYNE", "melia", "wayne")` is Ricky asking two of them to
+    take something between them, which is an invitation to both and not a tie.
+    `conflict` is the tie, and the two never co-occur.
+    """
     return AddressDetected(
         t=t,
         text=text,
         verdict=token,
-        agent=agent,
+        agents=agents,
         conflict=conflict,
         reason="test",
         latency_ms=12.0,
@@ -128,7 +134,7 @@ def outcome(state: PanelState) -> str:
         return AMBIGUOUS
     if state.invitation is None:
         return CLOSED
-    return state.invitation.agent or OPEN
+    return "+".join(state.invitation.agents) or OPEN
 
 
 def strong(**overrides) -> Signals:
@@ -211,11 +217,99 @@ def test_an_open_verdict_invites_the_panel(llm, state):
     state, _ = run(llm, state, said("Tell us more."), verdict(OPEN_VERDICT))
     invitation = state.invitation
     assert invitation is not None
-    assert invitation.agent is None
+    assert invitation.agents == ()
     assert invitation.source is InvitationSource.OPEN
     assert invitation.turns_remaining == llm.config.open_invitation_turns
     assert invitation.role == "llm_open"
     assert invitation.rule == f"llm_verdict:{OPEN_VERDICT}"
+
+
+def test_a_joined_verdict_invites_exactly_those_agents(llm, state):
+    """"I'd like to hear from the other two" is a real invitation to two people.
+
+    The sentence names nobody and is only resolvable against who just spoke,
+    which is why the classifier is given `prompts.build_address_context` and
+    why this is the capability the regex cannot reach. At the reducer the
+    verdict is simply a set, and the floor opens to that set.
+    """
+    text = "I'd like to hear from the other two."
+    state, commands = run(
+        llm,
+        state,
+        said(text),
+        verdict("MELIA+WAYNE", "melia", "wayne", text=text),
+    )
+    invitation = state.invitation
+    assert invitation is not None
+    assert invitation.agents == ("melia", "wayne")
+    assert invitation.is_group
+    assert invitation.agent is None, "a group has no single addressee"
+    assert invitation.source is InvitationSource.ADDRESS
+    assert invitation.turns_remaining == llm.config.address_invitation_turns
+    assert invitation.role == "llm_address"
+    assert invitation.rule == "llm_verdict:MELIA+WAYNE"
+    assert state.address_conflict == (), "naming two is not a tie"
+
+    painted = [c for c in commands if isinstance(c, StateChanged)][-1].extra
+    assert painted["invited_agents"] == ("melia", "wayne")
+
+
+def test_a_joined_verdict_naming_everyone_is_an_open_floor(llm, state):
+    """There is nobody left to bar, so it is the open floor it looks like.
+
+    Kept as a *normalisation* rather than left as a three-name scope because
+    the two behave differently: an open floor owes every agent a turn and
+    closes once they have each had one, while a group runs its turn budget and
+    lets its members speak twice. A set covering the whole panel must get the
+    first of those.
+    """
+    text = "All three of you, then."
+    state, _ = run(
+        llm,
+        state,
+        said(text),
+        verdict("DEXTER+MELIA+WAYNE", "dex", "melia", "wayne", text=text),
+    )
+    invitation = state.invitation
+    assert invitation is not None
+    assert invitation.agents == ()
+    assert not invitation.is_group
+    assert invitation.source is InvitationSource.OPEN
+    assert invitation.turns_remaining == llm.config.open_invitation_turns
+    assert invitation.role == "llm_open"
+    # ...and the rule still records the verdict that produced it, so a
+    # rehearsal can see that the model named three people and the floor read
+    # that as open.
+    assert invitation.rule == "llm_verdict:DEXTER+MELIA+WAYNE"
+
+
+def test_a_joined_verdict_bars_the_agent_it_left_out(llm, state):
+    """The point of the extra name is the panellist it excludes."""
+    text = "Melia and Wayne, between you?"
+    state, _ = run(
+        llm,
+        state,
+        said(text),
+        verdict("MELIA+WAYNE", "melia", "wayne", text=text),
+        AgentProposal(t=0.5, agent="dex", utterance="Security, surely.", signals=strong()),
+    )
+    _, commands = llm.reduce(state, TurnYielded(t=1.0))
+    assert not [c for c in commands if isinstance(c, StartSpeech)]
+
+
+def test_a_verdict_naming_one_unknown_agent_invites_the_known_one(llm, state):
+    """A set is intersected with the cast, not refused wholesale.
+
+    A replay log from a different cast, or a model that wrote one good name and
+    one bad one, must not cost the invitation the good name earned. Refusing
+    the whole set would send a direct question to the regex, and the regex
+    cannot see "the other two" at all.
+    """
+    text = "Melia and Ricky, between you?"
+    state, _ = run(llm, state, said(text), verdict("MELIA+RICKY", "melia", "ricky", text=text))
+    assert state.invitation is not None
+    assert state.invitation.agents == ("melia",)
+    assert state.invitation.role == "llm_address", "...and it is still the model's verdict"
 
 
 def test_a_none_verdict_leaves_the_floor_closed(llm, state):
@@ -257,6 +351,39 @@ def test_an_ambiguous_verdict_with_no_named_tie_still_reports_ambiguity(llm, sta
     _, commands = llm.reduce(state, TurnYielded(t=1.0))
     assert [c.reason for c in commands if isinstance(c, CueModerator)] == [
         CueReason.AMBIGUOUS_ADDRESS
+    ]
+
+
+def test_a_resolved_conflict_does_not_haunt_later_turns(llm, state):
+    """A tie is about one utterance, not about the rest of the show.
+
+    A conflict left standing turns every later "Ricky made a remark" cue into
+    a spurious `ambiguous_address`, which would send the operator hunting for
+    a tie that no longer exists. Lived in `test_address.py` until the regex
+    stopped producing ties at all; the property is the reducer's either way,
+    and `AMBIGUOUS_VERDICT` is now the only thing that can arm it.
+    """
+    state, _ = run(llm, state, said("Which of you owns that?"), verdict(AMBIGUOUS_VERDICT))
+    assert state.address_conflict
+
+    state, _ = run(
+        llm, state, said("Melia, take it.", t=1.0), verdict("MELIA", "melia", t=1.1)
+    )
+    assert state.address_conflict == (), "a clean address resolves the tie"
+    assert state.invitation.agent == "melia"
+
+    # ...and so does Ricky simply carrying on talking.
+    state, _ = run(llm, state, said("Which of you?", t=2.0), verdict(AMBIGUOUS_VERDICT, t=2.1))
+    assert state.address_conflict
+    state, _ = llm.reduce(state, HumanSpeechStarted(t=3.0))
+    assert state.address_conflict == ()
+
+    state, _ = run(
+        llm, state, said("That is roughly where we are.", t=4.0), verdict(NO_VERDICT, t=4.1)
+    )
+    _, commands = llm.reduce(state, TurnYielded(t=5.0))
+    assert [c.reason for c in commands if isinstance(c, CueModerator)] == [
+        CueReason.NO_INVITATION
     ]
 
 
@@ -423,7 +550,7 @@ def test_a_fresh_verdict_stands_the_moderator_cue_back_down(llm, state):
     # Nobody proposed, so the floor holds a beat for Wayne rather than cueing
     # Ricky in the same millisecond his question landed...
     state, _ = llm.reduce(state, TurnYielded(t=1.0))
-    assert state.awaiting_agent == "wayne"
+    assert state.awaiting_agents == ("wayne",)
     # ...and only cues him once the grace runs out.
     state, commands = llm.reduce(state, Tick(t=1.0 + llm.config.invited_agent_grace_s))
     assert [c.reason for c in commands if isinstance(c, CueModerator)] == [
@@ -433,4 +560,4 @@ def test_a_fresh_verdict_stands_the_moderator_cue_back_down(llm, state):
 
     state, _ = llm.reduce(state, verdict("MELIA", "melia", t=3.0))
     assert not state.moderator_cued
-    assert state.awaiting_agent is None
+    assert state.awaiting_agents == ()

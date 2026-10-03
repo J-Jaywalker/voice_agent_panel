@@ -624,7 +624,7 @@ def test_a_named_agent_may_not_answer_with_a_line_that_raced_past_the_question(f
 
     state, cmds = fc.reduce(state, TurnYielded(t=50.671))
     assert not [c for c in cmds if isinstance(c, StartSpeech)]
-    assert state.awaiting_agent == "wayne", "the beat is held for an answer still being written"
+    assert state.awaiting_agents == ("wayne",), "the beat is held for an answer still being written"
 
     # The holding line arrives after the invitation, having been written 3.2s
     # before the question.
@@ -767,7 +767,7 @@ def test_repeated_silent_arbitrations_do_not_spam_the_brains(fc, state):
 def test_an_unnamed_question_opens_the_floor_to_the_panel(fc, state):
     state, _ = fc.reduce(state, invite(0.0, "What do you all think?"))
     assert state.invitation is not None
-    assert state.invitation.agent is None, "open to the room, not to one agent"
+    assert state.invitation.agents == (), "open to the room, not to one agent"
 
 
 # ------------------------------------------------------- the floor is closed
@@ -1499,7 +1499,7 @@ def test_a_line_written_before_the_question_does_not_win_an_open_floor(fc, state
         ),
         invite(10.0, "Where do you think we are on the adoption curve?"),
     )
-    assert state.invitation is not None and state.invitation.agent is None
+    assert state.invitation is not None and state.invitation.agents == ()
 
     state, cmds = fc.reduce(state, TurnYielded(t=10.2))
     assert not [c for c in cmds if isinstance(c, StartSpeech)]
@@ -1574,7 +1574,7 @@ def _introduce(t: float = 0.0) -> TranscriptUpdated:
 def test_introduce_yourselves_invites_the_whole_panel(fc, state):
     state, _ = fc.reduce(state, _introduce(0.0))
     assert state.invitation is not None
-    assert state.invitation.agent is None
+    assert state.invitation.agents == ()
     assert set(state.intro_queue) == set(fc.cast.ids())
 
 
@@ -1793,14 +1793,14 @@ def test_a_named_agent_answering_within_the_beat_takes_the_floor(fc, state):
     assert not [c for c in cmds if isinstance(c, CueModerator)], (
         "Ricky must not be told to fill a gap nobody has had time to fill"
     )
-    assert state.awaiting_agent == "wayne"
+    assert state.awaiting_agents == ("wayne",)
 
     # Wayne's stream finishes inside the beat.
     state, cmds = fc.reduce(
         state,
         AgentProposal(t=20.4, agent="wayne", utterance="", signals=strong(), epoch=1),
     )
-    assert state.awaiting_agent is None, "the answer arrived; stand the cue down"
+    assert state.awaiting_agents == (), "the answer arrived; stand the cue down"
 
     state, cmds = fc.reduce(state, TurnYielded(t=20.45))
     assert [c.agent for c in cmds if isinstance(c, StartSpeech)] == ["wayne"]
@@ -1852,7 +1852,7 @@ def test_an_open_invitation_with_nothing_cues_at_once(fc, state):
     """
     state, cmds = run(fc, state, invite(0.0, "What holds it back?"), TurnYielded(t=1.0))
     assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [CueReason.NO_PROPOSALS]
-    assert state.awaiting_agent is None
+    assert state.awaiting_agents == ()
 
 
 def test_ricky_speaking_during_the_beat_stands_the_cue_down(fc, state):
@@ -1863,10 +1863,10 @@ def test_ricky_speaking_during_the_beat_stands_the_cue_down(fc, state):
         invite(20.0, "So Wayne, where are we on the adoption curve?"),
         TurnYielded(t=20.01),
     )
-    assert state.awaiting_agent == "wayne"
+    assert state.awaiting_agents == ("wayne",)
 
     state, _ = fc.reduce(state, HumanSpeechStarted(t=20.3))
-    assert state.awaiting_agent is None
+    assert state.awaiting_agents == ()
 
     _, cmds = fc.reduce(state, Tick(t=25.0))
     assert not [c for c in cmds if isinstance(c, CueModerator)], (

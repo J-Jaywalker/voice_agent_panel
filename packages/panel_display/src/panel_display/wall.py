@@ -407,17 +407,26 @@ class WallState:
         self.turn_id = command.turn_id
         self.killed = bool(command.extra.get("killed"))
 
-        invited = command.extra.get("invited")
         live = command.extra.get("invitation_source") is not None
-        # `invited is None` with a live invitation means the floor is open to
-        # the whole panel — a real and distinct third state, not "nobody".
-        self.open_floor = live and invited is None
+        # `invited_agents` is the authoritative set; `invited` is the single
+        # addressee and is None for both an open floor and a named pair, so
+        # reading it alone would light the whole panel when Ricky named two of
+        # them. Falling back to it keeps older rehearsal logs, written before
+        # the set existed, replaying correctly.
+        invited = tuple(command.extra.get("invited_agents") or ())
+        if not invited and command.extra.get("invited"):
+            invited = (command.extra["invited"],)
+        # An empty set with a live invitation means the floor is open to the
+        # whole panel — a real and distinct third state, not "nobody".
+        self.open_floor = live and not invited
         for agent_id, view in self.agents.items():
-            view.invited = live and (invited == agent_id or invited is None)
+            view.invited = live and (not invited or agent_id in invited)
 
-        awaiting = command.extra.get("awaiting")
-        if awaiting:
-            view = self.agents.get(awaiting)
+        awaiting = tuple(command.extra.get("awaiting_agents") or ())
+        if not awaiting and command.extra.get("awaiting"):
+            awaiting = (command.extra["awaiting"],)
+        for agent_id in awaiting:
+            view = self.agents.get(agent_id)
             if view is not None and view.state not in (SPEAKING, DUCKED):
                 view.state = THINKING
 

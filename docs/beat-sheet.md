@@ -325,8 +325,15 @@ default**. Consequences he needs briefed on:
   are question-shaped and aimed at the person being interrupted.
 - **The subject of a request beats a vocative.** "Sorry Dexter, can Melia speak?"
   correctly invites Melia.
-- **Two agents in the same role is ambiguous**, and ambiguity keeps the floor
-  closed and puts the tie in front of the operator.
+- **Naming two agents invites both of them**, and bars the third. "Melia and
+  Wayne, can you take that between you?" opens the floor to those two, they
+  answer in turns, and Dexter stays out of it until you ask him. This used to
+  read as ambiguous and keep the floor shut; it no longer does, so it is now a
+  cue you can use deliberately rather than one to avoid.
+- **With `--llm-address`, "the other two" works** — and only there. "I'd like
+  to hear from the other two" and "the one we haven't heard from" resolve
+  against who just spoke. Without the flag the regex is running, it sees no
+  names, and nothing happens: re-cue with names.
 
 Every cue line below is one of the forms in
 [`test_address.py`](../packages/panel_core/tests/test_address.py). If a phrasing
@@ -912,7 +919,8 @@ entirely with the human. That is by design, not a limitation.
 |---|---|
 | **Nothing happens after Ricky speaks** | He made a statement. The floor is closed by default, and Beats 1, 2 and 4 all have him framing before handing over. Re-cue with a named question — *"Wayne, what do you think?"* |
 | **An agent won't stop** | Nothing fires automatically — there is no enforced cap. Don't intervene for length before ~60s; before that, let it run. Past that, just speak — human speech ducks any agent within one buffer. |
-| **Wrong agent answers** | Two agents in the same grammatical role reads as ambiguous and keeps the floor shut. Re-cue with the subject form: *"Can Melia take that one?"* |
+| **Wrong agent answers** | Re-cue with the subject form, which outranks everything else: *"Can Melia take that one?"* |
+| **Two agents answer when you wanted one** | Two names in the same grammatical role now invites both — *"Melia, Dexter, thoughts?"* is a question to the pair of them. If you only want one, name one. |
 | **An agent drifts towards a Speechmatics claim** | Cut in immediately. *"Dexter, hold on."* Then take the point yourself. |
 | **An agent names a provider or product** | Same cut-in. Most likely in Beat 2 (four hard problems invite comparison) and Beat 4 (Ricky has just said a product name out loud, which is exactly the prompt an agent least needs). The rule is the field in general terms, and the correction is Ricky's to make lightly and move on from — don't turn it into a moment. |
 | **An agent starts describing an actual jailbreak method** | Cut in. *"Dexter, hold on."* Then redirect to how it felt rather than how it worked: *"Melia, what did you do about it?"* |

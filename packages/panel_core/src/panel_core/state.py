@@ -41,7 +41,7 @@ _INVITATION_PRECEDENCE: dict[InvitationSource, int] = {
 
 @dataclass(frozen=True, slots=True)
 class Invitation:
-    """Permission for an agent — or the panel — to take the floor.
+    """Permission for some agents — or the panel — to take the floor.
 
     The floor is closed by default. This is the object that opens it, and it is
     spent as it is used. Without one, ``TurnYielded`` returns the floor to the
@@ -53,7 +53,11 @@ class Invitation:
     reasoning rather than just the outcome.
     """
 
-    agent: str | None  # None = open to the whole panel
+    # Who the invitation names, in cast order. Empty means the whole panel.
+    # One name is a direct question. Two or more is Ricky asking exactly those
+    # panellists to take something between them, which is a different thing
+    # from either — see ``admits()``, which is where the difference lives.
+    agents: tuple[str, ...]
     turns_remaining: int
     source: InvitationSource
     # The moment Ricky opened the floor. This never moves. It is the question a
@@ -112,16 +116,46 @@ class Invitation:
     def is_live(self) -> bool:
         return self.turns_remaining > 0
 
+    @property
+    def agent(self) -> str | None:
+        """The sole addressee, or None.
+
+        None covers two different invitations — an open floor and a named
+        *group* — so nothing may read this to mean "open". Code that has to
+        tell those apart reads ``agents`` directly; this exists because the
+        one-name case is still by far the commonest and "the agent Ricky
+        named" is the question most callers are actually asking.
+        """
+        return self.agents[0] if len(self.agents) == 1 else None
+
+    @property
+    def is_group(self) -> bool:
+        """Did Ricky name more than one panellist, and not the whole panel?"""
+        return len(self.agents) > 1
+
     def admits(self, agent_id: str) -> bool:
         """May this agent be granted the floor under this invitation, next?
 
-        Before anyone has spoken, a named invitation admits only its
-        addressee — a direct question is still theirs alone to answer first.
-        Once at least one agent has taken a turn, every other live agent is
-        owed one before this invitation closes, named or not, so the field
-        opens to whoever has not yet spoken. An agent who has already had
-        their turn this invitation is never admitted twice.
+        Three shapes of invitation, three rules:
+
+        * **Open** (``agents`` empty). Anyone who has not yet spoken under it.
+        * **One name.** The addressee alone until they have answered — a direct
+          question is theirs to answer first — and then every other live agent,
+          because every agent chips in once per prompt (CLAUDE.md). Nobody is
+          ever admitted twice.
+        * **Several names.** Those panellists and nobody else, with no
+          once-each limit. Ricky naming two of them is Ricky asking those two
+          to take it between them, so a second turn each is the point of the
+          invitation rather than an overrun. ``recency_penalty`` in the scoring
+          is what makes it alternate, and in practice
+          ``FloorConfig.max_consecutive_agent_turns`` is what ends it before
+          ``turns_remaining`` does — the same safety valve that bounds any
+          agent-to-agent exchange, since that is what this is. Opening the
+          floor back up to the panellist he left out would undo the only thing
+          the extra name said.
         """
+        if self.is_group:
+            return agent_id in self.agents
         if agent_id in self.spoken:
             return False
         if not self.spoken:
@@ -326,18 +360,23 @@ class PanelState:
 
     # --- the beat before the floor goes back to Ricky ---
     #
-    # Set when arbitration found nothing for an agent Ricky named by name.
+    # Set when arbitration found nothing for the agents Ricky named by name.
     # Rather than telling him to fill the silence in the same millisecond his
     # question landed, the floor waits `FloorConfig.invited_agent_grace_s` for
     # the answer that is almost certainly still being written, and only cues him
     # if it never turns up. On stage the difference is a panellist taking a
     # breath versus a panellist who is not there.
     #
+    # A tuple, not one id, because Ricky can name two: "Melia and Wayne, take
+    # that between you" is one invitation whose beat is held for either of
+    # them, and a line from *either* stands the cue down (`_proposal`). Empty
+    # means no beat is being held.
+    #
     # `moderator_cued` latches for the life of one invitation. Every proposal
     # that lands re-opens arbitration (`PanelRuntime._maybe_rearbitrate`), so a
     # single unanswered question used to cue Ricky once per proposal — three
     # times over, in the run that prompted this. Ricky needs telling once.
-    awaiting_agent: str | None = None
+    awaiting_agents: tuple[str, ...] = ()
     awaiting_since: float | None = None
     moderator_cued: bool = False
 
@@ -387,7 +426,7 @@ class PanelState:
         Called wherever the wait is over however it ended — the answer arrived,
         someone took the floor, Ricky spoke again, or the cue finally fired.
         """
-        return replace(self, awaiting_agent=None, awaiting_since=None)
+        return replace(self, awaiting_agents=(), awaiting_since=None)
 
     def recent_text(self, limit: int = 12) -> str:
         lines = [f"{u.speaker}: {u.text}" for u in self.transcript[-limit:]]
