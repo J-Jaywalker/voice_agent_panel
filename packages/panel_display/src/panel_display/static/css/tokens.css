@@ -44,8 +44,10 @@
 @import "./radix/cyan-dark.css";
 @import "./radix/amber.css";
 @import "./radix/amber-dark.css";
-@import "./radix/orange.css";
-@import "./radix/orange-dark.css";
+@import "./radix/purple.css";
+@import "./radix/purple-dark.css";
+@import "./radix/red.css";
+@import "./radix/red-dark.css";
 
 /*
  * PP Telegraf, the Speechmatics display face, self-hosted. Variable 200-900,
@@ -519,57 +521,40 @@
    * the card back toward being the painted column all of this moved away
    * from.
    *
-   * Amber breaks the pattern at `quiet` and has to. Radix calls amber a
-   * *bright* scale: its step 9 (#FFC53D) is higher-luminance than its step 8
-   * and is built to carry dark text on top, not to be seen against white. A
-   * 12px amber-9 bar on Sage 2 is invisible from the third row. Step 8 is the
-   * last amber that still has contrast against the ground, so amber's fill is
-   * 8 where jade's and cyan's are 9. No amber fill anywhere on this wall
-   * carries text, so the rule that amber never pairs with light type holds
-   * trivially.
+   * Originally jade / cyan / amber, searched over steps 8-11 at every alpha
+   * (see git history for the full dE methodology and figures) to maximise
+   * two things at once: the pairwise CIELAB distance *between* lanes, and the
+   * distance between each lane and its own orb (`quiet` at rest, `--accent-*`
+   * while speaking) — the second is easy to miss and expensive to get wrong,
+   * because the orb is drawn in the agent's own colour, so a lane deepened
+   * toward that colour swallows it. Amber needed a step-8 exception there:
+   * Radix calls it a *bright* scale, its step 9 (#FFC53D) is higher-luminance
+   * than its step 8 and built to carry dark text on top rather than be seen
+   * against white, so a 12px amber-9 bar on Sage 2 was invisible from the
+   * third row.
+   *
+   * Reassigned to amber / jade / purple (4 Oct) for triadic identity on
+   * request, pinned by name rather than cast order — see `AGENT_ACCENTS` in
+   * `wall.py`. Briefly orange rather than amber for the first hour, moved to
+   * amber the same day for a more yellow, less alarm-adjacent hue — which is
+   * also why `--accent-alarm` moved to Red rather than staying Orange: once
+   * an agent owns a hue it cannot also be the kill switch. Jade and purple
+   * are mid-value at step 9 and need no exception; amber inherits the step-8
+   * one documented above, so its fill is 8 where the other two are 9. The dE
+   * search above was run for the original trio and is not reproduced for
+   * this one — it is kept for the method, not the numbers.
    *
    * ── Why the washes are thinned `quiet` and not step 4 ──
    *
    * The step-4s do not survive being told apart from one another at 12m.
-   *
    * Radix's low steps are deliberately near-neutral — that is what makes them
-   * usable as component backgrounds behind arbitrary content — and jade 4 and
-   * amber 4 are adjacent hues *and* near-neutral *and* near-identical in
-   * lightness, so as a pair of 4m fields they converge into two slightly
-   * different warm off-whites. Strength alone does not separate them: at an
-   * 0.78 lane the three were unmistakably coloured and jade still bled into
-   * amber, because raising the alpha of a near-neutral scales a hue difference
-   * that was never there to begin with.
+   * usable as component backgrounds behind arbitrary content — so a pair of
+   * 4m fields at step 4 converges into two slightly different off-whites.
+   * Strength alone does not separate them: raising the alpha of a
+   * near-neutral scales a hue difference that was never there to begin with.
    *
    * `quiet` is where the hue lives, and it is already the token that means
    * "which agent is this" — so the wash is that same identity fill, thinned.
-   * Which also means amber's step-8 exception, documented above for the bar,
-   * is inherited here rather than restated: one rule, three agents.
-   *
-   * Searched rather than guessed, over steps 8-11 at every alpha, maximising
-   * the worst of two things at once:
-   *
-   * * the three pairwise CIELAB distances *between* the lanes, and
-   * * the distance between each lane and its own orb (`quiet` at rest,
-   *   `--accent-*` while speaking).
-   *
-   * The second constraint is the one that is easy to miss and expensive to
-   * get wrong: the orb is drawn in the agent's own colour, so a lane deepened
-   * toward that colour swallows it. An earlier pass optimised the lanes
-   * against each other alone, picked jade 11 / cyan 9 / amber 11 — forcing
-   * amber off yellow and into brown to match the others' darkness — and the
-   * amber orb vanished into its own lane.
-   *
-   * Winner: `quiet` for all three (jade 9 / cyan 9 / amber 8) at 0.38. Lane
-   * separation dE 14.4, lane-to-orb dE 27. Two near misses worth recording:
-   * step 11 for all three gives dE 8.5 between lanes, because jade 11 and
-   * cyan 11 are both teals; and step 12 — the obvious answer to "make it
-   * darker" — is the worst of every option at dE 4.1, because every scale's
-   * step 12 is nearly the same near-black.
-   *
-   * The amber lane does come out lighter than the other two (10 L below the
-   * ground against their 15), and that is left alone. Yellow is light; the
-   * only way to make it as dark as a green is to stop it being yellow.
    *
    * 0.38 is a lane figure — light enough that the name plates keep dark type
    * on them, where past roughly 0.45 a lane starts wanting light type instead,
@@ -580,16 +565,22 @@
   --accent-jade-quiet: var(--jade-9);
   --accent-jade-wash: color-mix(in srgb, var(--accent-jade-quiet) 6%, transparent);
 
-  --accent-cyan: var(--cyan-11);
-  --accent-cyan-quiet: var(--cyan-9);
-  --accent-cyan-wash: color-mix(in srgb, var(--accent-cyan-quiet) 6%, transparent);
-
   --accent-amber: var(--amber-11);
   --accent-amber-quiet: var(--amber-8);
   --accent-amber-wash: color-mix(in srgb, var(--accent-amber-quiet) 6%, transparent);
 
-  /* Reserved for the kill switch. Orange is negative-only, per the brand. */
-  --accent-alarm: var(--orange-11);
+  --accent-purple: var(--purple-11);
+  --accent-purple-quiet: var(--purple-9);
+  --accent-purple-wash: color-mix(in srgb, var(--accent-purple-quiet) 6%, transparent);
+
+  /*
+   * Reserved for the kill switch. Was Orange (negative-only, per the brand)
+   * until Dexter's accent took that hue, then Red once Dexter moved again to
+   * Amber (both 4 Oct) — an agent's identity colour and the alarm can never
+   * be the same hue, which is the property this token exists for: "the only
+   * one on the wall" (see wall.css).
+   */
+  --accent-alarm: var(--red-11);
 
   /*
    * ── Orb modelling ───────────────────────────────────────────
@@ -680,8 +671,9 @@
   /*
    * Inverted from light: the ink is the *vivid* step, because on black the
    * accent arrives by getting brighter, and the resting colour is the dim one
-   * a step below it. Amber needs no exception here — on black, step 9 is the
-   * brightest thing on the scale rather than the least visible.
+   * a step below it. Amber needs no exception here either — on black, step 9
+   * is the brightest thing on the scale rather than the least visible, which
+   * is why that one-off lives in light mode only.
    */
   /*
    * The washes follow `quiet` here as well, which on this ground is step 8 —
@@ -701,13 +693,13 @@
   --accent-jade-quiet: var(--jade-8);
   --accent-jade-wash: color-mix(in srgb, var(--accent-jade-quiet) 5%, transparent);
 
-  --accent-cyan: var(--cyan-9);
-  --accent-cyan-quiet: var(--cyan-8);
-  --accent-cyan-wash: color-mix(in srgb, var(--accent-cyan-quiet) 5%, transparent);
-
   --accent-amber: var(--amber-9);
   --accent-amber-quiet: var(--amber-8);
   --accent-amber-wash: color-mix(in srgb, var(--accent-amber-quiet) 5%, transparent);
 
-  --accent-alarm: var(--orange-9);
+  --accent-purple: var(--purple-9);
+  --accent-purple-quiet: var(--purple-8);
+  --accent-purple-wash: color-mix(in srgb, var(--accent-purple-quiet) 5%, transparent);
+
+  --accent-alarm: var(--red-9);
 }

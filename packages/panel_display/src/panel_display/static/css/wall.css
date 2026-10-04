@@ -408,10 +408,11 @@ body {
 /* ── Agent lane ────────────────────────────────────────────────────────── */
 
 /*
- * The three colour tokens an agent owns, set per lane from the cast (jade /
- * cyan / amber, by cast order). The canvas reads `--accent`, `--accent-quiet`
- * and `--orb-model` back through getComputedStyle at init, so this
- * declaration is the single place an agent's colour is decided on the client.
+ * The three colour tokens an agent owns, set per lane from the cast (amber /
+ * jade / purple, pinned by name — `AGENT_ACCENTS` in wall.py). The canvas
+ * reads `--accent`, `--accent-quiet` and `--orb-model` back through
+ * getComputedStyle at init, so this declaration is the single place an
+ * agent's colour is decided on the client.
  *
  * Their split — ink, identity fill, lane wash — is documented in tokens.css.
  * The wash is a thinning of the identity fill, so `--accent-quiet` is the one
@@ -423,16 +424,16 @@ body {
   --accent-wash: var(--accent-jade-wash);
 }
 
-.lane--agent[data-accent="cyan"] {
-  --accent: var(--accent-cyan);
-  --accent-quiet: var(--accent-cyan-quiet);
-  --accent-wash: var(--accent-cyan-wash);
-}
-
 .lane--agent[data-accent="amber"] {
   --accent: var(--accent-amber);
   --accent-quiet: var(--accent-amber-quiet);
   --accent-wash: var(--accent-amber-wash);
+}
+
+.lane--agent[data-accent="purple"] {
+  --accent: var(--accent-purple);
+  --accent-quiet: var(--accent-purple-quiet);
+  --accent-wash: var(--accent-purple-wash);
 }
 
 /*

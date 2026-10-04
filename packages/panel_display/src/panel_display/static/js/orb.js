@@ -333,9 +333,11 @@ const BAR_FLOOR = 9;
 // The mark is drawn in the agent's own colour and the lane behind it is now a
 // wash of that same colour, so at `quiet` the mark is a tint on a tint. That
 // was survivable while the lane was near-neutral and is not now: measured on
-// the demo, Wayne's mark came out at 1.28:1 against its own disc and 1.45:1
-// against his lane, because amber's quiet step is a bright yellow and the
-// amber lane is sand. His orb read as empty from across the room.
+// the demo, the amber-accented agent's mark came out at 1.28:1 against its
+// own disc and 1.45:1 against its lane, because amber's quiet step is a
+// bright yellow and the amber lane is sand. That orb read as empty from
+// across the room. (Amber is no longer one of the three accents in use — see
+// tokens.css — but the fix it forced applies to all three.)
 //
 // Starting the walk part way toward the ink keeps the state language — it is
 // still one hue getting denser, never a different colour arriving — while
@@ -1091,10 +1093,11 @@ export class Orb {
     // The mark walks the same two densities, but from a floor rather than from
     // zero. It is the one element that has to stay legible against a lane now
     // washed in this agent's *own* colour, and at `quiet` it was not: amber's
-    // quiet is a bright yellow, so Wayne's mark at idle was a half-alpha
-    // yellow on a sand lane and his orb read as empty. Starting the walk part
-    // way toward the ink is the fix that keeps the state language — it is
-    // still one hue getting stronger, just never at its lightest.
+    // quiet is a bright yellow, so the amber-accented agent's mark at idle was
+    // a half-alpha yellow on a sand lane and that orb read as empty. Starting
+    // the walk part way toward the ink is the fix that keeps the state
+    // language — it is still one hue getting stronger, just never at its
+    // lightest.
     const markColour = mix(this.quiet, this.ink, MARK_INK_FLOOR + (1 - MARK_INK_FLOOR) * active);
 
     ctx.clearRect(0, 0, this.size, this.size);

@@ -73,15 +73,24 @@ TRANSCRIPT_LINES = 14
 # Deliberately *not* a persona field. `personas.py` is explicit that "a persona
 # field earns its place by being read" — by prompts, the floor, or a brain —
 # and a colour is read by none of them. It is a fact about this display, so it
-# lives with the display. The cost is that reordering `personas/` recolours the
-# panel; the names are on screen underneath, so nobody is misled, and it is
-# one line to pin if the show ever wants fixed colours.
+# lives with the display.
 #
 # Three hues rather than the brand's usual two-accent restraint because this is
 # categorical identity, not a chart — the same distinction `--cat-*` draws in
-# the playground's tokens.css. Amber is a ring and a bloom here, never a fill
-# behind text, so the brand rule that amber never pairs with light text holds.
-ACCENTS = ("jade", "cyan", "amber")
+# the playground's tokens.css.
+ACCENTS = ("amber", "jade", "purple")
+
+# Pinned, per the above: Wayne purple, Melia jade (green), Dexter amber,
+# requested as a triadic set (4 Oct), with Dexter moved from orange to amber
+# the same day — more yellow, less of an alarm colour now that red owns that
+# role (see `--accent-alarm`). Falls back to cast order for any agent not
+# named here, so adding a fourth persona still gets a colour instead of a
+# `KeyError`.
+AGENT_ACCENTS = {
+    "wayne": "purple",
+    "melia": "jade",
+    "dexter": "amber",
+}
 
 # Agent display states, weakest to strongest. Ordered because more than one can
 # be true at once — an invited agent is usually also thinking — and the wall
@@ -202,7 +211,7 @@ class WallState:
                 name=cast[agent_id].name,
                 job_title=cast[agent_id].job_title,
                 employer=cast[agent_id].employer,
-                accent=ACCENTS[index % len(ACCENTS)],
+                accent=AGENT_ACCENTS.get(agent_id, ACCENTS[index % len(ACCENTS)]),
             )
             for index, agent_id in enumerate(order)
         }
