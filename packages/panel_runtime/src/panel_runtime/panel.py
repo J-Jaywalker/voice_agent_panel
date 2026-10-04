@@ -493,30 +493,15 @@ class PanelRuntime:
             # Mic audio goes to VAD and to the STT that feeds the floor. Agent
             # audio goes to neither, ever.
             self._mic.put_nowait(mono.copy())
-            # While an agent's TTS audio is actually sounding out of the PA,
-            # it bleeds back into this mic — the room, not this code, mixes
-            # the two — and unducked that bleed has been diarised and
-            # misattributed as Ricky (see `BargeInConfig.human_mic_duck_db`'s
-            # docstring in config.py).
-            #
-            # Gated on `mixer.is_playing`, not on `state.speaking is not
-            # None`: the latter spans an agent's whole turn, including the
-            # gap before its first TTS chunk has arrived and any gap between
-            # sentences, and there is nothing bleeding into the mic during a
-            # gap. `is_playing` reflects the previous callback's block — one
-            # block, a few ms, behind "now" — which is `_callback`'s own
-            # granularity anyway.
-            #
-            # Only the STT feed is attenuated; the VAD queue above stays raw,
-            # so the reflex duck timing is untouched. This is a level, not a
-            # mute — Ricky talking over an agent still reaches STT above the
-            # attenuated floor.
-            speaking = self.state.speaking
-            stt_pcm = pcm
-            if speaking is not None and self.mixer.is_playing(speaking):
-                gain = 10 ** (self.barge_in.human_mic_duck_db / 20)
-                stt_pcm = (np.clip(mono * gain, -1.0, 1.0) * 32767).astype(np.int16)
-            self.stt.feed("ricky", stt_pcm.tobytes())
+            # Unattenuated, always. The PA does bleed back into this mic while
+            # an agent is speaking, but what that bleed must not do is get
+            # attributed to Ricky — and that is diarisation's job, downstream
+            # in `panel_runtime/stt.py`, which answers it per segment on the
+            # evidence rather than pre-emptively turning the signal down. A
+            # gain dip here would cost Ricky's own words whenever he talks
+            # over an agent, which is exactly when the floor most needs to
+            # hear him.
+            self.stt.feed("ricky", pcm.tobytes())
 
         if self._display is not None:
             self._mic_level = max(self._mic_level, float(np.sqrt(np.mean(np.square(mono)))))

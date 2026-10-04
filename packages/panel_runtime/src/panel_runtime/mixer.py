@@ -171,10 +171,9 @@ class AgentVoice:
         # Whether the *last* `render()` call actually pulled samples out of
         # `_buffer`, as opposed to returning silence because there was
         # nothing queued yet or the turn's audio has already drained. See
-        # `Mixer.is_playing` — this is what tells the mic-ducking gate in
-        # `panel.py` apart from `PanelState.speaking`, which spans an agent's
-        # whole turn including any gap before its first TTS chunk lands or
-        # between sentences.
+        # `Mixer.is_playing`. This is a finer-grained fact than
+        # `PanelState.speaking`, which spans an agent's whole turn including
+        # any gap before its first TTS chunk lands or between sentences.
         self.active = False
         # The last `_ring.size` post-gain samples, as a ring. Written by the
         # audio thread and read — never written — by the loop thread, which is
@@ -412,10 +411,9 @@ class Mixer:
 
         A plain read, not a peak-and-clear like `take_levels` — nothing else
         consumes `AgentVoice.active`, so there is no frame to steal by calling
-        this from more than one place. Reflects the *previous* callback's
-        block (one block, ~5-20ms, behind "now"), because `_callback` reads
-        it before calling `render()` for the current block — see
-        `PanelRuntime._callback`.
+        this from more than one place. A caller reading it from inside the
+        audio callback sees the *previous* block's answer (one block, ~5-20ms,
+        behind "now"), since `render()` for the current block has not run yet.
         """
         with self._lock:
             voice = self.voices.get(agent_id)

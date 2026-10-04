@@ -178,7 +178,7 @@ def test_drained_reports_when_a_turn_is_finished(mixer):
 
 
 def test_is_playing_is_false_before_any_audio_arrives(mixer):
-    """The gap before an agent's first TTS chunk lands — nothing to duck the mic for."""
+    """The gap before an agent's first TTS chunk lands — nothing is sounding yet."""
     assert not mixer.is_playing("dex")
     mixer.render(256)
     assert not mixer.is_playing("dex")
