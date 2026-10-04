@@ -81,11 +81,13 @@
  *   centre     the Speechmatics mark. Fixed geometry, never distorted — a
  *              logo that stretches with audio is a logo being misused. It
  *              deepens and takes a few percent of scale, nothing more.
- *   interior   the glass body: a core that lights from within, concentric
- *              pulse rings on syllable onsets, and the specular/refraction
- *              pair that makes it read as a lens rather than a disc. The
- *              rings are contained inside the disc on purpose, so they never
- *              collide with the corona.
+ *   interior   the glass body: two slow caustic pools drifting inside it
+ *              (`_caustics`, the idle indicator), a core that lights from
+ *              within, concentric pulse rings on syllable onsets, and over
+ *              all of it the refraction band and two speculars that make it
+ *              read as a lens rather than a disc (`_lens`). The rings are
+ *              contained inside the disc on purpose, so they never collide
+ *              with the corona.
  *   exterior   the waveform, outside the seat ring. This is the spectrum, as
  *              one continuous closed curve.
  *
@@ -104,18 +106,35 @@
  * is nothing at all, and a low-alpha stroke on paper is a stroke you cannot
  * see.
  *
- * So the light model is inverted rather than the palette. The orb is ink on
- * paper. Energy makes it **deepen and saturate**, not glow: the halo darkens
- * the paper around it, the bars get heavier and blacker, the mark fills in.
- * Do not "fix" this back to a glow — a glow is what it was, and on white it
- * disappeared.
+ * So the light model is inverted rather than the palette, and the orb on
+ * paper is ink rather than light. The corona and the mark still work exactly
+ * that way: energy makes them **deepen and saturate**, the bars get heavier
+ * and blacker, the mark fills in. Do not "fix" those back to a luminous
+ * glow — a glow is what they were, and on white they disappeared.
+ *
+ * **The body is the one exception, and it is a recent and deliberate one.**
+ * The lens now does glow when its agent speaks, because the brief asked for
+ * it and because the ground changed underneath the old answer: the orb used
+ * to sit on a lane painted in its own colour at 38%, and now it sits on a
+ * near-white frosted card. What makes that work is that the glow is built
+ * out of *chroma* rather than luminance — the centre walks from a pale tint
+ * to a saturated one (see `this.glow` in the constructor, and `core` /
+ * `coreAudio` in `ORB`). Saturation is the one axis near-white has as much
+ * headroom in as near-black does, which is why this is not the old mistake
+ * repeated. A *white* bloom on paper is still nothing at all, and adding one
+ * is still the thing not to do.
+ *
+ * So: the body lights, the signal inks. That split is load-bearing — the
+ * corona is the element that has to be read at 20m and a dark ring on a
+ * white card carries much further than a bright one.
  *
  * The mechanism is shared and the theme decides the direction, because
  * painting a colour at alpha over near-black is additive and painting the same
  * colour at alpha over near-white is subtractive, for free. What cannot be
  * shared is (a) how much alpha each theme's ground can absorb — white needs
- * roughly double — and (b) which side the disc's modelling comes from. Both
- * live in `ORB` below.
+ * roughly double — (b) which side the disc's modelling comes from, and (c)
+ * which step of the agent's scale the body lights *with*. All three live in
+ * `ORB` below.
  *
  *
  * ── Idle has a colour, so colour is not the state ────────────────────────
@@ -474,13 +493,21 @@ const RIPPLE_LIFE = 0.9;
  *   bar       a corona tick, at rest / added at full voice
  *   barBloom  the wide soft pass under the ticks, at full voice. The orb's
  *             only material effect — see `_waveform`.
- *   sheen     the specular wash across the top of the disc, in `--orb-sheen`.
- *             Light mode's is much the stronger of the two and that is not a
+ *   sheen     the diffuse wash across the top of the disc, in `--orb-sheen`.
+ *             Light mode's is the stronger of the two and that is not a
  *             mistake: there, the disc is a *tinted* body and Sage 1 is a
  *             genuinely lighter thing to lay over it, so the highlight has
  *             somewhere to go. On black the disc is already barely above the
  *             ground, and the same wash at the same strength turns it into a
  *             lit panel.
+ *   refract   the band of light hugging the inside of the rim — `_lens`.
+ *             The single most load-bearing number for "is this glass": it is
+ *             what a thick edge does to whatever is behind it.
+ *   spec      the two specular arcs, also `_lens`. A real highlight, as
+ *             opposed to `sheen`'s diffuse wash.
+ *   caustic   the two slow light pools drifting inside the body — `_caustics`.
+ *             This is the idle indicator, so it is at its strongest when the
+ *             agent has nothing to say.
  *   rim       the hairline just inside the seat ring, same colour. What
  *             separates "a disc" from "a disc with a thickness".
  *   mark      the Speechmatics mark, at rest / added at full voice
@@ -488,16 +515,30 @@ const RIPPLE_LIFE = 0.9;
  */
 const ORB = {
   light: {
-    halo: 0.15,
-    body: 0.18,
-    model: 0.05,
+    // See `this.glow` in the constructor. On paper the lens lights with the
+    // vivid identity step, not the dark text step.
+    glowQuiet: true,
+    halo: 0.26,
+    // 0.10, down from 0.18. That 0.18 was the body of a disc read against a
+    // lane painted in this same colour at 38%, where the disc had to hold its
+    // own against a saturated ground. It now sits on a near-white frosted
+    // card, where the same fill is the "grey blob" the orb was reported as:
+    // opaque enough that nothing behind it shows through, which is the one
+    // property glass cannot do without. At 0.10 the card's lit face and the
+    // agent's pool are visibly *through* the body, and the modelling, edge
+    // and caustics below are what give it a shape instead.
+    body: 0.10,
+    model: 0.04,
     modelY: 0.46,
     seat: 0.55,
     bar: 0.4,
     barGain: 0.6,
     barBloom: 0.09,
-    sheen: 0.5,
-    rim: 0.1,
+    sheen: 0.26,
+    refract: 0.34,
+    spec: 0.46,
+    caustic: 0.15,
+    rim: 0.2,
     // The meniscus fill between the seat ring and the curve, at full voice.
     // Light mode's ground takes roughly double the pigment dark's does, which
     // is the same ratio every other pair here sits at.
@@ -505,9 +546,25 @@ const ORB = {
     // The core: what the glass lights *with*. Light mode cannot glow — see
     // the note at the top — so there it is a deepening of the disc's centre
     // and the numbers are a pigment budget, not a luminance one.
-    core: 0.2,
-    coreAudio: 0.26,
-    inner: 0.14,
+    // 0.30 / 0.55, up from 0.20 / 0.26, and this pair is the "glow when
+    // talking" half of the brief. On white a glow cannot be made of
+    // luminance — the long note at the top still stands — so it is made of
+    // *chroma*: the lens walks from a pale mint to a saturated green as the
+    // agent speaks, under a specular that does not move. Adding saturation
+    // to near-white is as visible as adding light to near-black, and unlike
+    // a white bloom it survives being painted on paper.
+    //
+    // Both roughly doubled from the figures they had as a *subtractive*
+    // core. That is not a free choice either: alpha and perceived strength
+    // are not the same curve on the two grounds. 0.26 of jade 11 on black is
+    // most of the way to the vivid step, because the ground contributes
+    // nothing; 0.26 of jade 9 on near-white is a pastel, because the ground
+    // contributes three quarters of every pixel. Matching the *look* costs
+    // about twice the alpha, which is the same ratio every other pair in
+    // this table sits at.
+    core: 0.3,
+    coreAudio: 0.55,
+    inner: 0.16,
     // 0.78, not the 0.5 this was while the lanes were near-neutral. Half the
     // mark's pixels were the disc showing through, which is why deepening its
     // *colour* alone moved the measured contrast by 0.1 and no further. The
@@ -519,6 +576,9 @@ const ORB = {
     ripple: 0.3,
   },
   dark: {
+    // On black the ink step *is* the vivid one, so lighting and drawing are
+    // the same colour and there is nothing to split.
+    glowQuiet: false,
     halo: 0.26,
     body: 0.05,
     model: 0.055,
@@ -528,10 +588,19 @@ const ORB = {
     barGain: 0.68,
     barBloom: 0.07,
     sheen: 0.09,
-    rim: 0.18,
+    // Dark's lens is built almost entirely out of its edge, which is the same
+    // trade every other dark token here makes: on near-black there is no
+    // body to shade, so the refraction band and the specular are most of what
+    // says "thickness". The caustics stay quieter than light's — a drifting
+    // pool of light on black is a lava lamp two steps before it is glass, and
+    // the brand rules out exactly that register.
+    refract: 0.22,
+    spec: 0.3,
+    caustic: 0.09,
+    rim: 0.22,
     menisc: 0.09,
     core: 0.3,
-    coreAudio: 0.42,
+    coreAudio: 0.48,
     inner: 0.2,
     mark: 0.34,
     markGain: 0.62,
@@ -678,6 +747,30 @@ export class Orb {
     this.model = readColour(lane, "--orb-model");
     this.sheen = readColour(lane, "--orb-sheen");
 
+    /*
+     * What the lens lights *with*, as opposed to what the orb draws *in*.
+     *
+     * The two are the same colour on black and deliberately different on
+     * paper, and getting this wrong is what made the first pass at "glow when
+     * talking" come out as a dirty grey dish.
+     *
+     * On black, `ink` is the vivid step (jade 9) and lighting with it is
+     * simply turning the lamp up. On paper, `ink` is the *text* step (jade
+     * 11) — a dark teal, chosen so 50px of it is readable on a white card.
+     * Flooding the middle of a pale lens with a dark teal at rising alpha is
+     * a perfectly good way to say "louder" and a terrible way to say "lit":
+     * the orb got darker and greyer exactly when it was supposed to come
+     * alive. `quiet` is the vivid step there (jade 9, the identity fill), so
+     * on paper the core lights with that instead and the centre walks from a
+     * pale mint to a saturated green while the specular above it holds still.
+     *
+     * The corona is left on `ink` in both themes and that split is the
+     * design, not an oversight: the body is the thing that lights, the
+     * spectrum is the thing that has to be *read*, and on a white card a
+     * dark ring is legible from much further away than a bright one.
+     */
+    this.glow = P.glowQuiet ? this.quiet : this.ink;
+
     // Three arrays, one entry per band, and the split is worth stating:
     //   wire  — the last spectrum that arrived, already normalised. Replaced
     //           wholesale by `setBands`, never filtered — the filtering is a
@@ -716,6 +809,19 @@ export class Orb {
 
     this.size = 0;
     this.scale = 0;
+    /*
+     * The lens surface's four gradients, built by `_buildLens` from
+     * `resize`. Null until then.
+     *
+     * Both callers resize before the first frame — `buildLanes` is
+     * synchronous and ends in `fitStage`, and the probe resizes on the line
+     * after construction — so this should never be read while null. It is
+     * guarded in `_lens` anyway rather than left to throw: an exception
+     * inside the frame loop takes all three orbs down for the rest of the
+     * show, and a lens-less orb is a legible orb. Same reasoning as the
+     * reconnect-forever socket.
+     */
+    this.lens = null;
   }
 
   setState(name) {
@@ -778,6 +884,43 @@ export class Orb {
     // Everything below draws in stage pixels and lets the transform handle
     // the backing resolution.
     this.ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    this._buildLens();
+  }
+
+  /**
+   * Build the lens surface's gradients once.
+   *
+   * Everything `_lens` draws is a function of the centre and `R` alone — it
+   * is deliberately independent of audio and of state (see the note there),
+   * which means all four of its gradients are constant for the life of a
+   * canvas size. Rebuilding them every frame was three orbs × four gradient
+   * objects × 60fps of garbage for an image that never changes.
+   *
+   * Called from `resize`, which is the only thing that can invalidate them,
+   * and which `fitStage` already calls on load and on every window resize.
+   * `CanvasGradient` is not bound to a transform, so the scale change
+   * `resize` makes above does not affect these — they are in stage pixels
+   * like everything else in this file.
+   */
+  _buildLens() {
+    const c = this.size / 2;
+
+    const ref = this.ctx.createRadialGradient(c, c, R * 0.68, c, c, R);
+    ref.addColorStop(0, rgba(this.sheen, 0));
+    ref.addColorStop(0.62, rgba(this.sheen, P.refract * 0.18));
+    ref.addColorStop(0.9, rgba(this.sheen, P.refract));
+    ref.addColorStop(1, rgba(this.sheen, P.refract * 0.42));
+
+    this.lens = {
+      refract: ref,
+      // Upper left, the key. Short of the top so it reads as light arriving
+      // from one side rather than as a ring that failed to close.
+      key: this._specularGradient(c, R * 0.9, -2.72, -1.5, P.spec),
+      // Lower right, the back surface. Thinner, dimmer, and deliberately
+      // not the mirror image — a symmetrical pair reads as a drawing of
+      // glass rather than as glass.
+      back: this._specularGradient(c, R * 0.88, 0.42, 1.12, P.spec * 0.3),
+    };
   }
 
   /**
@@ -924,8 +1067,16 @@ export class Orb {
 
     this._halo(ctx, c, level, active);
     this._disc(ctx, c);
+    this._caustics(ctx, c, t, active);
     this._core(ctx, c, level, active);
     this._pulseRings(ctx, c, colour, active);
+    // The surface of the glass, so it goes over everything inside the glass
+    // — body, caustics, core, rings — and under the seat ring and the mark.
+    // Physically a specular belongs on top of the logo too, since the logo is
+    // *in* the lens and the highlight is *on* it; it is kept under because a
+    // bright arc crossing the Speechmatics mark is the mark being decorated,
+    // and that is not a trade this wall gets to make.
+    this._lens(ctx, c);
     this._seat(ctx, c);
     this._waveform(ctx, c, t, colour, active);
     this._mark(ctx, c, level, markColour, active);
@@ -946,9 +1097,9 @@ export class Orb {
     // The outer stop lands exactly on the canvas edge at zero alpha. Anything
     // still visible there would clip against the next lane as a hard square.
     const g = ctx.createRadialGradient(c, c, R * 0.15, c, c, c - 5);
-    g.addColorStop(0, rgba(this.ink, P.halo * strength));
-    g.addColorStop(0.42, rgba(this.ink, P.halo * 0.38 * strength));
-    g.addColorStop(1, rgba(this.ink, 0));
+    g.addColorStop(0, rgba(this.glow, P.halo * strength));
+    g.addColorStop(0.42, rgba(this.glow, P.halo * 0.38 * strength));
+    g.addColorStop(1, rgba(this.glow, 0));
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, this.size, this.size);
   }
@@ -985,18 +1136,20 @@ export class Orb {
     ctx.fill();
 
     /*
-     * The sheen, and the one thing on this orb that is there to say
-     * "material" rather than to say anything about the panel.
+     * The diffuse sheen: a vertical wash from the top of the disc, dying out
+     * by its middle, reusing the circle already on the context as a clip.
      *
-     * A vertical wash from the top of the disc, dying out by its middle,
-     * reusing the circle already on the context as a clip. Linear and not
-     * radial on purpose: a radial highlight is a hotspot, which is a gloss,
-     * and the brand rules gloss out. A linear fade off the top edge is what a
-     * flat translucent surface does under a diffuse room light, and it stops
-     * well short of the mark so it never sits behind the logo.
+     * Linear and not radial on purpose — a radial highlight is a hotspot,
+     * which is a gloss, and the brand rules gloss out. This is what a flat
+     * translucent surface does under a diffuse room light, and it stops well
+     * short of the mark so it never sits behind the logo.
      *
-     * It is the other half of the modelling gradient above, not a
-     * replacement: that one gives the disc a body, this one gives it a face.
+     * Halved when `_lens` arrived. It was carrying two jobs at 0.5: the
+     * diffuse face *and* a stand-in for a specular the orb did not have. A
+     * wash strong enough to read as a highlight is also strong enough to make
+     * the body opaque, which is most of how a translucent disc turns into a
+     * grey blob. The highlight is now a real one with an edge to it (`spec`),
+     * so this can go back to being only the diffuse term.
      */
     const s = ctx.createLinearGradient(c, c - R, c, c + R * 0.1);
     s.addColorStop(0, rgba(this.sheen, P.sheen));
@@ -1016,6 +1169,182 @@ export class Orb {
     ctx.strokeStyle = rim;
     ctx.lineWidth = 3;
     ctx.stroke();
+  }
+
+  /**
+   * Two slow pools of light drifting inside the body. The idle indicator.
+   *
+   * This is the answer to "what is this orb doing when its agent has nothing
+   * to say", and the constraint on it is that the answer must be *almost
+   * nothing*. An idle orb that pulses, spins or breathes visibly is three
+   * agents competing for attention with the person actually talking; an idle
+   * orb that is completely static is a frozen frame on a 12m wall, which is
+   * the problem `breath` in `_waveform` was already solving for the corona.
+   *
+   * So: light that has clearly moved if you look back in ten seconds, and
+   * that you cannot catch moving if you watch it. The two pools orbit at
+   * 23 and 31 seconds — incommensurate, so the pair never returns to the
+   * same arrangement within any plausible length of show — and each is
+   * squashed and rotated on its own slower cycle, which is the "distorted"
+   * half of it. The distortion is what keeps them from reading as two
+   * headlights: a circular blob of light inside a circle is a lamp, and an
+   * ellipse that is slowly changing its aspect is a reflection on something
+   * curved.
+   *
+   * **Strongest at idle and damped when the agent speaks**, which is the
+   * opposite of everything else on this orb. The core is a far brighter
+   * light source than these are; leaving them at full strength under it
+   * would read as mottling on the glass rather than as caustics in it.
+   *
+   * Cost is two radial gradients and a clip per orb per frame, which is
+   * within what `_core` already spends. Nothing here allocates.
+   */
+  _caustics(ctx, c, t, active) {
+    const alpha = P.caustic * (1 - 0.55 * active);
+    if (alpha < 0.004) return;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(c, c, R, 0, TAU);
+    ctx.clip();
+
+    /*
+     * Two pools: the leading one larger and further out, the second smaller
+     * and travelling the other way, so they cross rather than orbit in
+     * convoy.
+     *
+     * Both are kept well off centre, and the radii are smaller than the
+     * first attempt at this by about a third. At `dist 0.46` / `rx 0.78`
+     * each pool reached across the middle of the lens and the pair spent
+     * most of their cycle overlapping behind the mark, which did not read as
+     * two lights moving — it read as a single pale smudge that happened to
+     * change shape. Light pools have to be visibly *apart* from each other
+     * and from the logo, or the eye files them as dirt on the glass.
+     */
+    this._pool(ctx, c, t / 23, 0.54, 0.5, 0.34, t / 37, alpha);
+    this._pool(ctx, c, -t / 31 + 2.1, 0.44, 0.36, 0.26, -t / 29, alpha * 0.8);
+
+    ctx.restore();
+  }
+
+  /**
+   * One caustic pool. `turn` and `spin` are in revolutions, not radians —
+   * they are divided out of `t` by a period in seconds at the call site, so
+   * the numbers there read as "once every 23 seconds" rather than as a rate.
+   *
+   * The ellipse is produced by scaling the context around the pool's centre,
+   * so a unit-radius radial gradient becomes an ellipse with a soft edge for
+   * free; `wobble` modulates its aspect on a third cycle, which is the
+   * distortion.
+   */
+  _pool(ctx, c, turn, dist, rx, ry, spin, alpha) {
+    const a = turn * TAU;
+    const wobble = 1 + 0.22 * Math.sin(turn * TAU * 1.7);
+    ctx.save();
+    ctx.translate(c + Math.cos(a) * R * dist, c + Math.sin(a) * R * dist);
+    ctx.rotate(spin * TAU);
+    ctx.scale(R * rx * wobble, R * ry / wobble);
+    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+    g.addColorStop(0, rgba(this.sheen, alpha));
+    g.addColorStop(0.55, rgba(this.sheen, alpha * 0.34));
+    g.addColorStop(1, rgba(this.sheen, 0));
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(0, 0, 1, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  /**
+   * The surface of the lens: the refraction band and the two speculars.
+   *
+   * This is the pass that answers "why is this glass and not a tinted
+   * circle", and it is almost all in the first of the two.
+   *
+   * **The refraction band.** A thick piece of glass does not pass what is
+   * behind it straight through — near the rim the viewing angle steepens and
+   * the background is compressed into a bright band hugging the edge. That
+   * band is the single most recognisable thing about every lens anyone has
+   * ever looked at, and it is the reason a flat fill with a highlight on it
+   * reads as a sticker no matter how good the highlight is. Drawn as a
+   * radial gradient that is nothing until 70% of the way out and then ramps
+   * hard, with a slight step back at the very edge, because the compression
+   * peaks just *inside* the rim rather than at it.
+   *
+   * **The speculars.** Two, and the second one matters more than it looks.
+   * A single highlight reads as a shiny disc; a bright primary with a weaker
+   * secondary roughly opposite it is what a transparent body does, because
+   * the second one is light that has gone through the glass and come off the
+   * *back* surface. It is the cue that says "you can see into this" without
+   * anything actually being visible through it.
+   *
+   * Both are arcs rather than blobs — a highlight on a sphere is a blob, a
+   * highlight on a lens is a sliver following the rim — and both are tapered
+   * to nothing at their ends by a gradient along the arc's own chord, so
+   * neither has a visible start or stop. A specular with ends is a painted
+   * line.
+   *
+   * The whole pass is independent of audio and of state. Light does not get
+   * brighter because somebody is speaking, and the one thing holding this
+   * composition together while the core swings through its range is that the
+   * surface above it never moves.
+   */
+  _lens(ctx, c) {
+    if (!this.lens) return;
+    ctx.save();
+
+    ctx.beginPath();
+    ctx.arc(c, c, R, 0, TAU);
+    ctx.clip();
+    ctx.fillStyle = this.lens.refract;
+    ctx.fillRect(c - R, c - R, R * 2, R * 2);
+
+    // Out of the clip, back into a clean state. The speculars sit *on* the
+    // rim rather than inside it, so clipping them to the disc would shave
+    // their outer half off.
+    ctx.restore();
+
+    // One `save` for both arcs, for `lineCap` alone: it is the one context
+    // property this file sets anywhere, and leaving it round would silently
+    // change the ends of every open stroke drawn after it.
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.strokeStyle = this.lens.key;
+    ctx.lineWidth = 11;
+    ctx.beginPath();
+    ctx.arc(c, c, R * 0.9, -2.72, -1.5);
+    ctx.stroke();
+    ctx.strokeStyle = this.lens.back;
+    ctx.lineWidth = 7;
+    ctx.beginPath();
+    ctx.arc(c, c, R * 0.88, 0.42, 1.12);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /**
+   * The taper for one specular arc: a linear gradient laid along the chord
+   * between the arc's two ends, transparent at both and solid across the
+   * middle.
+   *
+   * Stroking an arc with a gradient aligned to its own chord is the cheapest
+   * honest taper there is — one gradient, no per-segment loop — and because
+   * the chord is always shorter than the arc the ends fade slightly early,
+   * which is the right direction to err. A specular with visible ends is a
+   * painted line.
+   */
+  _specularGradient(c, radius, from, to, alpha) {
+    const g = this.ctx.createLinearGradient(
+      c + radius * Math.cos(from),
+      c + radius * Math.sin(from),
+      c + radius * Math.cos(to),
+      c + radius * Math.sin(to)
+    );
+    g.addColorStop(0, rgba(this.sheen, 0));
+    g.addColorStop(0.35, rgba(this.sheen, alpha));
+    g.addColorStop(0.62, rgba(this.sheen, alpha));
+    g.addColorStop(1, rgba(this.sheen, 0));
+    return g;
   }
 
   /**
@@ -1061,18 +1390,36 @@ export class Orb {
     ctx.arc(c, c, R, 0, TAU);
     ctx.clip();
 
-    const bloom = ctx.createRadialGradient(c, c, 0, c, c, R * 0.92);
-    bloom.addColorStop(0, rgba(this.ink, (P.core + P.coreAudio * level) * active));
-    bloom.addColorStop(0.55, rgba(this.ink, P.core * 0.3 * active));
-    bloom.addColorStop(1, rgba(this.ink, 0));
+    /*
+     * The bloom's falloff is deliberately shallow across the first two
+     * thirds, and that is a fix rather than a preference.
+     *
+     * It used to be a steep gradient — full at the centre, 30% by 0.55R,
+     * nothing by the rim. On paper that put almost all of the glow *under
+     * the Speechmatics mark*, which is 228px wide and painted last: by the
+     * radius where the logo stops covering it the alpha had already fallen
+     * to around 0.06, so a core nominally at 0.40 arrived on screen as a
+     * barely-tinted ring. Speaking read as "slightly greyer" rather than as
+     * lit, and raising the peak only lit the part nobody can see.
+     *
+     * Holding three quarters of the value out to 0.45R and most of a third
+     * to 0.75R puts the colour in the annulus that is actually visible,
+     * between the mark and the refraction band.
+     */
+    const peak = (P.core + P.coreAudio * level) * active;
+    const bloom = ctx.createRadialGradient(c, c, 0, c, c, R * 0.95);
+    bloom.addColorStop(0, rgba(this.glow, peak));
+    bloom.addColorStop(0.45, rgba(this.glow, peak * 0.78));
+    bloom.addColorStop(0.75, rgba(this.glow, peak * 0.34));
+    bloom.addColorStop(1, rgba(this.glow, 0));
     ctx.fillStyle = bloom;
     ctx.fillRect(c - R, c - R, R * 2, R * 2);
 
     // The hot centre, sized to sit just inside the mark so the logo is lit
     // from behind rather than washed out.
     const hot = ctx.createRadialGradient(c, c, 0, c, c, MARK_SIZE * 0.42);
-    hot.addColorStop(0, rgba(this.ink, P.coreAudio * lit * 0.8));
-    hot.addColorStop(1, rgba(this.ink, 0));
+    hot.addColorStop(0, rgba(this.glow, P.coreAudio * lit * 0.8));
+    hot.addColorStop(1, rgba(this.glow, 0));
     ctx.fillStyle = hot;
     ctx.fillRect(c - R, c - R, R * 2, R * 2);
 

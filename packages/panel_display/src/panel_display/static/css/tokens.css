@@ -113,7 +113,32 @@
    * column rather than the row it used to budget for — a taller, narrower
    * space with the same two claimants.
    */
-  --transcript-body-h: 900px;
+  --transcript-body-h: 1156px;
+
+  /*
+   * The transcript lane's bottom padding, in place of `--foot-clear`.
+   *
+   * **This lane spends the reserved foot and the three agent lanes do not,
+   * and that is a real trade rather than an oversight.** `--foot-clear`
+   * keeps readable content out of the bottom metre because heads and music
+   * stands eat it; the transcript is readable content, and it is also
+   * bottom-anchored, so the lines that land lowest are the *newest* ones.
+   *
+   * What bought the change is that the alternative was worse in practice.
+   * With the cards running to the bottom of the wall, reserving 320px here
+   * left the feed finishing a third of the way up its own card with a
+   * quarter of the wall's height empty beneath it — and an empty third of a
+   * 3m column reads as the feed having failed rather than as clearance.
+   *
+   * 64px matches the card's own inner padding, so the last bubble sits the
+   * same distance off the card's bottom edge as it does off its sides.
+   *
+   * **This is the first number to move at load-in**, once there is a real
+   * room and real sightlines to look down — it and `--transcript-body-h`
+   * move together, and they must sum with the 220 above them (80 padding +
+   * 44 eyebrow + 40 gap + 56 cue foot) to exactly `--stage-h`.
+   */
+  --transcript-foot: 64px;
 
   /*
    * The bottom metre is reserved and stays empty.

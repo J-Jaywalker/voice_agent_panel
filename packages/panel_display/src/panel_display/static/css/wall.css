@@ -59,19 +59,25 @@
  *     80  top padding
  *     44  eyebrow
  *     40  gap
- *    900  body (--transcript-body-h): the bubble feed, a 24px gap, and the
+ *   1156  body (--transcript-body-h): the bubble feed, a 24px gap, and the
  *          in-progress bubble(s) under it
  *     56  cue foot
- *    320  bottom padding (--foot-clear), deliberately empty
+ *     64  bottom padding (--transcript-foot)
  *   ────
  *   1440  = --stage-h, exactly.
  *
- * The body's 900 is not divided between the feed and the in-progress row at a
- * fixed ratio, and that is the point of it being one budget: whatever is being
- * said right now takes as much of it as it needs, and the finalised bubbles
- * above give up the difference by sliding off the top through the mask.
- * TRANSCRIPT_LINES in wall.py still buffers more lines than fit — it always
- * over-provided, and the mask crops to whatever is left over.
+ * **This lane does not reserve `--foot-clear` and the agent lanes do.** The
+ * body grew by the 256px difference when the cards started reaching the
+ * bottom of the wall; see `--transcript-foot` in tokens.css for the trade,
+ * which is a real one — this feed is bottom-anchored, so its lowest line is
+ * its newest.
+ *
+ * The body's 1156 is not divided between the feed and the in-progress row at
+ * a fixed ratio, and that is the point of it being one budget: whatever is
+ * being said right now takes as much of it as it needs, and the finalised
+ * bubbles above give up the difference by sliding off the top through the
+ * mask. TRANSCRIPT_LINES in wall.py buffers 14, which still over-provides
+ * against the 7-10 bubbles that fit, and the mask crops the remainder.
  */
 
 *,
@@ -228,6 +234,14 @@ body {
 .lane--transcript {
   align-items: stretch;
   position: relative;
+  /*
+   * The one lane that does not reserve `--foot-clear`. See
+   * `--transcript-foot` in tokens.css for what that buys and what it costs;
+   * the short version is that the feed is bottom-anchored, so reserving the
+   * foot here left the newest line a third of the way up an otherwise empty
+   * card.
+   */
+  padding-bottom: var(--transcript-foot);
   /* Same reason as `.lane--agent`: the card is a negative-z pseudo-element
      and needs this lane to be the stacking context it sits inside. */
   isolation: isolate;
