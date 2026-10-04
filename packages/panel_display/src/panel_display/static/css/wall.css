@@ -594,29 +594,60 @@ body {
    * `box-shadow` only, both composited, neither re-rasterising the frost.
    */
   transition:
-    transform var(--dur-slow) var(--ease),
-    box-shadow var(--dur-slow) var(--ease);
+    transform var(--dur-fill) var(--ease),
+    box-shadow var(--dur-fill) var(--ease);
 }
 
 /*
- * State. The card deepens and rises when its agent is on the PA.
+ * State. The card floods with its agent's colour when they are on the PA.
  *
  * A second layer on exactly the card's geometry rather than a change to the
- * card's own background, because opacity on a separate element is the only
- * version of this that transitions without re-rasterising the frost
- * underneath it. Zero at rest, so it contributes nothing to the identity
- * under it until there is something to say.
+ * card's own background, because animating a separate element is the only
+ * version of this that does not re-rasterise the frost underneath it.
  *
  * `--accent-quiet` — the undiluted identity fill the card's tint is a
- * thinning of, laid back over it at a fraction. So the cue is literally "more
- * of this agent's colour". `quiet` and not `--accent`, even though the ink is
- * darker and would give a bigger swing, because the ink is a different *hue*
- * from the tint on two of the three scales: amber's ink is a brown and cyan's
- * is a teal, and a card that changes hue when its agent starts talking reads
- * as a different agent, which is the one thing this surface must never say.
+ * thinning of, laid back over it. So the cue is literally "much more of this
+ * agent's colour". `quiet` and not `--accent`, even though the ink is darker
+ * and would give a bigger swing, because the ink is a different *hue* from
+ * the tint on two of the three scales: amber's ink is a brown and cyan's is
+ * a teal, and a card that changes hue when its agent starts talking reads as
+ * a different agent, which is the one thing this surface must never say.
  *
- * Top-weighted, so the deepening reads as coming off the bar and down the
- * card.
+ * ── The wipe ────────────────────────────────────────────────────────────
+ *
+ * `scaleY` from the top edge, so the colour arrives *out of the identity
+ * bar* and runs down the card. That origin is the whole reason it reads as
+ * one gesture rather than as a rectangle appearing: the bar is already this
+ * agent's colour at full chroma and never moves, so the fill looks like it
+ * came from somewhere.
+ *
+ * `transform` and not `clip-path`, `height` or `background-size`, all of
+ * which would do the same thing visually. A transform is composited — the
+ * layer is painted once and the GPU squashes it — where the other three
+ * repaint a 904x1384 card every frame of the wipe. On the venue machine,
+ * with three orbs already owning the frame budget, that is the difference
+ * between a fill and a stutter.
+ *
+ * The cost of `scaleY` is that it squashes the layer's own gradient and its
+ * corner radius along with everything else, so during the wipe the ramp is
+ * compressed into the leading band and the top corners are briefly flatter
+ * than the card's. Both are *why it looks like a fill*: the compressed ramp
+ * is a soft leading edge that stretches out as it travels, which is what a
+ * liquid doing this would do. The gradient reaches `transparent` at its own
+ * foot precisely so that leading edge has nothing hard in it.
+ *
+ * ── Asymmetric in and out ───────────────────────────────────────────────
+ *
+ * In: the transform wipes over `--dur-fill` while opacity comes up in half
+ * that, so the colour is already present in the leading band rather than
+ * ghosting in behind it.
+ *
+ * Out: opacity alone, over `--dur-clear`, with the transform held at full
+ * and reset only *after* the fade has finished (the `0ms` step delayed by
+ * `--dur-clear`). Retracting the wipe upward on the way out would be a
+ * second gesture the audience has to read, and what it would say — "the
+ * colour is going back into the bar" — is not what happened. The agent
+ * stopped. The colour goes.
  */
 .lane--agent::after {
   content: "";
@@ -624,14 +655,32 @@ body {
   inset: var(--card-top) var(--card-side) var(--card-foot);
   z-index: -1;
   border-radius: var(--radius-card);
-  background: linear-gradient(to bottom, var(--accent-quiet) 0%, transparent 76%);
+  /*
+   * Top-weighted, and it must still reach `transparent` before the name.
+   * The plate reads off clean white (see `.lane--agent`'s ambient pool) and
+   * that survives the loudest moment on the wall only because this layer is
+   * gone by the time it gets there.
+   */
+  background: linear-gradient(to bottom,
+      color-mix(in srgb, var(--accent-quiet) 38%, transparent) 0%,
+      color-mix(in srgb, var(--accent-quiet) 24%, transparent) 42%,
+      color-mix(in srgb, var(--accent-quiet) 10%, transparent) 74%,
+      transparent 100%);
+  transform: scaleY(0);
+  transform-origin: top center;
   opacity: 0;
-  transition: opacity var(--dur-slow) var(--ease);
+  transition:
+    opacity var(--dur-clear) var(--ease),
+    transform 0ms linear var(--dur-clear);
 }
 
 .lane--agent[data-state="speaking"]::after,
 .lane--agent[data-state="ducked"]::after {
-  opacity: 0.16;
+  transform: scaleY(1);
+  opacity: 1;
+  transition:
+    transform var(--dur-fill) var(--ease),
+    opacity calc(var(--dur-fill) / 2) linear;
 }
 
 /*

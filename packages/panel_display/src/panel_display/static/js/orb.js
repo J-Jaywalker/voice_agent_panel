@@ -518,6 +518,9 @@ const ORB = {
     // See `this.glow` in the constructor. On paper the lens lights with the
     // vivid identity step, not the dark text step.
     glowQuiet: true,
+    // See `this.shade`. On paper the lens is shaded with its own ink, not
+    // with near-black.
+    shadeInk: true,
     halo: 0.26,
     // 0.10, down from 0.18. That 0.18 was the body of a disc read against a
     // lane painted in this same colour at 38%, where the disc had to hold its
@@ -527,17 +530,23 @@ const ORB = {
     // property glass cannot do without. At 0.10 the card's lit face and the
     // agent's pool are visibly *through* the body, and the modelling, edge
     // and caustics below are what give it a shape instead.
-    body: 0.10,
-    model: 0.04,
+    body: 0.3,
+    model: 0.05,
     modelY: 0.46,
     seat: 0.55,
     bar: 0.4,
     barGain: 0.6,
     barBloom: 0.09,
-    sheen: 0.26,
-    refract: 0.34,
+    // 0.10, down from 0.26. A near-white wash is the most effective
+    // desaturator on this orb: measured on the wall, a 0.10 tint under a
+    // 0.26 sheen plus the caustics and the refraction band came out at a
+    // chroma of 23 against the card's own 13 — a tinted white, which is a
+    // grey blob with extra steps. The diffuse term only has to say "there
+    // is a face here"; the specular arcs say the rest.
+    sheen: 0.1,
+    refract: 0.3,
     spec: 0.46,
-    caustic: 0.15,
+    caustic: 0.1,
     rim: 0.2,
     // The meniscus fill between the seat ring and the curve, at full voice.
     // Light mode's ground takes roughly double the pigment dark's does, which
@@ -577,10 +586,17 @@ const ORB = {
   },
   dark: {
     // On black the ink step *is* the vivid one, so lighting and drawing are
-    // the same colour and there is nothing to split.
+    // the same colour and there is nothing to split. And `--orb-model` is
+    // near-white there, so the modelling gradient is a top-light rather than
+    // an underside shadow — light, which has no hue to get wrong.
     glowQuiet: false,
+    shadeInk: false,
     halo: 0.26,
-    body: 0.05,
+    // Also a rim density rather than a flat fill now. 0.14 against light's
+    // 0.30 is the usual ratio inverted for the usual reason: on near-black
+    // the same pigment buys far more contrast, and a lens whose edge is too
+    // dense stops being glass and becomes a lit ring.
+    body: 0.14,
     model: 0.055,
     modelY: -0.42,
     seat: 0.45,
@@ -770,6 +786,24 @@ export class Orb {
      * dark ring is legible from much further away than a bright one.
      */
     this.glow = P.glowQuiet ? this.quiet : this.ink;
+
+    /*
+     * What the lens is *shaded* with — the modelling gradient in `_disc` and
+     * the inner edge in `_core`.
+     *
+     * `--orb-model` is Sage 12, which is near-black on paper, and shading a
+     * coloured lens with near-black is the other half of why it came out
+     * grey. A shadow inside tinted glass is not grey; it is a *denser* pour
+     * of the same tint, because what is making it dark is more glass. So on
+     * paper this is the agent's own ink — a dark teal for jade, a brown for
+     * amber — and the lens gets deeper in its own hue rather than dirtier.
+     *
+     * Dark keeps Sage 12, where it is near-*white* and `modelY` is negative:
+     * there the same gradient is a top-light rather than an underside
+     * shadow, and the thing being added is light, which has no hue to get
+     * wrong.
+     */
+    this.shade = P.shadeInk ? this.ink : this.model;
 
     // Three arrays, one entry per band, and the split is worth stating:
     //   wire  — the last spectrum that arrived, already normalised. Replaced
@@ -1125,13 +1159,37 @@ export class Orb {
   _disc(ctx, c) {
     ctx.beginPath();
     ctx.arc(c, c, R, 0, TAU);
-    ctx.fillStyle = rgba(this.quiet, P.body);
+    /*
+     * The body, and the thing that makes it glass rather than a swatch is
+     * that it is **denser at the rim than at the centre**.
+     *
+     * That is not a stylistic gradient, it is what coloured glass does: you
+     * are looking through a few millimetres of it in the middle of a lens
+     * and through several centimetres at the edge, so the edge carries far
+     * more of the tint. Getting this wrong in the obvious direction — one
+     * flat alpha across the whole disc — is most of why the orb read as a
+     * blob. A flat tint has no interior, so the only thing distinguishing it
+     * from a circle of paint is whatever is laid on top, and what was laid
+     * on top here was three separate near-white washes.
+     *
+     * **`P.body` is the rim density now, not the fill.** It went 0.10 to
+     * 0.30 with that change of meaning, which is not a tripling of the
+     * pigment — the centre sits at 0.30 of it, so the middle of the lens is
+     * *lighter* than the flat 0.10 it replaced and the orb is more
+     * see-through, not less.
+     */
+    const body = ctx.createRadialGradient(c, c, 0, c, c, R);
+    body.addColorStop(0, rgba(this.quiet, P.body * 0.3));
+    body.addColorStop(0.5, rgba(this.quiet, P.body * 0.44));
+    body.addColorStop(0.84, rgba(this.quiet, P.body * 0.82));
+    body.addColorStop(1, rgba(this.quiet, P.body));
+    ctx.fillStyle = body;
     ctx.fill();
 
     const g = ctx.createRadialGradient(c, c + R * P.modelY, R * 0.1, c, c, R * 1.08);
-    g.addColorStop(0, rgba(this.model, P.model));
-    g.addColorStop(0.55, rgba(this.model, P.model * 0.33));
-    g.addColorStop(1, rgba(this.model, 0));
+    g.addColorStop(0, rgba(this.shade, P.model));
+    g.addColorStop(0.55, rgba(this.shade, P.model * 0.33));
+    g.addColorStop(1, rgba(this.shade, 0));
     ctx.fillStyle = g;
     ctx.fill();
 
@@ -1426,8 +1484,8 @@ export class Orb {
     // The inner shadow. Zero until most of the way out, then rising sharply —
     // a thickness at the edge of a lens, not a vignette over the whole face.
     const edge = ctx.createRadialGradient(c, c, R * 0.6, c, c, R);
-    edge.addColorStop(0, rgba(this.model, 0));
-    edge.addColorStop(1, rgba(this.model, P.inner * (0.5 + 0.5 * active)));
+    edge.addColorStop(0, rgba(this.shade, 0));
+    edge.addColorStop(1, rgba(this.shade, P.inner * (0.5 + 0.5 * active)));
     ctx.fillStyle = edge;
     ctx.fillRect(c - R, c - R, R * 2, R * 2);
 

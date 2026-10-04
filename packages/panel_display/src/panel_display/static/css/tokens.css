@@ -250,6 +250,26 @@
      640ms here had bubbles still arriving after the room had moved on; 380ms
      is settled before the following line needs the space. */
   --dur-mid: 380ms;
+
+  /*
+   * The speaking card's colour fill — `.lane--agent::after`.
+   *
+   * Deliberately the fastest thing on the wall, and faster than it sounds:
+   * this is a 4.3m-tall wipe, so 340ms is about 12 metres a second. It has
+   * to be. The fill is answering "who just started talking", and that
+   * question has already been answered by the voice coming out of the PA —
+   * a wipe that takes half a second is a caption arriving after the line it
+   * captions. At `--dur-slow` the colour was still moving while the agent
+   * was into their second sentence.
+   *
+   * The clear is quicker again (`--dur-clear`). Arrivals deserve a gesture,
+   * departures are housekeeping, and an agent stopping is usually another
+   * agent starting — two cards animating against each other for 340ms reads
+   * as a transition between them rather than as one ending and one
+   * beginning.
+   */
+  --dur-fill: 340ms;
+  --dur-clear: 260ms;
   --dur-slow: 640ms;
 
   /*
