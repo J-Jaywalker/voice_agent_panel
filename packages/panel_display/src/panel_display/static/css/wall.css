@@ -854,11 +854,23 @@ body {
  * were the ones nobody could read.
  *
  * `max-height` is the backstop for the pathological case, a partial longer
- * than the whole column: the feed is already at zero by then, so the clip and
- * the mask here do to the partial's own first lines what the feed's mask does
- * to old bubbles. `min-height` reserves one untagged bubble whether or not
- * anything is being said, so the feed does not lift every time a sentence
- * finalises.
+ * than the whole column: the feed is already at zero by then, so the clip
+ * here does to the partial's own first lines what the feed's mask does to old
+ * bubbles. `min-height` reserves one untagged bubble whether or not anything
+ * is being said, so the feed does not lift every time a sentence finalises.
+ *
+ * **No `mask-image`, and the one that used to be here was a bug rather than
+ * a trade.** It was a copy of the feed's own top fade, and on the feed that
+ * is correct: `.transcript__feed` is `flex: 1 1 auto`, so its box is taller
+ * than its content whenever the column is not full and the fade falls on
+ * empty space, biting only on the bubbles actually scrolling off the top.
+ * This row is `flex: 0 0 auto` — its box *is* its content — so an 18% fade
+ * here always landed on the first 18% of whatever was being said, which is
+ * the name tag. The effect was a speaker's name coming up half dissolved on
+ * every live line, to protect a case that needs a single partial taller than
+ * the entire 900px column. `overflow: hidden` still clamps that case; it
+ * clips hard instead of fading, which is the right way round for something
+ * nobody will see.
  */
 .transcript__partials {
   display: flex;
@@ -871,7 +883,6 @@ body {
      the feed has anything left in it. */
   max-height: calc(var(--transcript-body-h) - 24px);
   overflow: hidden;
-  mask-image: linear-gradient(to bottom, transparent 0%, #000 18%, #000 100%);
 }
 
 /* ── Bubbles ───────────────────────────────────────────────────────────── */
@@ -938,26 +949,26 @@ body {
    * a fourth seat on the panel. Quiet grey says "attribution", not
    * "identity". The three rules below override it for the agents.
    *
-   * Set through `--tag-ink` rather than `color` directly, because the partial
-   * rule below needs the speaker's colour as a *gradient stop* and a
-   * `currentColor` stop would resolve to `transparent` there — the element's
-   * own `color` has to be transparent for `background-clip: text` to show
-   * anything. One indirection, and it keeps the four speakers' colours
-   * declared in one place instead of two. */
-  --tag-ink: var(--text-quiet);
-  color: var(--tag-ink);
+   * A plain `color`. This went through a `--tag-ink` custom property while
+   * the partial tag was drawn as a gradient clipped to the text — that rule
+   * needed the speaker's colour as a *stop*, and a `currentColor` stop
+   * resolves to `transparent` under `background-clip: text`, because the
+   * element's own colour has to be transparent for the clip to show
+   * anything. The gradient is gone (see below) and the indirection went with
+   * it; there is nothing left that needs this colour anywhere but here. */
+  color: var(--text-quiet);
 }
 
 .bubble-row[data-accent="jade"] .bubble__tag {
-  --tag-ink: var(--accent-jade);
+  color: var(--accent-jade);
 }
 
 .bubble-row[data-accent="cyan"] .bubble__tag {
-  --tag-ink: var(--accent-cyan);
+  color: var(--accent-cyan);
 }
 
 .bubble-row[data-accent="amber"] .bubble__tag {
-  --tag-ink: var(--accent-amber);
+  color: var(--accent-amber);
 }
 
 .bubble {
@@ -1104,34 +1115,25 @@ body {
 }
 
 /*
- * The name tag on an in-progress bubble: greyed at the top and resolving into
- * the speaker's own colour by the baseline.
+ * **A partial's name tag is drawn exactly like a finalised one, and that is
+ * deliberate.** There used to be a rule here that clipped a top-down
+ * gradient to the tag's text — grey at the cap line, resolving into the
+ * speaker's colour by the baseline — as a third "this sentence is not
+ * finished yet" cue alongside the quieter ink and the italic on the bubble.
  *
- * A third cue for "this sentence is not finished yet", alongside the quieter
- * ink and the italic on the bubble itself — and the one that works on the
- * attribution rather than on the words, which is what the eye lands on first
- * in a four-voice feed. A name arriving half-formed and settling as the line
- * finalises is the same statement the growing bubble underneath it is making.
+ * It was the wrong thing to spend a cue on. A name is not provisional: the
+ * words are still arriving, but *who is saying them* was settled the moment
+ * the segment was attributed, and the whole job of this column is telling
+ * four voices apart. Drawing the one certain thing on the line as the most
+ * tentative-looking thing on it inverted that, and at 20m it read as a
+ * rendering fault rather than as a state — a name half dissolved, which is
+ * what it was reported as.
  *
- * Top-down rather than bottom-up because the tag sits *above* its bubble, so
- * the colour strengthens toward the words it belongs to; grading the other
- * way would point the name away from the thing it names.
- *
- * `background-clip: text` needs `color: transparent`, which is why the stops
- * come off `--tag-ink` and not `currentColor` — see `.bubble__tag`. The
- * fallback if a renderer drops `background-clip` is a transparent tag, so
- * `-webkit-` is declared alongside the standard property; every engine that
- * has ever run this wall supports one or the other.
+ * The bubble still carries both of the cues that are about the words
+ * themselves, which is where a provisional cue belongs: quieter ink, and
+ * italic as the second channel for anyone who cannot resolve the colour
+ * difference at that distance.
  */
-.bubble-row[data-partial="true"] .bubble__tag {
-  color: transparent;
-  background-image: linear-gradient(to bottom,
-      color-mix(in srgb, var(--text-quiet) 70%, transparent) 0%,
-      var(--text-quiet) 34%,
-      var(--tag-ink) 92%);
-  -webkit-background-clip: text;
-  background-clip: text;
-}
 
 /*
  * Rise and settle. The scale is small on purpose — 0.965 of a 760px bubble

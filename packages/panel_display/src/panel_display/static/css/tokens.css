@@ -159,15 +159,27 @@
    * (glass cannot sample glass) and, here, 8px from overhanging the thing it
    * is sitting on.
    *
-   * The foot is 236 rather than `--foot-clear`'s 320, so the card ends 90px
-   * below the name plate rather than flush against it — a card whose content
-   * runs into its own bottom edge reads as a crop. The reserved foot is not
-   * spent: nothing readable moved, the plate still ends 326px (1.02m) above
-   * the floor of the wall, and the last 236px of card is deliberately empty.
+   * The foot is the same 28px as the top, so a card is evenly inset on all
+   * four sides and the four of them reach the bottom of the wall together.
+   *
+   * It was 236px first — ending the card 90px under the name plate and
+   * leaving the rest of `--foot-clear` as bare wall — on the reasoning that
+   * the reserved foot should stay visibly reserved. That was a misreading of
+   * what the reservation is for. `--foot-clear` is a sightline rule: nothing
+   * that has to be *read* goes in the bottom metre, because heads and music
+   * stands eat it. It says nothing about what may be *painted* there, and a
+   * card's own empty bottom is not something anyone reads. What 236px
+   * actually bought was a 0.74m strip of dead wall under four floating
+   * objects, which from the floor reads as the wall having been cropped
+   * short rather than as deliberate clearance.
+   *
+   * Nothing readable moved: the name plate still ends at 1114, which is
+   * 326px — 1.02m — above the floor of the wall. The bottom of every card is
+   * deliberately empty, and now it is empty *card* rather than empty wall.
    */
   --card-top: 28px;
   --card-side: 28px;
-  --card-foot: 236px;
+  --card-foot: var(--card-top);
 
   /*
    * Card corners. Larger than anything drawn inside a card, and that is the
