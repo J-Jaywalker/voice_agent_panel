@@ -9,7 +9,7 @@ Two channels over that socket, and the split is the whole design:
 * **State** — the full wall, sent on change and coalesced to `FLUSH_HZ`. Full
   snapshots rather than diffs, because a browser *will* be refreshed during the
   show and a delta-only client comes back blank.
-* **Levels** — audio envelopes, `LEVEL_HZ` a second, never coalesced with state.
+* **Levels** — audio envelopes and spectra, `LEVEL_HZ` a second, never coalesced with state.
   They change every frame and would otherwise mark the wall dirty continuously,
   turning a 2KB snapshot into a 60KB/s stream of mostly unchanged fields.
 
@@ -121,6 +121,7 @@ class DisplayServer:
         # changes — starting dirty just broadcast the opening state twice.
         self._dirty = False
         self._levels: dict[str, float] = {}
+        self._bands: dict[str, list[float]] = {}
         # True while the last frame sent had sound in it, so silence sends one
         # trailing frame of zeroes and then stops rather than streaming zeroes
         # through every gap in the conversation.
@@ -214,14 +215,25 @@ class DisplayServer:
         except Exception:
             log.exception("display: command %r", type(command).__name__)
 
-    def set_levels(self, levels: dict[str, float]) -> None:
+    def set_levels(
+        self, levels: dict[str, float], bands: dict[str, list[float]] | None = None
+    ) -> None:
         """Latest audio envelope per agent, plus `human`. Replaces, never queues.
 
         A frame the pump did not get to is a frame nobody needed: the orb is
         showing *now*, and a 33ms-stale envelope is worth less than the one
         behind it.
+
+        Args:
+            levels: Envelope per voice, 0-1. `human` included.
+            bands: Frequency spectrum per *agent*, `SPECTRUM_BANDS` amplitudes
+                in the same units. Optional, and the client draws a corona
+                without it — anything driving this server that has no spectrum
+                to give (a test, an older runtime) should leave it out rather
+                than invent one.
         """
         self._levels = levels
+        self._bands = bands or {}
 
     # ------------------------------------------------------------------ HTTP
 
@@ -311,7 +323,14 @@ class DisplayServer:
         if not sounding and not self._levels_live:
             return
         self._levels_live = sounding
-        await self._broadcast({"type": "levels", "v": self._levels})
+        # `b` is omitted entirely when there is no spectrum, rather than sent
+        # as an empty object: silence already sends one trailing frame and
+        # then stops, so the bytes a spectrum costs are only ever spent while
+        # somebody is actually talking.
+        payload: dict[str, Any] = {"type": "levels", "v": self._levels}
+        if self._bands:
+            payload["b"] = self._bands
+        await self._broadcast(payload)
 
     async def _broadcast(self, payload: dict[str, Any]) -> None:
         text = json.dumps(payload, separators=(",", ":"))

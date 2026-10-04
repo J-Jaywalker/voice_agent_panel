@@ -1631,7 +1631,12 @@ class PanelRuntime:
             levels = self.mixer.take_levels()
             levels[HUMAN] = self._mic_level
             self._mic_level = 0.0
-            display.set_levels(levels)
+            # Two measurements of the same audio, sent together: how loud each
+            # voice is, and what it is made of. The orb needs both — the
+            # corona is the spectrum, everything inside the seat ring is the
+            # envelope. No spectrum for the mic: Ricky has a dot, not an orb,
+            # and a dot has one number's worth of room in it.
+            display.set_levels(levels, self.mixer.take_bands())
 
     # -------------------------------------------------------------- enrolment
 

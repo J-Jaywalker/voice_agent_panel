@@ -331,6 +331,15 @@ function applyLevels(message) {
     const view = agents.get(id);
     if (view) view.orb.setLevel(value);
   }
+  // Optional on the wire — see `set_levels` in server.py. An agent with no
+  // spectrum in this frame is left holding the one before it, which the orb's
+  // own release filter then takes down; zeroing here instead would make the
+  // corona flicker on any frame the server chose not to spend bytes on.
+  if (!message.b) return;
+  for (const [id, bands] of Object.entries(message.b)) {
+    const view = agents.get(id);
+    if (view) view.orb.setBands(bands);
+  }
 }
 
 // ── Socket ────────────────────────────────────────────────────────────────
@@ -359,6 +368,7 @@ function connect() {
     for (const { orb } of agents.values()) {
       orb.setState("idle");
       orb.setLevel(0);
+      orb.setBands(null);
     }
     setTimeout(connect, backoff);
     backoff = Math.min(RECONNECT_MAX_MS, backoff * 1.7);

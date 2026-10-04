@@ -133,6 +133,58 @@ def test_levels_are_a_separate_channel_from_state(cast: PanelCast):
     assert sum(1 for m in messages if m["type"] == "state") == 1
 
 
+def test_a_spectrum_rides_the_level_frame(cast: PanelCast):
+    """The orbs' coronas, on the same frame as their envelopes.
+
+    One message rather than a third channel: they are two measurements of the
+    same block of audio taken in the same pass of `PanelRuntime._pump_levels`,
+    and splitting them would let a corona and its own loudness arrive a frame
+    apart on a wall where both are drawn in the same `requestAnimationFrame`.
+    """
+
+    async def body():
+        server = await _serve(cast)
+        try:
+            return await _collect(
+                f"http://127.0.0.1:{server.port}/ws",
+                WINDOW_S,
+                after=lambda: server.set_levels(
+                    {"dex": 0.3, "melia": 0.0, "wayne": 0.0},
+                    {"dex": [0.1, 0.2, 0.05]},
+                ),
+            )
+        finally:
+            await server.close()
+
+    levels = [m for m in asyncio.run(body()) if m["type"] == "levels"]
+    assert levels, "no level frames arrived"
+    assert levels[-1]["b"]["dex"] == [0.1, 0.2, 0.05]
+
+
+def test_a_level_frame_without_a_spectrum_omits_it(cast: PanelCast):
+    """Anything driving this server with no spectrum to give leaves it out.
+
+    The key is absent rather than empty, and the client treats absent as "keep
+    the corona you have" rather than "go flat" — so a caller that has nothing
+    to say about frequency costs neither bytes nor a flicker.
+    """
+
+    async def body():
+        server = await _serve(cast)
+        try:
+            return await _collect(
+                f"http://127.0.0.1:{server.port}/ws",
+                WINDOW_S,
+                after=lambda: server.set_levels({"dex": 0.3, "melia": 0.0, "wayne": 0.0}),
+            )
+        finally:
+            await server.close()
+
+    levels = [m for m in asyncio.run(body()) if m["type"] == "levels"]
+    assert levels, "no level frames arrived"
+    assert all("b" not in m for m in levels)
+
+
 def test_silence_stops_sending_rather_than_streaming_zeroes(cast: PanelCast):
     async def body():
         server = await _serve(cast)

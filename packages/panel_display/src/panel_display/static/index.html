@@ -6,16 +6,39 @@
   <title>Panel — video wall</title>
 
   <!--
-      Light is the wall. `?theme=dark` is a load-in escape hatch and nothing
+      Light is the wall. `?theme=dark` is the load-in escape hatch and nothing
       more — no toggle, no persistence, no UI — for the case where the room
-      turns out darker than anyone expected and 54m² of Sage 2 is too much
-      light to put behind a lit stage.
+      turns out darker than anyone expected and a near-white 54m² is the
+      brightest object in it.
+
+      **This is a reversal of the 4 Oct flip to dark, and the reason the flip
+      happened has been answered rather than overruled.** The argument for
+      dark was that frosted glass is made of *added light* — specular edges, a
+      core that lights, a bloom around a live orb — and that near-white has no
+      headroom to add light into, so each of those devices flattens to a pale
+      wash and the lanes resolve into three flat saturated columns. Every step
+      of that was true of the wall it described, because that wall painted the
+      agent's colour edge to edge and then tried to float glass on top of its
+      own fill. Glass over a saturated fill of the same size is not glass.
+
+      What light needed was not more alpha but a ground and an object: the
+      colour moved *under* the glass as a soft pool on the wall, and each lane
+      became a frosted card floating over it with gutters around all four
+      sides. Then the frost has somewhere to sit, something behind it to
+      dissolve, and an edge to catch a highlight on — which is the whole of
+      what Apple's own light glass is, and it is built out of *subtracted*
+      light (contact shadow, a tinted ground showing through) rather than
+      added. Dark remains correct and is still maintained; it is a second
+      tuning of one structure now rather than a different wall.
 
       The class is the part that does the work: the vendored Radix dark blocks
       are scoped to `.dark`, so setting only `data-theme` would flip nothing
-      and leave every step on its light value while looking like it had worked.
-      Both go on together, and this runs before the stylesheets so the wall
-      never paints one theme and then the other in front of an audience.
+      and leave every step on its light value while looking like it had
+      worked. Both go on together — and the default is in the markup rather
+      than set by script, so the wall paints correctly even if this script
+      never runs. The script only ever *adds* the non-default theme, which is
+      the safer direction for the one path that has to be right in front of an
+      audience.
     -->
   <script>
     if (new URLSearchParams(location.search).get("theme") === "dark") {

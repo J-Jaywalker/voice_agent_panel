@@ -37,6 +37,90 @@ PlayedTap = Callable[[str, bytes], None]
 STOP_RAMP_MS = 20.0
 SILENCE_DB = -80.0
 
+# ---------------------------------------------------------------- spectrum
+#
+# The video wall's orbs draw a frequency spectrum, so the meter above is not
+# enough on its own: one number per voice per frame can say how loud an agent
+# is and nothing about what their voice is *doing*. These constants are what
+# turns the rendered bus into that second measurement.
+#
+# Where the work happens matters more than how it is done. The audio callback
+# only ever copies its finished block into a ring buffer — a memcpy of a few
+# hundred floats, which is the same order of cost as the RMS already taken
+# there. The transform itself runs on the asyncio loop, at display rate, off a
+# snapshot of that ring (`Mixer.take_bands`). An FFT inside a callback that
+# must not block is a glitch waiting for the one night it matters.
+
+# Bands sent per voice. One per bar per side of the orb's corona — the client
+# mirrors them, so 32 here is 64 bars around the circle and nothing is
+# resampled at either end. See BANDS in static/js/orb.js; the two have to
+# agree or the client pads.
+SPECTRUM_BANDS = 32
+
+# Analysis window, seconds. 40ms is two or three pitch periods of a male
+# voice — long enough that the lowest band has bins to sit in, short enough
+# that a consonant is still a separate event from the vowel after it. Rounded
+# to a power of two against the real sample rate in `_window_length`, because
+# `np.fft.rfft` is markedly faster on one and this runs 30 times a second.
+_SPECTRUM_WINDOW_S = 0.040
+
+# The range the bands span, Hz. Speech, not hi-fi: 80Hz is below any voice's
+# fundamental and 7kHz is past the last of the sibilance, and spending bands
+# outside that is spending bars on parts of the orb that would never move.
+_SPECTRUM_LO_HZ = 80.0
+_SPECTRUM_HI_HZ = 7000.0
+
+
+def _window_length(sample_rate: int) -> int:
+    """Power-of-two window closest to `_SPECTRUM_WINDOW_S` at this rate."""
+    target = max(64.0, sample_rate * _SPECTRUM_WINDOW_S)
+    return 1 << round(float(np.log2(target)))
+
+
+def _band_edges(sample_rate: int, n: int) -> list[tuple[int, int]]:
+    """Bin ranges for `SPECTRUM_BANDS` logarithmically spaced bands.
+
+    Logarithmic because pitch is: linear bands would give three quarters of
+    the corona to the sibilance nobody can see moving and squeeze every vowel
+    into the first two bars.
+
+    Bands at the bottom of the range are narrower than one bin and so overlap
+    their neighbours. That is left alone rather than corrected — the honest
+    alternative is a longer window, which costs transient detail the eye reads
+    more readily than it reads bass resolution. Adjacent low bars moving
+    together is what bass looks like anyway.
+    """
+    nyquist = sample_rate / 2.0
+    hi = min(_SPECTRUM_HI_HZ, nyquist * 0.92)
+    bins = n // 2 + 1
+    per_bin = sample_rate / n
+    edges: list[tuple[int, int]] = []
+    for i in range(SPECTRUM_BANDS):
+        lo_hz = _SPECTRUM_LO_HZ * (hi / _SPECTRUM_LO_HZ) ** (i / SPECTRUM_BANDS)
+        hi_hz = _SPECTRUM_LO_HZ * (hi / _SPECTRUM_LO_HZ) ** ((i + 1) / SPECTRUM_BANDS)
+        lo_bin = min(bins - 1, int(lo_hz / per_bin))
+        hi_bin = min(bins, max(lo_bin + 1, int(hi_hz / per_bin) + 1))
+        edges.append((lo_bin, hi_bin))
+    return edges
+
+
+def _spectrum(samples: np.ndarray, window: np.ndarray, edges: list[tuple[int, int]]) -> list[float]:
+    """Band amplitudes for one window of audio, in the same units as the meter.
+
+    Peak within each band rather than a mean across it, which is the
+    difference between a spectrum that moves and one that does not: a band is
+    several bins wide at the top of the range, a voice puts energy in one of
+    them, and averaging in the empty ones divides the only thing there was to
+    see by the width of the band it landed in.
+
+    Scaled so a full-scale sine reads about 1.0 — the same 0-1 range
+    `take_level` returns, so the client's `?gain=` dial means one thing for
+    both. 0.5 is the Hann window's coherent gain.
+    """
+    mag = np.abs(np.fft.rfft(samples * window))
+    scale = 2.0 / (len(window) * 0.5)
+    return [round(float(mag[lo:hi].max()) * scale, 4) for lo, hi in edges]
+
 def _soft_limit(out: np.ndarray) -> np.ndarray:
     """Turn a block down, never reshape its waveform.
 
@@ -64,7 +148,13 @@ def _soft_limit(out: np.ndarray) -> np.ndarray:
 class AgentVoice:
     """One agent's audio buffer and gain, on the output bus."""
 
-    def __init__(self, agent_id: str, sample_rate: int, unity_db: float = 0.0) -> None:
+    def __init__(
+        self,
+        agent_id: str,
+        sample_rate: int,
+        unity_db: float = 0.0,
+        window: int | None = None,
+    ) -> None:
         self.agent_id = agent_id
         self.sample_rate = sample_rate
         # "Unity" here means this voice's resting level, not 0dB — a persona
@@ -86,6 +176,12 @@ class AgentVoice:
         # whole turn including any gap before its first TTS chunk lands or
         # between sentences.
         self.active = False
+        # The last `_ring.size` post-gain samples, as a ring. Written by the
+        # audio thread and read — never written — by the loop thread, which is
+        # what lets the transform live outside the callback. See the spectrum
+        # note at the head of this module.
+        self._ring = np.zeros(window or _window_length(sample_rate), dtype=np.float32)
+        self._ring_i = 0
 
     # ------------------------------------------------------------ loop thread
 
@@ -102,6 +198,8 @@ class AgentVoice:
         self._level = 0.0
         self.active = False
         self.envelope = GainEnvelope(self.sample_rate, self.unity_db)
+        self._ring[:] = 0.0
+        self._ring_i = 0
 
     def take_level(self) -> float:
         """Loudest block since the last call, then reset to zero.
@@ -120,6 +218,18 @@ class AgentVoice:
         self._level = 0.0
         return level
 
+    def recent(self) -> np.ndarray:
+        """The window of post-gain audio behind `now`, oldest sample first.
+
+        Read-only and non-destructive, unlike `take_level`: the spectrum is
+        "what this voice sounds like at this instant" rather than "what has
+        happened since you last asked", so there is no frame to steal and
+        nothing to clear. Allocates one copy per call — ~2KB, thirty times a
+        second, on the loop thread.
+        """
+        i = self._ring_i
+        return np.concatenate((self._ring[i:], self._ring[:i]))
+
     @property
     def buffered_seconds(self) -> float:
         return len(self._buffer) / self.sample_rate
@@ -130,6 +240,28 @@ class AgentVoice:
         return self._finished and len(self._buffer) == 0
 
     # ----------------------------------------------------------- audio thread
+
+    def _record(self, block: np.ndarray) -> None:
+        """Copy one rendered block into the spectrum ring. Audio thread.
+
+        Silence counts and is written like anything else — a ring left holding
+        the last thing an agent said would leave their orb frozen mid-syllable
+        for the rest of the show.
+        """
+        size = self._ring.size
+        n = len(block)
+        if n >= size:
+            self._ring[:] = block[n - size :]
+            self._ring_i = 0
+            return
+        end = self._ring_i + n
+        if end <= size:
+            self._ring[self._ring_i : end] = block
+        else:
+            split = size - self._ring_i
+            self._ring[self._ring_i :] = block[:split]
+            self._ring[: end - size] = block[split:]
+        self._ring_i = end % size
 
     def render(self, frames: int, tap: PlayedTap | None = None) -> np.ndarray:
         gain = self.envelope.render(frames)
@@ -142,7 +274,9 @@ class AgentVoice:
                 # the last sentence of every turn sitting as a partial until
                 # the agent's *next* turn pushes audio in behind it.
                 tap(self.agent_id, b"\x00\x00" * frames)
-            return np.zeros(frames, dtype=np.float32)
+            silence = np.zeros(frames, dtype=np.float32)
+            self._record(silence)
+            return silence
         self.active = True
         take = min(frames, len(self._buffer))
         chunk = np.zeros(frames, dtype=np.float32)
@@ -168,6 +302,10 @@ class AgentVoice:
         # costs a few microseconds against a 16ms budget; a float store is
         # atomic enough for a meter that is allowed to miss a block.
         self._level = max(self._level, float(np.sqrt(np.mean(np.square(out)))))
+        # Post-gain for the same reason, and the same claim: the corona on the
+        # wall is the spectrum of what the room is hearing, so a ducked agent's
+        # bars come down with their voice.
+        self._record(out)
         return out
 
 
@@ -208,9 +346,14 @@ class Mixer:
         # turns out not to bind, and a wall-less show must not pay for it.
         self.on_played = on_played
         gains = unity_db or {}
+        window = _window_length(sample_rate)
         self.voices = {
-            a: AgentVoice(a, sample_rate, gains.get(a, 0.0)) for a in agent_ids
+            a: AgentVoice(a, sample_rate, gains.get(a, 0.0), window) for a in agent_ids
         }
+        # Both derived from the rate once, here, because both are pure
+        # functions of it and `take_bands` runs thirty times a second.
+        self._window = np.hanning(window).astype(np.float32)
+        self._edges = _band_edges(sample_rate, window)
         self._lock = threading.Lock()
         # Set when a stop is ramping out, so the buffer is dropped only after
         # the ramp has actually been rendered — otherwise the stop clicks.
@@ -287,6 +430,24 @@ class Mixer:
         """
         with self._lock:
             return {agent_id: voice.take_level() for agent_id, voice in self.voices.items()}
+
+    def take_bands(self) -> dict[str, list[float]]:
+        """Every voice's frequency spectrum right now. Drives the orbs' coronas.
+
+        `SPECTRUM_BANDS` amplitudes per voice, log-spaced across the speech
+        range, in the same 0-1 units as `take_levels`.
+
+        Not read-and-clear, unlike the meter beside it: this is an instant
+        rather than an interval, so a second caller costs a second transform
+        and steals nothing. The lock is held only for the copy — the FFT runs
+        outside it, which is the whole reason the snapshot is taken first.
+        """
+        with self._lock:
+            recent = {agent_id: voice.recent() for agent_id, voice in self.voices.items()}
+        return {
+            agent_id: _spectrum(samples, self._window, self._edges)
+            for agent_id, samples in recent.items()
+        }
 
     def buffered_seconds(self, agent_id: str) -> float:
         """How much audio is queued but not yet played.

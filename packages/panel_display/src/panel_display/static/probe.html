@@ -3,6 +3,9 @@
   <head>
     <meta charset="utf-8" />
     <title>orb probe</title>
+    <!-- Light by default, matching index.html. `?theme=dark` is the escape
+         hatch in both, and the default has to match or this stops being a
+         probe of the wall and becomes a probe of the fallback. -->
     <script>
       if (new URLSearchParams(location.search).get("theme") === "dark") {
         document.documentElement.classList.add("dark");
@@ -27,6 +30,32 @@
       const params = new URLSearchParams(location.search);
       const states = ["idle", "invited", "thinking", "ducked", "speaking"];
       const accent = params.get("accent") || "jade";
+      const orbs = {};
+
+      // Mirrors `_FORMANTS` and `_BAND_SCALE` in demo.py — two formants and
+      // the sibilance above them, at the amplitude a single band actually
+      // carries. Duplicated rather than imported because the probe has to run
+      // against the static files alone, with no server state behind it.
+      const BANDS = 32;
+      const FORMANTS = [[0.22, 0.16, 1.0], [0.45, 0.13, 0.28], [0.82, 0.22, 0.07]];
+      const BAND_SCALE = 0.3;
+      function spectrum(loudness, t) {
+        const out = [];
+        for (let i = 0; i < BANDS; i++) {
+          const x = i / (BANDS - 1);
+          let v = 0;
+          FORMANTS.forEach(([centre, width, weight], index) => {
+            const drift = 0.05 * Math.sin(t * 2 * Math.PI * (0.37 + 0.23 * index));
+            v += weight * Math.exp(-(((x - centre - drift) / width) ** 2));
+          });
+          // Deterministic stand-in for demo.py's per-band jitter: a fixed
+          // irrational phase per band, so the probe is reproducible frame for
+          // frame but the ring is never artificially smooth.
+          const jitter = 0.8 + 0.2 * Math.sin(i * 2.39996 + t * 3.1);
+          out.push(loudness * v * jitter * BAND_SCALE);
+        }
+        return out;
+      }
 
       for (const state of states) {
         const cell = document.createElement("div");
@@ -41,6 +70,7 @@
         document.body.appendChild(cell);
 
         const orb = new Orb(canvas, cell, 1);
+        orbs[state] = orb;
         orb.resize(720, 1);
         orb.setState(state);
 
@@ -52,10 +82,23 @@
           // A synthetic voice at roughly the amplitude the demo emits.
           const syllable = 0.5 + 0.5 * Math.sin(t * 2 * Math.PI * 4.1);
           const stress = 0.5 + 0.5 * Math.sin(t * 2 * Math.PI * 1.37 + 1.1);
-          orb.setLevel(0.32 * syllable * (0.4 + 0.6 * stress));
+          const loud = 0.32 * syllable * (0.4 + 0.6 * stress);
+          orb.setLevel(loud);
+          // The spectrum too, and this is the half the probe was missing.
+          // Without `setBands` the orb never sets `lit`, so every state here
+          // rendered the *synthetic* fallback ring and the real spectrum path
+          // — the thing the corona exists to draw — was never exercised. The
+          // formant model and the `_BAND_SCALE` figure both mirror
+          // `SyntheticPanel.spectrum` in demo.py; keep them in step.
+          orb.setBands(state === "speaking" || state === "ducked" ? spectrum(loud, t) : null);
           orb.frame(dt, t);
         }
       }
+      // Exposed for inspection. This file is a bench, not part of the show —
+      // index.html never imports it — and being able to read `wire`, `band`
+      // and `ring` out of a rendered orb is the difference between tuning the
+      // corona by eye and tuning it by measurement.
+      window.__orbs = orbs;
       document.title = "ready";
     </script>
   </body>

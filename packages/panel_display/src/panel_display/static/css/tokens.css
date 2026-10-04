@@ -6,17 +6,34 @@
  * here, and no rule anywhere else reads a `--sage-*` / `--jade-*` step
  * directly. If a component needs a colour, add a role token here.
  *
- * Light by default, and light is the state this wall is designed for. Dark
- * survives behind `?theme=dark` because the vendored Radix files already carry
- * both scales, so keeping it alive costs a second block rather than a second
- * design — and nobody knows what the room's ambient light will be until the
- * rig is in it. `?theme=dark` sets the `.dark` class *and* the attribute: the
- * vendored dark blocks are scoped to `.dark`, so the attribute on its own
- * silently leaves every step on its light value. See the head of index.html.
+ * **Light by default, and light is the state this wall is designed for.** It
+ * was dark for one day — see the head of index.html for the argument that
+ * made it dark and the structural change that answered it. The short version:
+ * dark was the right call for a wall that painted each agent's colour edge to
+ * edge and floated glass on its own fill, because glass over a saturated
+ * field the same size as itself is not glass. The colour has since moved
+ * *under* the glass as a soft pool on the wall, and each lane is a frosted
+ * card floating over it with a gutter on all four sides. On that structure
+ * light is the stronger of the two: the frost has a ground to dissolve, an
+ * edge to catch, and a shadow to sit in.
+ *
+ * Dark survives behind `?theme=dark` because the vendored Radix files already
+ * carry both scales, so keeping it alive costs a second block rather than a
+ * second design — and nobody knows what the room's ambient light will be
+ * until the rig is in it. It is a genuine fallback, not a dead branch: if
+ * Oslo turns out dark enough that a near-white 54m² is the brightest object
+ * in the room and the panel has to squint past it, `?theme=dark` is one
+ * keystroke at load-in and the same four cards paint in dark glass.
+ *
+ * `?theme=dark` adds the `.dark` class *and* sets the attribute: the vendored
+ * dark blocks are scoped to `.dark`, so the attribute on its own would
+ * silently leave every step on its light value.
  *
  * The light-mode ground is Sage 2, not white. An LED panel at stage brightness
  * renders #ffffff as a hot rectangle that the people standing in front of it
  * have to compete with, and Sage 2 is a stop and a half of that back for free.
+ * The cards *are* near-white, which is the point of the gutters: white is
+ * spent on four objects with edges rather than on 54m² of ground.
  */
 
 @import "./radix/sage.css";
@@ -122,6 +139,47 @@
   --lane-bar: 12px;
 
   /*
+   * ── The card ────────────────────────────────────────────────
+   *
+   * Each of the four lanes is drawn as one frosted card floating on the wall,
+   * and these are the gutters around it. They are painted, never laid out:
+   * the card is a `::before` on insets (see `.lane--agent::before` in
+   * wall.css), so **the lane's own box, padding and vertical budget are
+   * bit-for-bit what they were before any of this existed**. That is the
+   * constraint the whole overhaul runs under — the budget table at the top of
+   * wall.css is still accurate to the pixel.
+   *
+   * 28px of side gutter puts 56px — 17.5cm — between two neighbouring cards,
+   * which is the narrowest gap that still reads as two objects rather than
+   * one seam at the back of a room. It also has to clear the lane's own 64px
+   * of horizontal padding with room to spare, because anything inside the
+   * lane that bleeds outward past 36px would hang over the card's edge. That
+   * is why the name plate no longer sits on a panel of its own: a glass panel
+   * inside a glass card is both the nesting Apple's own guidance rules out
+   * (glass cannot sample glass) and, here, 8px from overhanging the thing it
+   * is sitting on.
+   *
+   * The foot is 236 rather than `--foot-clear`'s 320, so the card ends 90px
+   * below the name plate rather than flush against it — a card whose content
+   * runs into its own bottom edge reads as a crop. The reserved foot is not
+   * spent: nothing readable moved, the plate still ends 326px (1.02m) above
+   * the floor of the wall, and the last 236px of card is deliberately empty.
+   */
+  --card-top: 28px;
+  --card-side: 28px;
+  --card-foot: 236px;
+
+  /*
+   * Card corners. Larger than anything drawn inside a card, and that is the
+   * concentricity rule rather than a second opinion: a card is the outermost
+   * object on the wall and everything in it — the bubbles' 28px, the pills —
+   * wants a smaller radius, or the corners fight. 56px is 17.5cm — the same visual softness at 20m that a
+   * 10-12px radius has on a laptop, which is where Apple's own window and
+   * sheet corners sit.
+   */
+  --radius-card: 56px;
+
+  /*
    * The transcript bubbles.
    *
    * The brand's radius ceiling is 6px — "sharp, not rounded" — and that is a
@@ -150,7 +208,34 @@
    */
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
   --dur-fast: 220ms;
+  /* The bubble entrance, and the only thing on this wall that uses it. A
+     finalised sentence lands while the next one is already being spoken, so
+     640ms here had bubbles still arriving after the room had moved on; 380ms
+     is settled before the following line needs the space. */
+  --dur-mid: 380ms;
   --dur-slow: 640ms;
+
+  /*
+   * ── Material ────────────────────────────────────────────────
+   *
+   * How much the glass surfaces blur and lift what is behind them.
+   *
+   * Scaled like everything else here: a 20px blur is a soft frost at 60cm
+   * and nothing at all across a room, so these are in the same ~320px/m the
+   * rest of the wall is drawn at. The saturation lift is what stops a
+   * blurred accent wash going grey — a translucent surface over a coloured
+   * ground should carry *more* of that colour, not less, and without it the
+   * glass reads as fog.
+   *
+   * Every `backdrop-filter` on this wall is on an element that never moves
+   * and never changes, so each one is rasterised once and composited
+   * thereafter. Nothing animated is allowed to carry one: the orbs own the
+   * frame budget and a blur re-rasterising at 60fps across 54m² would take
+   * it. See the note on `.bubble` in wall.css for the one place that rule
+   * was a close call.
+   */
+  --glass-blur: 56px;
+  --glass-saturate: 1.35;
 }
 
 /* ── Light (the design) ────────────────────────────────────────────────── */
@@ -164,8 +249,133 @@
    * have somewhere lighter to sit against if they ever need it.
    */
   --bg-wall: var(--sage-2);
+  /* The neutral pool under the transcript card, the counterpart of the three
+     coloured ones. See `.lane--transcript` in wall.css. */
   --bg-lane: color-mix(in srgb, var(--sage-3) 75%, transparent);
-  --bg-divider: color-mix(in srgb, var(--sage-7) 90%, transparent);
+  /* The offline scrim. *Lighter* than the wall here and darker than it in
+     dark mode — the instruction is "put the picture behind frost" either
+     way, and frost is made of whichever end of the scale the ground is not. */
+  --bg-scrim: color-mix(in srgb, var(--sage-1) 82%, transparent);
+
+  /*
+   * ── The glass ───────────────────────────────────────────────
+   *
+   * One material, seven tokens, and every glass surface in wall.css stacks
+   * the same ones in the same order. That repetition is the point: a
+   * material is only a material if everything made of it behaves identically
+   * under the same light.
+   *
+   * It is the four cards and the two status capsules, and nothing else. It
+   * used to be the bubbles and the name plates too — see `.bubble` in
+   * wall.css for why those gave it up, which is the short version of Apple's
+   * own rule that glass is the surface content sits on rather than something
+   * content is made of.
+   *
+   *   tint     the lit face. A fall of Sage 1 off the top edge of a card:
+   *            the surface catching the stage's own light, and the thing the
+   *            specular hairline is the leading edge of.
+   *   fill     the body, and the token that decides how white a card reads.
+   *            See the long note below.
+   *   spec     the specular hairline along the top edge. One device doing
+   *            most of the work: a lit top edge is how the eye decides
+   *            something has a thickness and a direction of light.
+   *   edge-dim the same edge continued down the sides, where less light is
+   *            falling on it.
+   *   inner    a shade along the inside of the bottom edge. The other half
+   *            of thickness, and the half usually left out — an object lit
+   *            from above is darker at its underside, and without this a
+   *            specular top reads as a stray highlight.
+   *   shadow   the key shadow: short, soft, directly under. Contact with the
+   *            wall.
+   *   cast     the ambient shadow: wide, far, almost invisible. The card
+   *            displacing the light in the room.
+   *
+   * The last two are a pair and neither works alone — one gives a floating
+   * sticker, the other a pasted rectangle. The brand's "no drop shadows"
+   * rules out the 2000s card idiom, a hard offset blur behind a button; a
+   * surface that is genuinely translucent has to occlude *something* or the
+   * translucency is a lie, and at these alphas neither of these is a shadow
+   * anyone sees as a shadow.
+   *
+   * `--glass-fill` went 52% to 72% when the lanes became floating cards. Those
+   * are not the same number measured differently — they are the fill of two
+   * different objects. At 52% this described a sheet lying *on* a lane that
+   * was already painted in the agent's colour, so the colour arriving through
+   * it was the lane's own and more opacity meant less of it. The card floats
+   * on a near-neutral ground with a soft pool of that colour under it, so the
+   * fill is now the only thing deciding how white the card reads, and 52%
+   * there is a grey smear of wall rather than a white object. 72% is the point
+   * at which the card is unambiguously a lighter thing than the wall and the
+   * pool beneath is still visibly *through* it. Above about 80% the pool stops
+   * coming through and the frost has nothing left to do.
+   */
+  --glass-tint: color-mix(in srgb, var(--sage-1) 42%, transparent);
+  --glass-fill: color-mix(in srgb, var(--sage-1) 72%, transparent);
+  --glass-spec: color-mix(in srgb, var(--sage-1) 95%, transparent);
+  --glass-edge-dim: color-mix(in srgb, var(--sage-1) 30%, transparent);
+  --glass-inner: color-mix(in srgb, var(--sage-12) 4%, transparent);
+  --glass-shadow: color-mix(in srgb, var(--sage-12) 10%, transparent);
+  --glass-cast: color-mix(in srgb, var(--sage-12) 6%, transparent);
+
+  /* The status capsules. A pill is the one shape on this wall the brand's
+     6px radius ceiling does not govern — that rule is about cards, and this
+     is a badge. `--radius-card` above covers the cards, at the viewing
+     distance the 6px was written for. */
+  --radius-pill: 999px;
+
+  /*
+   * ── Ambient field ───────────────────────────────────────────
+   *
+   * Three very large, very low-chroma pools of each agent's colour, sitting
+   * on the wall *behind* the glass, one under each lane (see `.stage` in
+   * wall.css).
+   *
+   * They are what makes every translucent surface on this wall worth having.
+   * Glass over a flat ground is just a lighter flat ground — there has to be
+   * something behind it with structure for the blur and the tint to do
+   * anything with, and a gradient the size of a lane is the only kind of
+   * structure that reads from 20m. It is also the layer that answers "this
+   * looks cheap": a single flat colour under everything is what a cheap wall
+   * is, whatever is drawn on top of it.
+   *
+   * **This is now where an agent's colour mostly lives, and the strength
+   * reflects that rather than a change of taste.** When the lane was a
+   * painted column the pool was a secondary cue on top of a saturated field
+   * and 18% was as much as it could add without being seen as a shape. The
+   * card put a 72% white frost between the viewer and this layer, so a good
+   * deal of what is declared here is spent before it arrives — and the part
+   * of the pool that falls in the *gutters* between cards is not, because
+   * there is no card over it there. That second half is what gives the wall
+   * its colour and the cards something to float on.
+   *
+   * The old warning is what sets the ceiling, and it now bites in the
+   * gutters: **if the three pools can be seen as shapes, it is too strong.**
+   * 55% was tried first on the arithmetic above alone and failed that test
+   * outright — three coloured blobs with visible edges, which is a worse
+   * version of the flat columns this replaced. 26% is where the colour is
+   * unmistakably present, the gutters read as lit rather than painted, and
+   * no edge is findable. This is light in a room, not a backdrop.
+   */
+  --ambient-strength: 26%;
+
+  /*
+   * How much of an agent's `quiet` fill goes into their transcript bubble.
+   *
+   * Far higher than `--accent-*-wash` and that is not a disagreement with
+   * the card — it is what makes them agree. An agent's card carries its
+   * colour on four layers across three metres (see the accent note below);
+   * a bubble is one small shape, on a *neutral* card, with one layer and no
+   * pool under it. Matching the card's declared 9% produced four bubbles
+   * nobody could tell apart, which is the whole failure the transcript
+   * column has to avoid: four voices in one feed are only distinguishable by
+   * whose colour they arrive in.
+   *
+   * So this is set against what it is actually read on — near-white card —
+   * rather than against the number the card happens to declare. 22% of
+   * `quiet` is a clear pastel at 20m and still clears 50px of Sage 11 body
+   * text comfortably.
+   */
+  --bubble-tint: 22%;
 
   /*
    * The moderator's transcript bubble, and the fallback for any voice without
@@ -224,6 +434,33 @@
    *                     the token doing the "which agent is this" work.
    *   --accent-*-wash   the lane tint and the transcript bubble fill. A
    *                     thinning of `quiet` — *not* step 4. See below.
+   *
+   * **The wash no longer carries lane separation, and the long search
+   * recorded below no longer governs it.** That search is kept because its
+   * findings about the Radix scales are still true and still save the next
+   * person from repeating it — but it was optimising the fill of a painted
+   * 3m column, and there is no longer a painted 3m column. The wash is now
+   * the *tint of a frosted card*: 6%, one of four cues rather than the cue.
+   * 38% was the figure when it was the whole answer, 26% when the card work
+   * began, 6% now that it has finished.
+   *
+   * What answers "which agent is this" at 20m instead, in descending order of
+   * how much of the wall each one occupies:
+   *
+   *   the orb      2.25m of full-chroma `quiet`, dead centre of the card,
+   *                and now the dominant identity object on the wall by area.
+   *   the pool     `--ambient-strength` of `quiet` on the wall *under* the
+   *                card, spilling unfrosted into the gutters either side.
+   *   the bar      12px of undiluted `quiet` across the card's top edge.
+   *   the tint     this token. A card that is faintly the agent's colour.
+   *
+   * The first three are all `quiet` undiluted or near it, so the separation
+   * that search was protecting is now carried at full chroma by three
+   * elements instead of at 38% by one. If the lanes ever do stop being
+   * tellable apart, raise `--ambient-strength` before this: a pool under the
+   * orb buys separation out of the ground, where thickening the tint pushes
+   * the card back toward being the painted column all of this moved away
+   * from.
    *
    * Amber breaks the pattern at `quiet` and has to. Radix calls amber a
    * *bright* scale: its step 9 (#FFC53D) is higher-luminance than its step 8
@@ -284,15 +521,15 @@
    */
   --accent-jade: var(--jade-11);
   --accent-jade-quiet: var(--jade-9);
-  --accent-jade-wash: color-mix(in srgb, var(--accent-jade-quiet) 38%, transparent);
+  --accent-jade-wash: color-mix(in srgb, var(--accent-jade-quiet) 6%, transparent);
 
   --accent-cyan: var(--cyan-11);
   --accent-cyan-quiet: var(--cyan-9);
-  --accent-cyan-wash: color-mix(in srgb, var(--accent-cyan-quiet) 38%, transparent);
+  --accent-cyan-wash: color-mix(in srgb, var(--accent-cyan-quiet) 6%, transparent);
 
   --accent-amber: var(--amber-11);
   --accent-amber-quiet: var(--amber-8);
-  --accent-amber-wash: color-mix(in srgb, var(--accent-amber-quiet) 38%, transparent);
+  --accent-amber-wash: color-mix(in srgb, var(--accent-amber-quiet) 6%, transparent);
 
   /* Reserved for the kill switch. Orange is negative-only, per the brand. */
   --accent-alarm: var(--orange-11);
@@ -308,6 +545,15 @@
    * comes *from* still has to flip, and that lives in `ORB` in js/orb.js.
    */
   --orb-model: var(--sage-12);
+
+  /*
+   * And its opposite number: the colour the disc's sheen and inner rim are
+   * drawn in. Sage 1 in both themes, which unlike `--orb-model` does *not*
+   * flip — "lift" is the instruction either way and Sage 1 is the lightest
+   * thing on the wall in both. What differs is how much of it each ground
+   * can take, and that is `sheen` / `rim` in `ORB`.
+   */
+  --orb-sheen: var(--sage-1);
 }
 
 /* ── Dark (`?theme=dark`) ──────────────────────────────────────────────── */
@@ -321,12 +567,54 @@
    */
   --bg-wall: #070908;
   --bg-lane: color-mix(in srgb, var(--sage-2) 55%, transparent);
-  --bg-divider: color-mix(in srgb, var(--sage-7) 70%, transparent);
+  --bg-scrim: color-mix(in srgb, var(--bg-wall) 78%, transparent);
   --bg-lift: color-mix(in srgb, var(--sage-4) 34%, transparent);
   /* Sage 4 dark is a lit grey against a #070908 ground — a plain fill reads as
      a bright box on a black wall, where in light mode it reads as paper. Held
      back to a tint of itself so the bubble is a surface, not a panel. */
   --bg-bubble: color-mix(in srgb, var(--sage-4) 60%, transparent);
+
+  /*
+   * The glass, inverted in substance rather than in value.
+   *
+   * On paper a raised object is made by lightening its face and casting a
+   * soft shadow under it. On near-black there is nothing to shade *with* and
+   * no shadow worth casting — a black shadow on a #070908 wall is nothing —
+   * so almost all of the card's thickness has to come from its specular edge,
+   * and the fill has to stay weak or the card stops being glass and becomes a
+   * lit grey box on a black wall. Hence a fill at a quarter of light mode's
+   * and edges several times stronger, which is the same trade the orb makes
+   * between `sheen` and `model`.
+   *
+   * `--glass-shadow` keeps a real value because the cards sit on the agents'
+   * ambient pools rather than on the raw ground, and against a pool it still
+   * just registers as occlusion. `--glass-cast` goes to nothing: a wide soft
+   * black bloom on near-black is either invisible or a smudge, and the smudge
+   * is what an LED wall's gamma will pick. The pair that light mode needs in
+   * order to seat a card is therefore one token here; on black the gutter
+   * itself does the seating, because the card is simply lighter than the wall
+   * either side of it.
+   */
+  --glass-tint: color-mix(in srgb, var(--sage-3) 50%, transparent);
+  --glass-fill: color-mix(in srgb, var(--sage-4) 22%, transparent);
+  --glass-spec: color-mix(in srgb, var(--sage-12) 30%, transparent);
+  --glass-edge-dim: color-mix(in srgb, var(--sage-12) 8%, transparent);
+  --glass-inner: color-mix(in srgb, #000 30%, transparent);
+  --glass-shadow: color-mix(in srgb, #000 45%, transparent);
+  --glass-cast: transparent;
+
+  /* The ambient field is the one thing dark mode needs *more* of: it is the
+     only reason 54m² of near-black is a room rather than a dead panel, and
+     the `--bg-lift` blob is now only its neutral centre. Raised with the move
+     to cards for the same reason light's was — most of a pool's job is now
+     done in the gutters, where there is no card over it — but nothing like as
+     far, because a pool of light on near-black is read against far less
+     competition than the same pool on paper. */
+  --ambient-strength: 22%;
+  /* Dark needs a larger share than light for the same reason every other
+     accent here does: a tint over near-black has far less to work with than
+     the same tint over paper. */
+  --bubble-tint: 26%;
 
 
   --text-quiet: var(--sage-9);
@@ -344,23 +632,25 @@
    * darker than a light ground, and step 8 is already the dark theme's
    * identity fill for the same reason.
    *
-   * Thinned much harder than light mode's 0.38. A tint against #070908 is a
-   * far larger share of the available contrast than the same tint against
-   * Sage 2: at anything like the light figure the lanes become three lit
-   * panels, which is the "dark sci-fi interface" the brand rules out. Dark
-   * mode here is technical, not atmospheric.
+   * These are the card tint, as in light mode, and the same four cues carry
+   * identity here: orb, pool, bar, tint. A tint against #070908 is a far
+   * larger share of the available contrast than the same tint against Sage 2,
+   * so dark's card is thinner than light's 6% rather than thicker — at
+   * anything heavier the four cards become lit panels, which is the "dark
+   * sci-fi interface" the brand rules out. Dark mode here is technical, not
+   * atmospheric.
    */
   --accent-jade: var(--jade-9);
   --accent-jade-quiet: var(--jade-8);
-  --accent-jade-wash: color-mix(in srgb, var(--accent-jade-quiet) 16%, transparent);
+  --accent-jade-wash: color-mix(in srgb, var(--accent-jade-quiet) 5%, transparent);
 
   --accent-cyan: var(--cyan-9);
   --accent-cyan-quiet: var(--cyan-8);
-  --accent-cyan-wash: color-mix(in srgb, var(--accent-cyan-quiet) 16%, transparent);
+  --accent-cyan-wash: color-mix(in srgb, var(--accent-cyan-quiet) 5%, transparent);
 
   --accent-amber: var(--amber-9);
   --accent-amber-quiet: var(--amber-8);
-  --accent-amber-wash: color-mix(in srgb, var(--accent-amber-quiet) 16%, transparent);
+  --accent-amber-wash: color-mix(in srgb, var(--accent-amber-quiet) 5%, transparent);
 
   --accent-alarm: var(--orange-9);
 }

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from panel_runtime.mixer import SILENCE_DB, Mixer
+from panel_runtime.mixer import SILENCE_DB, SPECTRUM_BANDS, Mixer
 
 SR = 16_000
 AGENTS = ("dex", "wayne", "melia")
@@ -272,3 +272,87 @@ def test_a_stopped_agent_meters_back_to_silence(mixer):
     mixer.take_levels()
     render_ms(mixer, 50)
     assert mixer.take_levels()["dex"] == 0.0
+
+
+# ------------------------------------------------------------------ spectrum
+
+# The second meter, and the one the orb's corona is drawn from. Same claim as
+# the first — what the wall shows is what the room hears — so the same three
+# things are checked: that it reflects the audio, that it is taken after gain,
+# and that it comes back to nothing when the voice does.
+
+
+def sine(seconds: float, hz: float, amplitude: float = 0.5) -> bytes:
+    """A real tone. `tone()` above is DC, which has no spectrum to speak of."""
+    t = np.arange(int(SR * seconds)) / SR
+    wave = amplitude * np.sin(2 * np.pi * hz * t)
+    return (wave * 32767).astype(np.int16).tobytes()
+
+
+def test_a_silent_agent_has_no_spectrum(mixer):
+    render_ms(mixer, 50)
+    bands = mixer.take_bands()
+    assert set(bands) == set(AGENTS)
+    assert all(max(v) == 0.0 for v in bands.values())
+
+
+def test_the_spectrum_puts_a_tone_in_the_band_it_belongs_to(mixer):
+    """The whole point of the corona: *where* the energy is, not just how much.
+
+    300Hz sits in band 9 of 32 across 80Hz-7kHz logarithmically. Checked as a
+    neighbourhood rather than an index — bands at the bottom of the range are
+    narrower than one FFT bin and overlap each other by design (`_band_edges`),
+    so a tone legitimately lights two of them.
+    """
+    mixer.feed("dex", sine(1.0, 300.0))
+    render_ms(mixer, 100)
+    bands = mixer.take_bands()["dex"]
+    assert len(bands) == SPECTRUM_BANDS
+    assert abs(int(np.argmax(bands)) - 9) <= 1
+    # And nowhere else. Energy in the sibilance bands under a pure 300Hz tone
+    # would mean the band edges or the window were wrong, and on the wall it
+    # would mean every voice lighting the whole ring.
+    assert max(bands[20:]) < 0.05 * max(bands)
+
+
+def test_the_spectrum_distinguishes_two_voices_by_pitch(mixer):
+    """Two agents, two tones, two different parts of their own coronas."""
+    mixer.feed("dex", sine(1.0, 200.0))
+    mixer.feed("wayne", sine(1.0, 3000.0))
+    render_ms(mixer, 100)
+    bands = mixer.take_bands()
+    assert int(np.argmax(bands["dex"])) < int(np.argmax(bands["wayne"]))
+    assert max(bands["melia"]) == 0.0
+
+
+def test_the_spectrum_is_taken_after_gain_so_a_ducked_agent_shrinks(mixer):
+    mixer.feed("dex", sine(2.0, 300.0))
+    render_ms(mixer, 100)
+    full = max(mixer.take_bands()["dex"])
+
+    mixer.duck("dex", -12.0, ramp_ms=10)
+    # One full window of post-ramp audio, so the ring holds nothing from
+    # before the duck.
+    render_ms(mixer, 100)
+    ducked = max(mixer.take_bands()["dex"])
+
+    assert ducked == pytest.approx(full * 0.25, rel=0.1)
+
+
+def test_reading_the_spectrum_does_not_clear_it(mixer):
+    """Unlike `take_levels`. An instant, not an interval — see `take_bands`."""
+    mixer.feed("dex", sine(1.0, 300.0))
+    render_ms(mixer, 100)
+    first = mixer.take_bands()["dex"]
+    assert mixer.take_bands()["dex"] == first
+
+
+def test_the_spectrum_dies_with_the_voice(mixer):
+    """A ring left holding the last vowel would freeze the orb for the show."""
+    mixer.feed("dex", sine(0.1, 300.0))
+    render_ms(mixer, 100)
+    assert max(mixer.take_bands()["dex"]) > 0.0
+    # Longer than the analysis window, so nothing of the turn is left in the
+    # ring even as history.
+    render_ms(mixer, 200)
+    assert max(mixer.take_bands()["dex"]) == 0.0

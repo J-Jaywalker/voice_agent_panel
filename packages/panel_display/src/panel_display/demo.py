@@ -50,6 +50,57 @@ from panel_core import (
 
 from .server import DEFAULT_PORT, LEVEL_HZ, DisplayServer
 
+# Bands in a synthetic spectrum. The same count `panel_runtime.mixer` sends,
+# restated rather than imported: this package does not depend on the runtime
+# and `panel-display --demo` has to run on a machine with no audio stack on
+# it. Nothing breaks if the two drift — the client resamples whatever arrives
+# onto its own bar count — so this is a matter of the demo looking like the
+# show, not a contract.
+SPECTRUM_BANDS = 32
+
+# Where a synthetic voice puts its energy: `(centre, width, weight)` as a
+# fraction of the way up the orb's log-spaced bands. Two formants and the
+# sibilance above them, which is the coarsest description of a vowel that
+# still moves like one — the corona gets a low lobe, a mid lobe and a bright
+# edge rather than a smooth hump.
+#
+# The weights are the part worth getting approximately right. Speech rolls
+# off steeply with frequency, and the orb corrects for that on the client
+# (BAND_TILT in static/js/orb.js); a synthetic spectrum that is *flat* would
+# therefore arrive on the wall tilted the wrong way and peg the top half of
+# every corona, making the demo flatter than the show rather than merely
+# unlike it. A factor of fifteen from the first formant to the sibilance is
+# in the right region.
+#
+# Still a model, like the envelope below it, and the same warning applies —
+# set the orb's spectrum constants against a real turn through
+# `uv run panel --display`, never against this.
+_FORMANTS = ((0.22, 0.16, 1.00), (0.45, 0.13, 0.28), (0.82, 0.22, 0.07))
+
+# What one band's amplitude actually comes out at, as a fraction of the
+# formant model above.
+#
+# **Added 4 Oct, and it is a calibration fix rather than a taste one.** Without
+# it this generator emitted peak band amplitudes around 0.36. Real speech off
+# `Mixer.take_bands` puts roughly a tenth of that in any *single* band — the
+# mixer's overall RMS is 0.15-0.35 and no voice puts all of itself in one band
+# — so the demo was running about three times hot. The orb normalises against
+# `BAND_FULL_SCALE` and then clamps, so the result was twelve to fifteen of
+# the thirty-two bands pegged at full excursion on every loud syllable, and a
+# corona with a flat top is a circle. The spectrum was arriving correctly and
+# being flattened on the way to the screen.
+#
+# This is deliberately fixed *here* and not by raising `BAND_FULL_SCALE` in
+# static/js/orb.js, which would have made the demo look right by de-tuning the
+# show. That constant is set against a synthesised voice at the RMS the mixer
+# meters real speech at; this file is a model of a model and is the one that
+# was wrong. The warning above still stands — set the orb's constants against
+# a real turn through `uv run panel --display`, never against this.
+#
+# At 0.30 the model pegs no band at any loudness it generates, and a loud
+# syllable spans about 0.19 to 0.98 of the corona's depth.
+_BAND_SCALE = 0.30
+
 SCRIPT = [
     "So let's start where the disagreement actually is.",
     "Wayne, you think adoption already happened and nobody noticed.",
@@ -91,8 +142,31 @@ class SyntheticPanel:
 
     # ------------------------------------------------------------- envelopes
 
+    def spectrum(self, loudness: float) -> list[float]:
+        """A vowel's worth of spectrum, for one frame.
+
+        Three formants that drift against each other, plus per-band jitter so
+        no two bars are ever the same height. The drift is the part worth
+        having: a fixed formant set gives a corona that only ever scales, and
+        the whole reason the orb draws a spectrum rather than an envelope is
+        that a real voice changes *shape* as it talks.
+        """
+        bands = []
+        for i in range(SPECTRUM_BANDS):
+            x = i / (SPECTRUM_BANDS - 1)
+            value = 0.0
+            for index, (centre, width, weight) in enumerate(_FORMANTS):
+                # Each formant wanders by a few percent of the range, at its
+                # own irrational rate, so the lobes slide rather than pulse.
+                drift = 0.05 * math.sin(self.t * 2 * math.pi * (0.37 + 0.23 * index))
+                value += weight * math.exp(-(((x - centre - drift) / width) ** 2))
+            bands.append(
+                round(loudness * value * random.uniform(0.6, 1.0) * _BAND_SCALE, 4)
+            )
+        return bands
+
     async def levels(self) -> None:
-        """One envelope per agent at the real frame rate, forever.
+        """One envelope and one spectrum per agent at the real frame rate, forever.
 
         Syllables at roughly 4Hz with a jittered floor, which is close enough
         to the shape of speech that the orb's attack and release can be judged
@@ -104,6 +178,7 @@ class SyntheticPanel:
             await asyncio.sleep(step)
             self.t += step
             values = dict.fromkeys(self.ids, 0.0)
+            bands: dict[str, list[float]] = {}
             if self.speaking is not None:
                 # Three detuned oscillators rather than one. A single clean
                 # sine produces a perfectly regular ring of identical lobes,
@@ -117,11 +192,16 @@ class SyntheticPanel:
                 gate = 0.0 if math.sin(self.t * 2 * math.pi * 0.31) < -0.72 else 1.0
                 value = 0.34 * syllable * (0.4 + 0.6 * stress) * breath * gate
                 value *= random.uniform(0.75, 1.0)
-                values[self.speaking] = value * (0.28 if self.ducked else 1.0)
+                value *= 0.28 if self.ducked else 1.0
+                values[self.speaking] = value
+                # Off the same number, so the corona and the envelope agree
+                # with each other the way the mixer's two meters do.
+                bands[self.speaking] = self.spectrum(value)
             # Ricky's mic. Live only while he is mid-question, which is what
-            # makes the moderator dot worth looking at.
+            # makes the moderator dot worth looking at. No spectrum — he has a
+            # dot, not an orb.
             values[HUMAN] = 0.18 * random.uniform(0.6, 1.0) if self.human else 0.0
-            self.server.set_levels(values)
+            self.server.set_levels(values, bands)
 
     # ----------------------------------------------------------------- beats
 

@@ -14,6 +14,16 @@
  * had it hard left — see `.lane--transcript` below for the one line that
  * would put it back there, should that change.
  *
+ * Each of those four columns is *painted* as a frosted card floating on the
+ * wall, with a gutter on all four sides (`--card-*` in tokens.css). That is
+ * a `::before` on insets and nothing else: **the lane boxes, their padding
+ * and the budget table below are untouched by it**, which is the constraint
+ * the whole surface treatment runs under. The lane element itself is now the
+ * wall *behind* its card, and carries only the agent's ambient colour pool —
+ * so the colour a lane used to be painted in has moved under the glass,
+ * which is the change that let this wall go back to light. See the head of
+ * index.html for that argument in full.
+ *
  * This briefly ran as two rows instead of four columns — three agent lanes
  * across the top, the transcript full-width underneath — for a 16:9 sneak
  * preview at a smaller venue. The transcript picked up a real set of
@@ -115,21 +125,64 @@ body {
   align-items: stretch;
 
   /*
-   * A very wide, very shallow lift toward the centre. Two purposes: it stops
-   * 54m² of flat black reading as a dead panel, and it seats the three orbs
-   * on something. Kept under 4% so it never becomes the "dark sci-fi
-   * interface" the brand guidelines rule out.
+   * The ground every glass surface on this wall is read against. Three
+   * layers, listed in paint order from the top down.
    *
-   * `--bg-lift` is transparent in light mode, so this whole layer costs
-   * nothing there — paper does not need rescuing from looking dead, and the
-   * same blob on white reads as a mark rather than as depth.
+   * 1. The room light. A single very shallow vertical gradient — lighter at
+   *    the top, settling by two thirds of the way down. It is the cheapest
+   *    thing that makes 54m² read as a surface somebody is lighting rather
+   *    than as a colour somebody picked, and it is what the lanes' own top
+   *    edges and the orbs' sheen are consistent *with*. Without something
+   *    establishing a direction for the light, every highlight below is just
+   *    a pale line.
    *
-   * Centred on the three agent lanes, not the full stage: they now occupy
-   * the first three quarters of the width (0-2880 of 3840), so 37.5% is their
-   * midpoint rather than the stage's — putting the lift under the faces
-   * instead of straddling the transcript column too.
+   *    Sage 1 at a few percent, so in light mode it is paper catching a
+   *    little more light at the top and in dark mode it is the one place the
+   *    black is not quite flat. Both are under the threshold where it could
+   *    be mistaken for a gradient anyone applied on purpose, which is the
+   *    test this has to pass at 12m.
+   *
+   * 2. The centre lift. A very wide, very shallow rise toward the middle of
+   *    the three agent lanes. Two purposes: it stops 54m² of flat black
+   *    reading as a dead panel, and it seats the three orbs on something.
+   *    Kept under 4% so it never becomes the "dark sci-fi interface" the
+   *    brand guidelines rule out.
+   *
+   *    `--bg-lift` is transparent in light mode, so this layer costs nothing
+   *    there — paper does not need rescuing from looking dead, and the same
+   *    blob on white reads as a mark rather than as depth. Centred on the
+   *    agent lanes, not the full stage: they occupy the first three quarters
+   *    of the width (0-2880 of 3840), so 37.5% is their midpoint rather than
+   *    the stage's.
+   *
+   * 3. The wall itself.
+   *
+   * The per-agent half of the ambient field is not here — it is on each
+   * lane, where the accent already is. See `.lane--agent::before`.
    */
-  background: radial-gradient(120% 90% at 37.5% 46%, var(--bg-lift) 0%, transparent 68%),
+  background:
+    /*
+     * 0. The vignette.
+     *
+     * Four frosted cards need something behind them that is *not* uniform,
+     * or the blur has nothing to dissolve and every card renders as the same
+     * flat tint — which is most of what read as cheap. The room light below
+     * gives the ground a vertical direction; this gives it a centre, so a
+     * card at the edge of the wall and a card in the middle are sitting on
+     * visibly different ground.
+     *
+     * Drawn as a darkening at the corners rather than a lift in the middle,
+     * because the centre lift below already owns the middle and two
+     * overlapping brightenings would compound into a hotspot. Held very low:
+     * at 12m a vignette that can be seen *as* a vignette is a fault.
+     */
+    radial-gradient(130% 110% at 50% 42%,
+      transparent 44%,
+      var(--glass-inner) 100%),
+    linear-gradient(to bottom,
+      color-mix(in srgb, var(--sage-1) 9%, transparent) 0%,
+      transparent 62%),
+    radial-gradient(120% 90% at 37.5% 46%, var(--bg-lift) 0%, transparent 68%),
     var(--bg-wall);
 }
 
@@ -174,27 +227,63 @@ body {
  */
 .lane--transcript {
   align-items: stretch;
+  position: relative;
+  /* Same reason as `.lane--agent`: the card is a negative-z pseudo-element
+     and needs this lane to be the stacking context it sits inside. */
+  isolation: isolate;
   /*
-   * Grounded at the outer (right) edge and fading toward the divider, which
-   * is the same relationship a transcript lane has always had to its
-   * boundary — the wash is heaviest furthest from the seam, so the seam
-   * reads as a boundary between two fields rather than a line drawn on one.
+   * A neutral pool, the counterpart of the agents' coloured ones. The card
+   * over it is the only one on the wall with no accent at all, so without
+   * something under it there is nothing for its frost to dissolve and it
+   * renders as a flat white rectangle — which is the exact failure the
+   * gutters and the pools were introduced to fix, and it would land on the
+   * one card carrying the most text.
+   *
+   * Grounded at the outer (right) edge and fading inward, which is the
+   * relationship this lane has always had to its boundary.
    */
   background: linear-gradient(to left,
       var(--bg-lane) 0%,
-      color-mix(in srgb, var(--bg-lane) 40%, transparent) 100%);
-  /*
-   * The one hard edge, marking the one real structural boundary: people on
-   * the left, words on the right. Faded at both ends rather than ruled — a
-   * 2px rule the full height of a 12m wall would alight on panel seams and
-   * shimmer.
-   */
-  border-left: 2px solid transparent;
-  border-image: linear-gradient(to bottom,
-      transparent 0%,
-      var(--bg-divider) 22%,
-      var(--bg-divider) 72%,
-      transparent 100%) 1;
+      color-mix(in srgb, var(--bg-lane) 25%, transparent) 70%,
+      transparent 100%);
+}
+
+/*
+ * The transcript card. The same object as the agents' — same insets, same
+ * radius, same material, same light — with two differences, both of which
+ * come from it being the one lane with no agent behind it: no identity bar,
+ * and a lit face that runs the full height rather than stopping a fifth of
+ * the way down. There is no identity colour here for a veil to desaturate,
+ * and a column of words is exactly the thing that benefits most from reading
+ * as a lit pane.
+ *
+ * The hard divider this lane used to carry on its left edge is gone, and
+ * nothing replaced it. The structural boundary it marked — people on the
+ * left, words on the right — is now drawn by 56px of bare wall between two
+ * cards, which says it better than a 2px rule and cannot shimmer on a panel
+ * seam the way a full-height hairline on a 12m LED wall can.
+ */
+.lane--transcript::before {
+  content: "";
+  position: absolute;
+  inset: var(--card-top) var(--card-side) var(--card-foot);
+  z-index: -1;
+  border-radius: var(--radius-card);
+  background:
+    linear-gradient(to bottom,
+      color-mix(in srgb, var(--glass-tint) 85%, transparent) 0%,
+      color-mix(in srgb, var(--glass-tint) 45%, transparent) 42%,
+      color-mix(in srgb, var(--glass-tint) 30%, transparent) 100%),
+    var(--glass-fill);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  box-shadow:
+    inset 0 2px 0 var(--glass-spec),
+    inset 2px 0 0 var(--glass-edge-dim),
+    inset -2px 0 0 var(--glass-edge-dim),
+    inset 0 -2px 0 var(--glass-inner),
+    0 8px 24px -12px var(--glass-shadow),
+    0 48px 120px -40px var(--glass-cast);
 }
 
 /* ── Eyebrow (the small status line at the top of every lane) ──────────── */
@@ -212,11 +301,67 @@ body {
   transition: color var(--dur-fast) var(--ease);
 }
 
+/*
+ * The status line is a capsule sitting *on* the card.
+ *
+ * Tinted, not frosted, and that is the one rule this wall takes straight
+ * from Apple's own guidance: glass cannot sample glass, so a frosted pill on
+ * a frosted card is a blur of an already-blurred surface — a second full
+ * raster that returns nothing, because there is no structure left behind it
+ * to dissolve. A badge on glass is a *tint* with a lit edge. Hence the fill
+ * here is the agent's own `--accent-wash` over the material, and there is no
+ * `backdrop-filter` anywhere in this rule.
+ *
+ * `width: fit-content` with auto side margins is what hugs it to its content
+ * — the header is still a full-width flex item, so the lane's centring is
+ * unchanged and nothing below it moves.
+ *
+ * **Padding is horizontal only, and that is load-bearing rather than
+ * stylistic.** The lane's vertical budget is full at 1434 of 1440 (see the
+ * table at the top of this file), so any rule here that adds height pushes
+ * the name plate into the reserved foot. `height: 44px` with `box-sizing:
+ * border-box` pins it: the capsule is drawn inside the 44px the eyebrow
+ * already had, and the layout is bit-for-bit what it was.
+ *
+ * At idle the status text is empty and this collapses to a capsule holding
+ * just the dot, which is the correct reading — the agent has a seat and
+ * nothing to report.
+ */
 .lane--agent .lane__eyebrow {
   justify-content: center;
   /* Reserved, not hidden. An eyebrow that appears and disappears shifts a 2m
      orb up and down by 44px every time an agent starts thinking. */
   min-height: 44px;
+  width: fit-content;
+  margin-inline: auto;
+  padding-inline: 26px;
+  border-radius: var(--radius-pill);
+  /* Two-stop gradient, not the bare colour — only the last layer of a
+     multi-layer `background` may be one. See `.lane--agent::before`. */
+  background:
+    linear-gradient(var(--accent-wash), var(--accent-wash)),
+    var(--glass-fill);
+  box-shadow:
+    inset 0 1px 0 var(--glass-spec),
+    inset 0 -1px 0 var(--glass-inner),
+    0 4px 12px -8px var(--glass-shadow);
+  transition:
+    color var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease);
+}
+
+/* The transcript's own capsule, hugged to the left edge of the column rather
+   than centred — this lane holds a feed, not a face, and its header is an
+   attribution rather than a status. Untinted, like its card. */
+.lane--transcript .lane__eyebrow {
+  width: fit-content;
+  padding-inline: 26px;
+  border-radius: var(--radius-pill);
+  background: var(--glass-fill);
+  box-shadow:
+    inset 0 1px 0 var(--glass-spec),
+    inset 0 -1px 0 var(--glass-inner),
+    0 4px 12px -8px var(--glass-shadow);
 }
 
 .dot {
@@ -289,111 +434,222 @@ body {
  * long note in js/orb.js — once hue stops answering "who", it can stop
  * answering "what" too, and the two questions get separate surfaces.
  */
+/*
+ * Three objects on a wall, not three painted areas.
+ *
+ * The lane element itself is now *the wall behind the card*, and all it
+ * carries is the agent's ambient pool: one very large, very soft rise of
+ * their colour, seated where the orb will sit. It is full-bleed, so the three
+ * pools meet in the gutters between the cards and the bare wall there is the
+ * one place on the stage where an agent's colour is seen undiluted by frost.
+ * That is the layer doing the work that 3m of painted column used to do, and
+ * it does it without any of the flatness, because it is light on a surface
+ * rather than paint on one.
+ *
+ * Seated high and gone by the name, which is the one shaping decision in it.
+ * A pool centred on the card tints the name plate too, and then the card is
+ * a coloured card again — three of those side by side is colour carrying the
+ * composition, which is exactly what the brand guidelines rule out (Sage and
+ * white hold the visual weight; the accents are accents). Fading it out
+ * above the type leaves the bottom third of every card clean white, so the
+ * names read off paper and the colour stays where the colour is about: the
+ * orb, and the wall around it.
+ *
+ * `isolation: isolate` is load-bearing and subtle. The card below is a
+ * `z-index: -1` pseudo-element, and a negative-z child paints *behind the
+ * background of its nearest stacking context* — which, without this, is
+ * `.stage` (it has a transform), so the card would be painted beneath this
+ * lane's own pool and the pool would cover it. Isolating makes the lane that
+ * context, and the order inside it is exactly what is wanted: pool, then
+ * card, then the orb and the type.
+ */
 .lane--agent {
   position: relative;
-  border-top: var(--lane-bar) solid var(--accent-quiet);
+  isolation: isolate;
+  background: radial-gradient(92% 36% at 50% 28%,
+      color-mix(in srgb, var(--accent-quiet) var(--ambient-strength), transparent) 0%,
+      color-mix(in srgb, var(--accent-quiet) calc(var(--ambient-strength) * 0.52), transparent) 44%,
+      color-mix(in srgb, var(--accent-quiet) calc(var(--ambient-strength) * 0.14), transparent) 76%,
+      transparent 100%);
 }
 
 /*
- * Two washes over the lane, and the split is the whole point: `::before` is
- * whose lane this is and never moves, `::after` is whether they are talking
- * and is the only one that animates.
+ * The card.
  *
- * One layer used to do both jobs, at 0.3 idle and 1 speaking. That capped how
- * much colour a lane could carry at rest, and the cap was real rather than
- * aesthetic — the state cue *was* the difference between the two numbers, so
- * raising the resting level flattened the cue. The comment here used to record
- * that 0.3 was as high as it could go for exactly that reason.
+ * One sheet of frosted glass floating on the wall, with a gutter on all four
+ * sides (`--card-*` in tokens.css) — and the gutter is the whole reason this
+ * reads as glass at all. Glass needs three things the full-bleed lane could
+ * never give it: a ground with structure behind it (the pool above), an edge
+ * for a highlight to run along, and somewhere for a contact shadow to fall.
+ * A surface that reaches the edge of the screen on all four sides has none of
+ * them and is a fill with a tint, which is what the painted lane was.
  *
- * The cost was that an agent's identity leaned on the 12px bar at the very top
- * of the lane, which is the worst place on a stage display to put load-bearing
- * information: the top edge is the first thing a processor's overscan eats,
- * and a thin line of high-chroma colour is also what a display's own gamma
- * flattens first. Below that bar the old wash died out at 64% of the lane, so
- * the bottom third — the name plate, the part people actually read — had
- * almost no colour on it at all.
- *
- * Separating the layers lets the identity tint be as strong as it needs to be,
- * but it does *not* on its own leave the cue intact, and the arithmetic that
- * says otherwise is wrong. Alpha-compositing a second coat of the same pale
- * wash over a lane already tinted with it moves the result almost not at all:
- * measured at a 0.78 identity layer, a full extra wash unit was worth 3 units
- * of luminance at the top of the lane and *zero* at the name plate, against
- * the 8 or so the old 0.3-to-1 swing used to be worth. The cue has to be a
- * deeper colour rather than more of the same one — see `::after` below.
- *
- * `z-index: -1` on both rather than a stack of positioned siblings, because
- * `.stage` has a transform and therefore a stacking context — they land above
- * the stage's own background and below everything in the lane. `::after`
- * paints over `::before` at the same index by source order, which is the
- * stacking wanted and costs no rules elsewhere.
- */
-
-/*
- * Identity. Permanent, and carried the full height of the lane.
- *
- * The falloff is shallow rather than absent: a flat fill makes three hard
- * coloured panels and a seam down the middle of the wall, where a lane that
- * fades slightly toward its foot still reads as one section while letting the
- * three orbs sit on something. What it must not do is reach zero — a lane
- * tinted at the top and bare at the bottom reads as a gradient somebody
- * applied, not as a coloured section.
+ * Painted, never laid out. `.lane--agent` keeps its box, its 80/64 padding
+ * and its vertical budget untouched — the table at the top of this file is
+ * still accurate to the pixel — because a pseudo-element on insets costs
+ * nothing in flow. Everything inside the lane sits 36px inside the card's
+ * edge, which is why nothing inside the lane may bleed outward by more than
+ * that; it is the reason the name plate lost its own panel.
  */
 .lane--agent::before {
   content: "";
   position: absolute;
-  inset: 0;
+  inset: var(--card-top) var(--card-side) var(--card-foot);
   z-index: -1;
-  background: linear-gradient(to bottom,
-      var(--accent-wash) 0%,
-      color-mix(in srgb, var(--accent-wash) 70%, transparent) 60%,
-      color-mix(in srgb, var(--accent-wash) 52%, transparent) 100%);
+  border-radius: var(--radius-card);
   /*
-   * No `opacity` here. The strength is in `--accent-*-wash` itself, which is
-   * already a thinned ink and already per theme, and the gradient stops above
-   * thin it further down the lane. A second multiplier on top would mean two
-   * numbers to reason about for one colour, and the token's stated percentage
-   * would stop being the percentage you get.
+   * Three layers, top down.
+   *
+   * 1. The identity bar: `--lane-bar` of undiluted `--accent-quiet` across
+   *    the card's top edge, lit across the middle and thinning at both ends
+   *    where the corner radius takes it. Drawn as a background layer rather
+   *    than the `border-top` it used to be, so the card's radius clips it
+   *    into the corner instead of a square rule overhanging a round card.
+   *
+   *    Still entirely within `--accent-quiet`: the ends are a thinning of
+   *    it, never a walk toward `--accent`. Amber's ink is a brown and cyan's
+   *    is a teal, so a bar that brightened toward the ink would change hue
+   *    along its length, and this is the element with the least room on the
+   *    wall to be ambiguous about whose it is.
+   *
+   * 2. The lit face: a wash of Sage 1 off the top edge, gone by a fifth of
+   *    the card. This is the card catching the stage's own light, and it is
+   *    what the specular hairline below is the leading edge of.
+   *
+   * 3. The tint and the frost body. `--accent-wash` is 9% now — the card is
+   *    *faintly* the agent's colour, and the pool showing through the frost
+   *    is what supplies the rest.
+   *
+   * The tint is a two-stop gradient of one colour rather than the colour
+   * itself, and that is a syntax requirement rather than a flourish: in a
+   * multi-layer `background`, **only the final layer may be a bare colour**.
+   * Written as `…, var(--accent-wash), var(--glass-fill)` the whole
+   * declaration parses as invalid and is dropped — which is not a visible
+   * failure here, because the frost below keeps painting and the card still
+   * looks like a card. It cost an hour: the identity bar had silently
+   * stopped rendering along with everything else in this stack, and the
+   * frost alone was convincing enough that the card looked merely
+   * under-tinted rather than broken.
    */
+  background:
+    linear-gradient(to right,
+      color-mix(in srgb, var(--accent-quiet) 35%, transparent) 0%,
+      var(--accent-quiet) 18%,
+      var(--accent-quiet) 82%,
+      color-mix(in srgb, var(--accent-quiet) 35%, transparent) 100%) top / 100% var(--lane-bar) no-repeat,
+    linear-gradient(to bottom,
+      color-mix(in srgb, var(--glass-tint) 85%, transparent) 0%,
+      transparent 20%),
+    linear-gradient(var(--accent-wash), var(--accent-wash)),
+    var(--glass-fill);
+  /*
+   * The frost. Affordable because the backdrop is static — the pool and the
+   * stage gradients, both fixed for the whole show — so this rasterises once
+   * at load and composites thereafter. The orb canvas repaints sixty times a
+   * second *above* this element and never invalidates it; a sibling painted
+   * over a backdrop is not painted into it.
+   *
+   * **If the venue machine drops frames, this pair of declarations is the
+   * first thing to delete.** The card keeps its fill, its tint, its edges,
+   * its bar and its shadow without them, and loses only the frost.
+   */
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  /*
+   * Specular top, hairline sides, shaded underside — and two outer shadows,
+   * which the full-bleed lane could not have at all.
+   *
+   * The pair is Apple's, and the split is what stops a card looking stuck
+   * on: `--glass-cast` is wide, far and almost invisible (the card displacing
+   * the room's light) and `--glass-shadow` is short and directly under it
+   * (contact with the wall). One without the other gives either a floating
+   * sticker or a pasted rectangle. The brand's "no drop shadows" rules out
+   * the offset-blur card idiom of the 2000s, not contact — and at these
+   * alphas neither of these is a shadow anyone sees as a shadow.
+   */
+  box-shadow:
+    inset 0 2px 0 var(--glass-spec),
+    inset 2px 0 0 var(--glass-edge-dim),
+    inset -2px 0 0 var(--glass-edge-dim),
+    inset 0 -2px 0 var(--glass-inner),
+    0 8px 24px -12px var(--glass-shadow),
+    0 48px 120px -40px var(--glass-cast);
+  /*
+   * The lift, which is the only thing on this wall that moves other than the
+   * orbs and the type. See `[data-state]` below — `transform` and
+   * `box-shadow` only, both composited, neither re-rasterising the frost.
+   */
+  transition:
+    transform var(--dur-slow) var(--ease),
+    box-shadow var(--dur-slow) var(--ease);
 }
 
 /*
- * State. Zero at rest, so it contributes nothing to the identity under it
- * until the agent is on the PA — and then the whole 3m lane deepens. At 20m
- * that is the change most likely to be caught out of the corner of an eye,
- * which is how most of this audience will be watching. Top-weighted, so the
- * deepening reads as coming off the bar and down the lane.
+ * State. The card deepens and rises when its agent is on the PA.
  *
- * `--accent-quiet` — the undiluted identity fill the lane's own wash is a
+ * A second layer on exactly the card's geometry rather than a change to the
+ * card's own background, because opacity on a separate element is the only
+ * version of this that transitions without re-rasterising the frost
+ * underneath it. Zero at rest, so it contributes nothing to the identity
+ * under it until there is something to say.
+ *
+ * `--accent-quiet` — the undiluted identity fill the card's tint is a
  * thinning of, laid back over it at a fraction. So the cue is literally "more
- * of this lane's colour", which is both the right thing to see and the only
- * thing that registers: deepening a tint needs a stronger form of it, and a
- * second coat of the tint itself is close to a no-op (the long note above
- * measured that the hard way).
+ * of this agent's colour". `quiet` and not `--accent`, even though the ink is
+ * darker and would give a bigger swing, because the ink is a different *hue*
+ * from the tint on two of the three scales: amber's ink is a brown and cyan's
+ * is a teal, and a card that changes hue when its agent starts talking reads
+ * as a different agent, which is the one thing this surface must never say.
  *
- * `quiet` and not `--accent`, even though the ink is darker and would give a
- * bigger swing, because the ink is a different *hue* from the wash on two of
- * the three scales — amber's ink is a brown and cyan's is a teal. A lane that
- * changes hue when its agent starts talking reads as a different agent, which
- * is the one thing this surface must never say.
+ * Top-weighted, so the deepening reads as coming off the bar and down the
+ * card.
  */
 .lane--agent::after {
   content: "";
   position: absolute;
-  inset: 0;
+  inset: var(--card-top) var(--card-side) var(--card-foot);
   z-index: -1;
-  background: linear-gradient(to bottom, var(--accent-quiet) 0%, transparent 72%);
+  border-radius: var(--radius-card);
+  background: linear-gradient(to bottom, var(--accent-quiet) 0%, transparent 76%);
   opacity: 0;
   transition: opacity var(--dur-slow) var(--ease);
 }
 
 .lane--agent[data-state="speaking"]::after,
 .lane--agent[data-state="ducked"]::after {
-  /* Measured, not chosen: this is the alpha at which a speaking lane lands
-     about 15 L below its own resting colour — roughly twice the swing the old
-     single-layer 0.3-to-1 managed, and enough to catch at the back of a room
-     without the lane going dark enough to want light type. */
-  opacity: 0.2;
+  opacity: 0.16;
+}
+
+/*
+ * And the lift: the speaking card rises off the wall.
+ *
+ * This is the one gesture on the wall that is pure Apple rather than pure
+ * Swiss, and it earns its place because it is the cue that survives being
+ * seen out of the corner of an eye from the back of a room — motion and a
+ * deepening shadow are read by peripheral vision, where a colour shift of a
+ * few L is not. Most of this audience will be watching the panellists, not
+ * the wall, and will catch the wall in exactly that way.
+ *
+ * 0.8% of 904px is 7px — 2.2cm of travel, which is nothing up close and
+ * reads clearly at 20m against three neighbours that did not move. The
+ * shadow doing most of the work: it roughly doubles in reach, which is what
+ * a real object rising off a surface does and what makes the scale read as
+ * height rather than as zoom.
+ *
+ * `transform` and `box-shadow` only. A transform on a backdrop-filtered
+ * element composites — it does not re-run the blur — so the cost of this is
+ * a matrix on a layer that already exists.
+ */
+.lane--agent[data-state="speaking"]::before,
+.lane--agent[data-state="ducked"]::before {
+  transform: scale(1.008);
+  box-shadow:
+    inset 0 2px 0 var(--glass-spec),
+    inset 2px 0 0 var(--glass-edge-dim),
+    inset -2px 0 0 var(--glass-edge-dim),
+    inset 0 -2px 0 var(--glass-inner),
+    0 20px 48px -16px var(--glass-shadow),
+    0 90px 180px -50px var(--glass-cast);
 }
 
 /*
@@ -446,7 +702,23 @@ body {
 
 /* ── Name plate ────────────────────────────────────────────────────────── */
 
+/*
+ * The name plate. Type on the card, and nothing else.
+ *
+ * It had a glass panel of its own until the lanes became cards, and losing
+ * it is a gain twice over. It was the nesting Apple's guidance rules out —
+ * glass cannot sample glass, so a panel on a frosted card is a second full
+ * raster returning almost nothing, because there is no structure left behind
+ * it to dissolve. And geometrically it no longer fits: the panel bled 44px
+ * outward from a lane whose content box is only 36px inside the card's edge,
+ * so it would have hung over the card it was supposed to be sitting on.
+ *
+ * What it was for — separating the name from a 3m painted column — is a
+ * problem the card already solved. Three lines of type on a near-white
+ * surface need no second surface under them.
+ */
 .plate {
+  position: relative;
   text-align: center;
   display: flex;
   flex-direction: column;
@@ -618,11 +890,21 @@ body {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  animation: line-in var(--dur-slow) var(--ease) both;
+  /*
+   * The entrance grows the bubble out of its own bottom corner — the squared
+   * one, the one that points at whoever said it. `transform-origin` is the
+   * whole of what makes that true, and it costs one declaration per side.
+   * A bubble that scales from its centre grows into the lane it does not
+   * belong to for the first 380ms of its life, which at this size is a 760px
+   * box moving the wrong way across three metres of wall.
+   */
+  transform-origin: left bottom;
+  animation: line-in var(--dur-mid) var(--ease) both;
 }
 
 .bubble-row[data-side="right"] {
   align-items: flex-end;
+  transform-origin: right bottom;
 }
 
 /*
@@ -654,20 +936,28 @@ body {
    * agents do — four voices in one feed — but not an accent: the three
    * accents each name one agent, and giving Ricky a fourth colour would imply
    * a fourth seat on the panel. Quiet grey says "attribution", not
-   * "identity". The three rules below override it for the agents. */
-  color: var(--text-quiet);
+   * "identity". The three rules below override it for the agents.
+   *
+   * Set through `--tag-ink` rather than `color` directly, because the partial
+   * rule below needs the speaker's colour as a *gradient stop* and a
+   * `currentColor` stop would resolve to `transparent` there — the element's
+   * own `color` has to be transparent for `background-clip: text` to show
+   * anything. One indirection, and it keeps the four speakers' colours
+   * declared in one place instead of two. */
+  --tag-ink: var(--text-quiet);
+  color: var(--tag-ink);
 }
 
 .bubble-row[data-accent="jade"] .bubble__tag {
-  color: var(--accent-jade);
+  --tag-ink: var(--accent-jade);
 }
 
 .bubble-row[data-accent="cyan"] .bubble__tag {
-  color: var(--accent-cyan);
+  --tag-ink: var(--accent-cyan);
 }
 
 .bubble-row[data-accent="amber"] .bubble__tag {
-  color: var(--accent-amber);
+  --tag-ink: var(--accent-amber);
 }
 
 .bubble {
@@ -692,8 +982,30 @@ body {
    * corner radius.
    */
   max-width: 760px;
+  /* Belt and braces against a single unbreakable token — a URL, a model name
+     — from a live transcript setting the bubble wider than its column. */
+  overflow-wrap: anywhere;
   padding: 20px 28px;
   border-radius: var(--bubble-radius);
+  /*
+   * One flat fill, and that is a deliberate reversal of the glass this
+   * carried while the lanes were painted columns. It had three layers and
+   * five shadows: a specular face, a tint, a material body, hairlines on
+   * four sides and a contact shadow.
+   *
+   * **Glass is for the card, never for what is written on it.** That is
+   * Apple's own line on the material and it is the rule this wall had been
+   * breaking in the one place it costs most: a bubble is content, it is
+   * small, there are a dozen of them at once, and every one of those layers
+   * was being spent to make a 760px box look like a pane of glass sitting on
+   * a pane of glass. The result read as fussy up close and as noise at 20m,
+   * which between them is a fair description of what "vibe coded" looks
+   * like.
+   *
+   * What a bubble has to do is say who is speaking and stay out of the way
+   * of 50px of body text. One tint of the speaker's own colour does both.
+   * The card underneath supplies the surface; this supplies the voice.
+   */
   background: var(--bg-bubble);
   font-size: 50px;
   font-weight: 400;
@@ -728,29 +1040,41 @@ body {
  * which reads as the agent's identity fading rather than as the line getting
  * older. The fill marks who, the ink marks when.
  *
- * Thinned to 55% of the lane figure, which is the one place a bubble and its
- * lane deliberately disagree. They are the same statement about the same
- * agent, but not the same object: a lane is a 3m field read at a glance from
- * thirty metres, where the only failure is ambiguity, and a bubble is a small
- * shape carrying 50px of body text on a neutral column, where the failure is
- * the fill competing with the words inside it. One thinning for all three,
- * applied on top of per-scale sources that are already level with each
- * other — so the three bubbles stay as mutually distinct as the three lanes,
- * just quieter.
+ * **Exactly the lane's own figure, as of 4 Oct.** These used to be thinned to
+ * 55% of it, on the argument that a lane is a 3m field read from thirty
+ * metres where the only failure is ambiguity, while a bubble is a small shape
+ * carrying 50px of body text where the failure is the fill competing with the
+ * words. That argument was answering a question nobody was asking: the
+ * thinning made an agent's bubble a *different* colour from their lane —
+ * close enough to look like a near-miss rather than a decision, which is one
+ * of the things that read as cheap. A bubble and a lane are the same
+ * statement about the same agent and they now say it in the same colour.
+ *
+ * The competing-with-the-text worry is real and is handled where it belongs,
+ * on the ink: `--text-primary` on the live bubble and `--text-secondary`
+ * behind it, both of which clear their fill comfortably at the wash
+ * strengths in tokens.css. If a fill ever does start fighting its words, thin
+ * `--accent-*-wash` itself — the lane and the bubble should move together.
+ *
+ * Each rule retints `--bg-bubble` rather than setting `background`. That is
+ * what keeps the glass face in `.bubble` above as one declaration instead of
+ * four: the shorthand there stacks a lit top layer and the panel fill over
+ * this token, and a rule that set `background` outright would silently drop
+ * both for the three voices that have an accent and keep them only for Ricky.
  */
-.bubble-row[data-accent="jade"] .bubble {
-  background: color-mix(in srgb, var(--accent-jade-wash) 55%, transparent);
+.bubble-row[data-accent="jade"] {
+  --bg-bubble: color-mix(in srgb, var(--accent-jade-quiet) var(--bubble-tint), transparent);
 }
 
-.bubble-row[data-accent="cyan"] .bubble {
-  background: color-mix(in srgb, var(--accent-cyan-wash) 55%, transparent);
+.bubble-row[data-accent="cyan"] {
+  --bg-bubble: color-mix(in srgb, var(--accent-cyan-quiet) var(--bubble-tint), transparent);
 }
 
 /* And no exception for amber, which until now needed one at every use. Its
    step 4 had twice jade's chroma; `--accent-amber-quiet` is level with the other
    two by construction, so one rule covers three agents. */
-.bubble-row[data-accent="amber"] .bubble {
-  background: color-mix(in srgb, var(--accent-amber-wash) 55%, transparent);
+.bubble-row[data-accent="amber"] {
+  --bg-bubble: color-mix(in srgb, var(--accent-amber-quiet) var(--bubble-tint), transparent);
 }
 
 /* The most recent finalised bubble is the one still in play. */
@@ -779,10 +1103,46 @@ body {
   animation: none;
 }
 
+/*
+ * The name tag on an in-progress bubble: greyed at the top and resolving into
+ * the speaker's own colour by the baseline.
+ *
+ * A third cue for "this sentence is not finished yet", alongside the quieter
+ * ink and the italic on the bubble itself — and the one that works on the
+ * attribution rather than on the words, which is what the eye lands on first
+ * in a four-voice feed. A name arriving half-formed and settling as the line
+ * finalises is the same statement the growing bubble underneath it is making.
+ *
+ * Top-down rather than bottom-up because the tag sits *above* its bubble, so
+ * the colour strengthens toward the words it belongs to; grading the other
+ * way would point the name away from the thing it names.
+ *
+ * `background-clip: text` needs `color: transparent`, which is why the stops
+ * come off `--tag-ink` and not `currentColor` — see `.bubble__tag`. The
+ * fallback if a renderer drops `background-clip` is a transparent tag, so
+ * `-webkit-` is declared alongside the standard property; every engine that
+ * has ever run this wall supports one or the other.
+ */
+.bubble-row[data-partial="true"] .bubble__tag {
+  color: transparent;
+  background-image: linear-gradient(to bottom,
+      color-mix(in srgb, var(--text-quiet) 70%, transparent) 0%,
+      var(--text-quiet) 34%,
+      var(--tag-ink) 92%);
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+/*
+ * Rise and settle. The scale is small on purpose — 0.965 of a 760px bubble
+ * is 27px of growth, which reads as the box arriving rather than as it
+ * zooming — and it is the part that makes the entrance feel like an object
+ * being placed instead of a `div` fading in.
+ */
 @keyframes line-in {
   from {
     opacity: 0;
-    transform: translateY(16px);
+    transform: translateY(14px) scale(0.965);
   }
 
   to {
@@ -834,12 +1194,38 @@ body {
 
 /* ── Offline ───────────────────────────────────────────────────────────── */
 
+/*
+ * A scrim over the wall rather than a replacement for it.
+ *
+ * It used to be an opaque `--bg-wall` fill, which meant a dropped socket —
+ * routinely a two-second reconnect — blanked 54m² to a flat colour and then
+ * brought the whole wall back. A heavy blur over the lanes says the same
+ * thing while leaving the composition recognisably there behind it, which is
+ * both calmer to stand in front of and more honest: the panel has not gone,
+ * the picture of it has.
+ *
+ * The one animated `backdrop-filter` exception to the note in tokens.css,
+ * and it holds: only its *opacity* transitions, the filter itself is
+ * constant, and while it is up there is by definition nothing arriving for
+ * the orbs to spend the frame budget on.
+ */
 .offline {
   position: fixed;
   inset: 0;
   display: grid;
   place-items: center;
-  background: var(--bg-wall);
+  /*
+   * Lighter than the wall rather than darker, which is the one thing that
+   * had to change with the theme: a 72% scrim of a near-white `--bg-wall`
+   * over a near-white wall is invisible, so the only thing saying "the
+   * socket is down" would have been the blur. `--bg-scrim` reads as the
+   * whole composition being put behind frosted glass, which is the same
+   * material the cards are made of and therefore the same statement — the
+   * panel has not gone, the picture of it has.
+   */
+  background: var(--bg-scrim);
+  backdrop-filter: blur(80px) saturate(0.7);
+  -webkit-backdrop-filter: blur(80px) saturate(0.7);
   color: var(--text-quiet);
   font-size: 44px;
   letter-spacing: 0.22em;
