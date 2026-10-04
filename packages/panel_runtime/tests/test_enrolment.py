@@ -1,4 +1,5 @@
-"""Tests for `panel_runtime.enrolment`: the store, and the two-phase machine.
+"""Tests for `panel_runtime.enrolment`: the store, the two-phase machine, and
+the gate `PanelRuntime` puts in front of both.
 
 No network: `websockets.connect` is monkeypatched with a fake connection, the
 same plain-`asyncio.run()` style `test_stt.py` uses rather than pytest-asyncio
@@ -28,6 +29,7 @@ from panel_runtime.enrolment import (
     _dominant_label,
     _LabelTally,
 )
+from panel_runtime.panel import PanelRuntime
 from panel_runtime.stt import STTConfig
 
 PERSONA_DIR = Path(__file__).resolve().parents[3] / "personas"
@@ -557,3 +559,95 @@ def test_feed_between_phases_is_a_no_op() -> None:
     enrolment = _enrolment()
     enrolment.feed(b"\x00" * 64)  # must not raise
     assert enrolment._source is None
+
+
+# ------------------------------------------------------- the runtime's gate
+
+
+@pytest.fixture
+def _no_keys_needed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`PanelRuntime` reads both keys at construction and neither is used
+    here — nothing in this section opens a socket."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("SPEECHMATICS_API_KEY", "test-key")
+
+
+def _unlocked_runtime(
+    cast: PanelCast,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> PanelRuntime:
+    """A runtime with the lock off, and both things it would otherwise reach
+    for wired to explode.
+
+    `--speakers` and `--re-enrol` are deliberately *also* set, because they are
+    what an operator's saved shell alias will still be carrying when they
+    toggle the lock off. They must be no-ops rather than an error.
+    """
+    monkeypatch.setattr(
+        SpeakerStore,
+        "load",
+        lambda self, *, model: pytest.fail("the store must not be read"),
+    )
+    monkeypatch.setattr(
+        "panel_runtime.panel.SpeakerEnrolment",
+        lambda **kwargs: pytest.fail("no capture session may be built"),
+    )
+    return PanelRuntime(
+        cast,
+        use_tts=False,
+        speakers_path=tmp_path / "speakers.json",
+        re_enrol=True,
+        speaker_lock=False,
+    )
+
+
+@pytest.mark.usefixtures("_no_keys_needed")
+def test_no_speaker_lock_skips_the_phase_without_touching_the_store(
+    cast: PanelCast,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """No 30-second prompt, no stored enrolment read, no socket.
+
+    The deliberate route into the same ungated mode a failed enrolment already
+    falls back to — so it must return the same `None`, and get there without
+    doing any of the work.
+    """
+    runtime = _unlocked_runtime(cast, monkeypatch, tmp_path)
+
+    assert asyncio.run(runtime._enrol()) is None
+    assert runtime._enrolling is None, "the audio callback must stay on the VAD path"
+    assert not (tmp_path / "speakers.json").exists(), "nothing to save either"
+
+
+@pytest.mark.usefixtures("_no_keys_needed")
+def test_a_skipped_enrolment_leaves_the_mic_undiarized(
+    cast: PanelCast,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """`run()`'s one diarization call site is reached only for a speaker.
+
+    `PanelSTT.identify` is the single place in the show that turns diarization
+    on, and `run()` calls it only when `_enrol` returned one. Asserted on the
+    config the sessions would actually read rather than on the call, because
+    that is what reaches the wire.
+    """
+    runtime = _unlocked_runtime(cast, monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        runtime.stt,
+        "identify",
+        lambda **kwargs: pytest.fail("diarization must stay off"),
+    )
+
+    speaker = asyncio.run(runtime._enrol())
+    if speaker is not None:  # the branch in `run()`, verbatim
+        runtime.stt.identify(
+            label=speaker.label,
+            speaker_identifiers=speaker.speaker_identifiers,
+        )
+
+    assert runtime.stt.config.diarization == "none"
+    assert runtime.stt.config.speakers == ()
+    assert runtime.agent_stt is None, "and no --display sockets were asked for"

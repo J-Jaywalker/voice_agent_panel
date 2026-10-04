@@ -49,6 +49,8 @@ enrolment finishes, `_callback` routes mic blocks to the enrolment session
 instead of to the VAD and the floor's transcription; afterwards it routes them
 back and never looks again. See `enrolment.py` for the two-session capture and
 verification, and `stt.py` for what the identifiers then buy per segment.
+`--no-speaker-lock` skips the phase outright and runs the mic ungated, which is
+the same mode a *failed* enrolment already falls back to.
 """
 
 from __future__ import annotations
@@ -293,6 +295,7 @@ class PanelRuntime:
         display: DisplayServer | None = None,
         speakers_path: Path | None = None,
         re_enrol: bool = False,
+        speaker_lock: bool = True,
     ) -> None:
         self.cast = cast
         self.fc = FloorController(cast, floor_config or FloorConfig())
@@ -311,8 +314,14 @@ class PanelRuntime:
 
         # Speaker enrolment: where Ricky's voiceprint is kept between runs,
         # and whether to capture a fresh one regardless.
+        #
+        # `speaker_lock=False` turns the whole phase off and makes the other
+        # two moot — there is nothing to load and nothing to capture, so
+        # `_enrol` returns before it reads either. Default on: this repo's
+        # convention is safe-by-default with an explicit opt-out.
         self._store = SpeakerStore(speakers_path)
         self._re_enrol = re_enrol
+        self._speaker_lock = speaker_lock
         # The enrolment in progress, or None. Read once per audio block by
         # `_callback` to decide where mic audio goes, and set only while the
         # floor's own tasks do not yet exist — see `run()`.
@@ -1646,10 +1655,27 @@ class PanelRuntime:
         Refusing to start is a worse failure on a stage than an ungated mic,
         and there is no operator override to recover with (CLAUDE.md).
 
+        `--no-speaker-lock` reaches that same ungated mode *on purpose*,
+        returning None here before the store is read or a socket is opened. It
+        is one branch rather than a second code path precisely so the
+        deliberate choice and the failure land the operator in a mode that has
+        already been exercised. It says so in a different register, though: a
+        skipped phase is not a broken one.
+
         Returns:
             The enrolled speaker — freshly captured or loaded from the store —
-            or None if enrolment did not produce one.
+            or None if enrolment did not produce one, or was not run at all.
         """
+        if not self._speaker_lock:
+            console.print(
+                "\n[bold]Speaker lock disabled.[/] Every voice on the mic will "
+                "be treated as Ricky's: transcribed, and able to interrupt an "
+                "agent.\n"
+                "[dim]Drop[/] --no-speaker-lock [dim]to enrol a voice "
+                "instead.[/]\n"
+            )
+            return None
+
         model = self.stt.config.model
         if not self._re_enrol:
             stored = self._store.load(model=model)
@@ -1902,6 +1928,14 @@ def main() -> None:
         action="store_true",
         help="capture a fresh voice enrolment even if a stored one is valid",
     )
+    parser.add_argument(
+        "--no-speaker-lock",
+        action="store_true",
+        help=(
+            "skip enrolment and treat every voice on the mic as Ricky's "
+            "(makes --speakers and --re-enrol no-ops)"
+        ),
+    )
     args = parser.parse_args()
 
     if args.list_devices:
@@ -1923,6 +1957,7 @@ def main() -> None:
         display=DisplayServer(cast, port=args.display_port) if args.display else None,
         speakers_path=args.speakers,
         re_enrol=args.re_enrol,
+        speaker_lock=not args.no_speaker_lock,
     )
 
     with contextlib.suppress(KeyboardInterrupt):

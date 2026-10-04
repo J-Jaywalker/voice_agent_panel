@@ -15,12 +15,16 @@ uv run panel --no-tts     # same, printed not spoken
 uv run panel --llm-address # resolve the addressee with Haiku, not the regex
 uv run panel --re-enrol   # capture Ricky's voice again, ignoring the stored enrolment
 uv run panel --speakers PATH # where that enrolment lives (default .panel/speakers.json)
+uv run panel --no-speaker-lock # skip enrolment, treat every mic voice as Ricky
+                          # (makes the two above no-ops)
 uv run panel --display    # + the 12m video wall, on http://localhost:8765
                           # also opens one display-only STT socket per agent
 uv run barge-in           # interrupt reflex on live mic
 uv run panel-display --demo # video wall alone, synthetic panel, no mic or keys
 uv run ruff check .
 ```
+
+`make help` lists short names for the handful of combinations used daily — `make panel`, `make panel-unlocked`, `make display`, `make sim`, `make test`, `make test-core`, `make lint`. The raw commands above stay the ground truth; anything else, type it out.
 
 ## Layout
 
@@ -45,7 +49,7 @@ Agents already pass turns to each other without Ricky (`_maybe_rearbitrate`), bo
 | LiveKit as library, not framework | No `AgentSession`. ADR 0001. In practice this is now **Silero VAD only** — `silero.VAD`, `rtc.AudioFrame`, `lkvad.VADEventType`, nothing else. Audio I/O is `sounddevice`, the mixer is ours. Re-litigating this means rewriting the audio path, not changing a config. |
 | STT: Agent STT (Speechmatics preview API), raw `websockets`, one client per voice | Not `speechmatics-voice`/`speechmatics-rt`/LiveKit STT plugin. No local end-of-turn tuning — native `EndOfTurn`. Two `PanelSTT` instances: `self.stt` (Ricky's mic) feeds the floor; `self.agent_stt` (one channel per agent, `--display` only) feeds the video wall and *only* the video wall. Same class, generic over `speaker`. |
 | Diarisation: **on for Ricky's mic, off for the agents'** | Not a reversal of "identity is a fact about the wiring" — that line was always about the *agent* sockets and still is: one known voice each, nothing to diarise, and turning it on there would be guessing what the wiring already knows. A mic on a stage is the opposite case. The audience is in the room and the PA bleeds back into it, so the wiring cannot answer "is this Ricky?" there and never could; it was just never asked. So diarisation on that one socket *establishes* identity rather than guessing it. Configured at exactly one call site — `PanelSTT.identify()` from `PanelRuntime.run()`, post-enrolment — never by moving `STTConfig.diarization`'s default, because both families share that dataclass and a moved default silently diarises the agents' three sockets too. |
-| Speaker enrolment gates the human mic | `panel_runtime/enrolment.py`. Capture up to 30s with `get_speakers: true`, then a **second** session configured with the returned identifiers, and require 3 finalised segments labelled `Ricky`. That second session *is* the "same speaker three times" check: `speaker_identifiers` is an opaque model-bound string — no vector, no embedding, no similarity score anywhere in this API — so there is nothing to compare and no threshold to tune. Identifiers are bound to the STT model; `SpeakerStore` records the model and treats a mismatch as absent. Runs before any floor task exists, so it is a structural gate, not a flag. A *failed* enrolment prints loudly and runs the show ungated — refusing to start is a worse failure on a stage than an ungated mic, and there is no operator override to recover with. |
+| Speaker enrolment gates the human mic | `panel_runtime/enrolment.py`. Capture up to 30s with `get_speakers: true`, then a **second** session configured with the returned identifiers, and require 3 finalised segments labelled `Ricky`. That second session *is* the "same speaker three times" check: `speaker_identifiers` is an opaque model-bound string — no vector, no embedding, no similarity score anywhere in this API — so there is nothing to compare and no threshold to tune. Identifiers are bound to the STT model; `SpeakerStore` records the model and treats a mismatch as absent. Runs before any floor task exists, so it is a structural gate, not a flag. A *failed* enrolment prints loudly and runs the show ungated — refusing to start is a worse failure on a stage than an ungated mic, and there is no operator override to recover with. `--no-speaker-lock` reaches that same ungated mode deliberately rather than through failure — one branch at the top of `_enrol`, not a second path, so the chosen route and the failure route land in a mode that has already been exercised; it prints as a skipped phase, not a broken one, because an operator who reads "enrolment failed" when he asked for no enrolment goes looking for a fault. |
 | TTS: ElevenLabs, hand-rolled over raw `websockets` | Not a LiveKit plugin — cancellation latency must be our code's property. |
 | Model: Claude Sonnet 5, `effort: "low"` | Chosen for speed. (Opus 5 was used briefly for mid-turn `role: "system"` support; reverted when mid-turn steering was cut.) |
 | Speechmatics Flow is deprecated | Never propose it. |
