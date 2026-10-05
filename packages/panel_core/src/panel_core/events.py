@@ -40,6 +40,12 @@ class Signals:
     responding_to: str | None = None
     # Agent id this agent thinks is better placed to answer — drives handoffs.
     defer_to: str | None = None
+    # Agent id this agent hands the floor to once its own turn ends. Unlike
+    # `defer_to`, which redirects the turn being arbitrated, this invites a
+    # colleague who need not have proposed at all — see
+    # `FloorController._grant` and `PanelState.pending_invite`. Honoured only
+    # when `FloorConfig.agent_invitations` is on.
+    invites_next: str | None = None
 
 
 # --------------------------------------------------------------------------

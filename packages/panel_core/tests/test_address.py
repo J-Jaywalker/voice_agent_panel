@@ -225,9 +225,27 @@ CORPUS: list[tuple[str, str, AddressRole | None]] = [
         "melia+wayne",
         AddressRole.VOCATIVE,
     ),
+    # A full stop between two bare names does not separate them into two
+    # different requests. "Uh, Dexter. Amelia, what is your opinion about
+    # that?" is one act of moderation put to two people, exactly as
+    # "Melia, Dexter, thoughts?" above is — Ricky pauses after the first name,
+    # he does not withdraw it. The classifier read the sentence break as a
+    # boundary and answered MELIA alone, dropping the panellist Ricky had just
+    # named first.
+    #
+    # What *does* turn an earlier name into a stood-down mention is closing or
+    # dismissal language in front of it — "thanks", "sorry" — never the
+    # punctuation. Hence the pair below: the same two names, the same full
+    # stop, and only the "Thanks," makes Dexter oblique.
+    ("Dexter. Melia, what is your opinion on that?", "dex+melia", AddressRole.VOCATIVE),
+    ("Melia. Dexter, what do you think?", "dex+melia", AddressRole.VOCATIVE),
+    ("Uh, Dexter. Amelia, what is your opinion about that?", "dex+melia", AddressRole.VOCATIVE),
+    ("Thanks, Dexter. Melia, what do you think?", "melia", AddressRole.VOCATIVE),
     # Naming everybody is not a group — there is nobody left to bar, so it is
-    # the open floor it has always been.
+    # the open floor it has always been. Full stops between the names change
+    # nothing about that either.
     ("Dexter, Melia, Wayne — thoughts?", OPEN, None),
+    ("Dexter. Melia. Wayne — thoughts?", OPEN, None),
 ]
 
 
@@ -376,7 +394,12 @@ def test_a_group_invitation_lets_the_named_agents_talk_to_each_other(fc, state):
     makes it alternate rather than letting the stronger line run the exchange.
     The handovers are `_agent_ended`'s, not Ricky's: he asked them to take it
     between them and then said nothing.
+
+    The valve is pinned below `address_invitation_turns` so that it, and not
+    the invitation running out of turns, is what ends the exchange — which is
+    the property being asserted at the bottom.
     """
+    fc = FloorController(fc.cast, FloorConfig(max_consecutive_agent_turns=3))
 
     def every_agent_proposes(state: PanelState, t: float) -> PanelState:
         """A fresh line from all three, so exclusion is a decision not a gap."""

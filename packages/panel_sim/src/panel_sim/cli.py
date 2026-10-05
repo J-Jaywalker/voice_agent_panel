@@ -317,7 +317,9 @@ def main() -> None:
     args = parser.parse_args()
 
     cast = PanelCast.from_dir(args.personas)
-    brain: Brain = ClaudeBrain(args.model, args.effort) if args.live else StubBrain(args.seed)
+    brain: Brain = (
+        ClaudeBrain(args.model, args.effort, cast=cast) if args.live else StubBrain(args.seed)
+    )
 
     console.print(
         f"[bold]Panel:[/] {', '.join(p.name for p in cast.personas.values())}  "

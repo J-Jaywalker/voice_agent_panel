@@ -13,10 +13,12 @@ diverged would be the one facing the audience.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
+from dataclasses import dataclass
 
 from .events import HUMAN
 from .personas import PanelCast, Persona
-from .state import PanelState
+from .state import InvitationSource, PanelState
 
 # Global guardrail. The structural fix from FEASIBILITY.md 4.2: the agents are
 # not Speechmatics people and have no basis for claims about them, so there is
@@ -81,7 +83,7 @@ Hard rules:
 """.strip()
 
 
-def build_system_prompt(persona: Persona) -> str:
+def build_system_prompt(persona: Persona, *, cast: PanelCast | None = None) -> str:
     relationships = "\n".join(
         f"- {other}: {view}" for other, view in persona.relationships.items()
     ) or "- (none recorded)"
@@ -116,6 +118,23 @@ def build_system_prompt(persona: Persona) -> str:
         f"\n\nHow you use a turn:\n{discipline}\n" if persona.delivery else ""
     )
 
+    # Rendered in cast order — `cast.personas` iteration order — and never
+    # sorted or set-derived. This block sits inside the cached system prompt,
+    # which must be byte-identical for the whole show.
+    colleagues = ""
+    if cast is not None:
+        lines = "\n".join(
+            f"- {other.name}: {', '.join(other.topics_of_authority) or 'nothing in particular'}"
+            for agent_id, other in cast.personas.items()
+            if agent_id != persona.id
+        )
+        if lines:
+            colleagues = (
+                f"\n\nWhere your colleagues have real authority:\n{lines}\n"
+                "Hand a question to one of them by name only when it is squarely "
+                "theirs — never to get out of one that is actually yours."
+            )
+
     return f"""{GUARDRAILS}
 
 You are {persona.name}, {persona.job_title} at {persona.employer} — a fictional
@@ -128,7 +147,7 @@ Your position: {persona.stance}{recurring}{public_numbers}{delivery_block}
 Speaking style: {persona.communication_style}. Verbal habits you actually use: {tics}.
 Use them sparingly — reserve them for moments you're genuinely frustrated,
 amused or engaged, not as a habitual opener.
-Areas where you have real authority: {authority}.
+Areas where you have real authority: {authority}.{colleagues}
 
 How you regard the others on the panel:
 {relationships}
@@ -147,7 +166,9 @@ topic in general.
 """.strip()
 
 
-def build_turn_prompt(state: PanelState, persona: Persona) -> str:
+def build_turn_prompt(
+    state: PanelState, persona: Persona, *, near_turn_limit: bool = False
+) -> str:
     transcript = state.recent_text() or "(the panel has not started yet)"
     others = [a for a in state.agents if a != persona.id]
 
@@ -173,6 +194,24 @@ def build_turn_prompt(state: PanelState, persona: Persona) -> str:
             "question. You will almost certainly not be speaking. Score yourself "
             "low unless this is genuinely the one thing that must be said.\n"
         )
+    elif invitation.source is InvitationSource.AGENT:
+        # A colleague handed the floor on by name. Guaranteed like a direct
+        # address from Ricky — it bypasses the score floor — so the invited
+        # agent has to produce something either way.
+        if persona.id in invitation.agents:
+            addressed = (
+                "\nA colleague on the panel has just handed this to YOU by name. "
+                "You are speaking next whatever you score. If the question is "
+                "genuinely yours, answer it. If it is not, say so briefly and in "
+                "character and point at whoever it does belong to — never claim "
+                "expertise you do not have, and never say nothing.\n"
+            )
+        else:
+            named = ", ".join(invitation.agents)
+            addressed = (
+                f"\nA colleague has handed the floor to {named}, not you. "
+                "Unless you strongly disagree, score yourself low and let them answer.\n"
+            )
     elif not invitation.agents:
         addressed = "\nRicky has opened the floor to the panel.\n"
     elif invitation.agent == persona.id:
@@ -243,10 +282,20 @@ def build_turn_prompt(state: PanelState, persona: Persona) -> str:
             "score that low.\n"
         )
 
+    # The last agent turn this invitation can carry: the floor goes back to
+    # Ricky after it, so naming a successor would name one who never speaks.
+    limit = ""
+    if near_turn_limit:
+        limit = (
+            "\nDo not invite a colleague to follow you this turn. This is the last "
+            "agent turn before the floor goes back to Ricky, so leave invites_next "
+            "null and finish the thought yourself.\n"
+        )
+
     return f"""Recent conversation:
 
 {transcript}
-{addressed}{exchange}
+{addressed}{exchange}{limit}
 Agent ids you may reference: {", ".join(others)}.
 
 Score your desire to speak honestly, then give the line you'd say if granted
@@ -271,7 +320,7 @@ score with a short reaction is the normal, honest case.""".strip()
 #
 # Scored against the corpus in `packages/panel_core/tests/test_address.py` by
 # `packages/panel_runtime/tests/bench_address.py`, and wired up behind
-# `FloorConfig.llm_address_detection` (`panel --llm-address`), off by default.
+# `FloorConfig.llm_address_detection` (`panel --address-backend haiku`).
 #
 # The verdict vocabulary is shaped for time-to-verdict, not readability: every
 # token starts with a different letter, so one alphabetic character settles
@@ -511,6 +560,436 @@ def build_address_context(state: PanelState, cast: PanelCast) -> str:
     return line
 
 
+# --------------------------------------------------------------------------
+# Address classification — TypeSafe (Jev) spike
+# --------------------------------------------------------------------------
+#
+# An alternative to `build_address_prompt`'s single streamed-token classifier:
+# one Choice question for the structural outcome (nobody / everybody /
+# introductions / specific panellists) plus one Noul per live panellist ("is
+# this agent among who Ricky's asking?") and one Noul for "wants someone
+# specific but can't tell who". All in one call — TypeSafe runs independent
+# questions over shared state in parallel.
+#
+# `build_address_questions`/`build_address_state` return plain, JSON-able
+# dicts shaped like `typesafe_sdk`'s `NoulModel`/`ChoiceModel`, never the SDK's
+# own classes, so `panel_core` never imports that dependency — the network
+# client lives entirely in `panel_runtime`, same boundary as the Haiku path.
+#
+# `compose_address_verdict` turns the answers back into the exact verdict
+# vocabulary `address_verdicts()` already produces, so `AddressDetected`,
+# `floor.py` and every existing address test stay untouched regardless of
+# which classifier produced the verdict.
+
+_MODE_NOBODY = "nobody"
+_MODE_WHOLE_PANEL = "whole_panel"
+_MODE_INTRODUCTIONS = "introductions"
+_MODE_SPECIFIC_PANELLISTS = "specific_panellists"
+
+# The Noul question name for "wants someone specific but can't tell who" —
+# `compose_address_verdict`'s only route to `AMBIGUOUS_VERDICT`.
+UNIDENTIFIABLE_QUESTION = "unidentifiable"
+
+# The Noul question name for "one request put to two or more panellists" —
+# the gate on `compose_address_verdict`'s companion tier.
+JOINT_REQUEST_QUESTION = "joint_request"
+
+
+def _addressed_question_name(agent_id: str) -> str:
+    """The Noul question name asking whether `agent_id` was addressed.
+
+    Question names are for code, never sent to the model as meaning (the
+    instructions text carries that) — see `compose_address_verdict`, the only
+    other reader of this name.
+    """
+    return f"addressed_{agent_id}"
+
+
+def _addressed_instructions(agent_id: str, cast: PanelCast) -> dict:
+    """The Noul instructions asking whether `agent_id` is being invited.
+
+    Every example names this agent rather than a placeholder, and the
+    bare-name-pair rule is stated in both orders, because the answer for one
+    agent is not symmetric in where their name falls in the sentence.
+    """
+    persona = cast.personas[agent_id]
+    name = persona.name
+    other = next(
+        (p.name for a, p in cast.personas.items() if a != agent_id), "the next panellist"
+    )
+    topics = ", ".join(persona.topics_of_authority) or "nothing in particular"
+
+    return {
+        "question": (
+            f"Is {name} one of the panellists Ricky is asking to speak right "
+            f"now? Someone merely mentioned, or stood down by closing words "
+            f"('thanks', 'sorry') in front of their name, is not addressed. A "
+            f"full stop between two bare names does not stand either of them "
+            f"down."
+        ),
+        "precedence": (
+            "Grammatical role decides this, never position in the sentence. "
+            "Being the subject of Ricky's request beats being addressed by "
+            f'name, which beats being merely mentioned. "What about {name}?", '
+            f'"over to {name}", "can {name} take that?" and "let\'s hear from '
+            f'{name}" are all requests put to {name}, so they are yes. '
+            f'So "Sorry {name}, can you let {other} finish?" is no for '
+            f"{name} — the request is put to {other} — while \"Sorry {other}, "
+            f'can you let {name} finish?" and "Let {name} finish." are yes '
+            f"for {name}, for the same reason. Ricky asks {name} to wrap up, "
+            "be brief, or hand over, with no other panellist named to take "
+            f'it on: "sorry, {name}, can you wrap up?" is yes, because the '
+            f"request is put to {name}."
+        ),
+        "pairs": (
+            "A full stop or comma between two bare names does not stand "
+            f'either of them down: "{other}. {name}, what is your view?" is '
+            f'yes for {name}, and "{name}. {other}, what is your view?" is '
+            f"also yes for {name}. Only closing words in front of a name "
+            f'stand that panellist down, so "Thanks, {name}. {other}, what '
+            f'do you think?" is no for {name}.'
+        ),
+        "authority": (
+            f"Ricky need not use a name. {name} speaks with authority on: "
+            f"{topics}. A request squarely inside that, with no other "
+            f"panellist a better owner, is yes for {name} even though nobody "
+            "is named."
+        ),
+        "context": (
+            "A `panel_activity` line resolves references that name nobody. "
+            "Count against it, not against the panel: \"the other two\", "
+            "\"you two\" and \"the rest of you\" are everyone except the most "
+            "recent speaker; \"the one we haven't heard from\" is the "
+            "panellist with no recent turn; \"carry on\" with no name is the "
+            f"most recent speaker. Each picks out a subset, so {name} is yes "
+            "whenever the reference includes them. Given no such line, no."
+        ),
+    }
+
+
+def build_address_questions(cast: PanelCast) -> dict[str, dict]:
+    """The TypeSafe question set for one address-classification call.
+
+    Answers the same question `build_address_prompt` does, decomposed into
+    one judgment per thing that can vary independently, rather than one prompt
+    enumerating every phrasing rule. See `compose_address_verdict` for how the
+    answers recombine into a single verdict token.
+    """
+    names = [persona.name for persona in cast.personas.values()]
+    first, second = (names + ["", ""])[:2]
+    mode: dict = {
+        "type": "choice",
+        "instructions": {
+            "question": (
+                "What is Ricky, the live moderator, doing with `ricky_said`? "
+                "Decide who, if anyone, he has just invited to speak."
+            ),
+            "context": (
+                "`panel` lists the panellists and what each speaks on with "
+                "authority. `panel_activity`, when present, lists who has "
+                "spoken recently, most recent first, and who has not been "
+                "heard from."
+            ),
+        },
+        "criteria": {
+            _MODE_NOBODY: {
+                "what": (
+                    "Nobody on the panel is invited to speak. A statement, an "
+                    "aside, a self-check, a request to the room or the AV "
+                    "desk, Ricky asking to speak himself, or Ricky "
+                    "introducing himself or the panel on their behalf."
+                ),
+                "examples": [
+                    "That is roughly where the market sits.",
+                    "Is that okay? Does that make sense?",
+                    "Can I just jump in?",
+                    "Can we get the slides up?",
+                    "My name is Ricky.",
+                    f"Joining me tonight are {', '.join(names)}.",
+                    "Welcome to the panel. Good evening, thanks for coming.",
+                ],
+                "not_for": (
+                    "A request put to a panellist, even one wrapped in an "
+                    "apology or a permission — asking someone to wrap up, be "
+                    "brief or hand over is a request put to them."
+                ),
+            },
+            _MODE_WHOLE_PANEL: {
+                "what": (
+                    "The floor opens to the panel as a body, nobody in "
+                    "particular, and nobody is left out. Also when Ricky asks "
+                    "for more without naming anyone."
+                ),
+                "examples": [
+                    "Say more about that.",
+                    "What does anyone make of that?",
+                    f"{', '.join(names)} — thoughts?",
+                    "All of you, then.",
+                ],
+                "not_for": (
+                    "Anything that leaves at least one panellist out. A "
+                    "reference that excludes the last speaker — 'the other "
+                    "two', 'the rest of you', 'the one we haven't heard "
+                    "from' — names a subset, not the panel."
+                ),
+            },
+            _MODE_INTRODUCTIONS: {
+                "what": (
+                    "Ricky asks the panel, as a body, to say who they are. "
+                    "Asking the room who is present is this request itself, "
+                    "not a greeting wrapped around one — only the panel can "
+                    "answer it."
+                ),
+                "examples": [
+                    "Right, let's do quick introductions.",
+                    "Could you introduce yourselves for the audience?",
+                    "Who have we got with us tonight?",
+                    "Who's joining us?",
+                ],
+                "not_for": (
+                    "Greeting or welcoming the room, Ricky naming the panel "
+                    "himself, or asking one panellist alone to introduce "
+                    "themselves — that is a request to that panellist."
+                ),
+            },
+            _MODE_SPECIFIC_PANELLISTS: {
+                "what": (
+                    "Ricky invites one or more panellists and not the rest. "
+                    "He need not use a name: a request squarely inside one "
+                    "panellist's area of authority invites that panellist, "
+                    "and a reference resolved by `panel_activity` invites "
+                    "whoever it picks out."
+                ),
+                "examples": [
+                    f"{names[0]}, what do you think?",
+                    "What does the financial side make of that?",
+                    "Who owns the security question here?",
+                    "I'd like to hear from the other two.",
+                    "And the one we haven't heard from?",
+                    "Carry on.",
+                ],
+                "not_for": (
+                    "A name merely mentioned with no request put to the "
+                    "panel, and a request that reaches every panellist."
+                ),
+            },
+        },
+    }
+    addressed = {
+        _addressed_question_name(agent_id): {
+            "type": "noul",
+            "instructions": _addressed_instructions(agent_id, cast),
+        }
+        for agent_id in cast.personas
+    }
+    unidentifiable: dict = {
+        UNIDENTIFIABLE_QUESTION: {
+            "type": "noul",
+            "instructions": (
+                "Does Ricky clearly want a specific panellist to answer, but "
+                "his words do not identify who — a description fitting more "
+                "than one of them with nothing to separate them? This is not "
+                "'he named several people' — that is several panellists "
+                "addressed at once, not an unidentifiable one."
+            ),
+        }
+    }
+    joint: dict = {
+        JOINT_REQUEST_QUESTION: {
+            "type": "noul",
+            "instructions": {
+                "question": (
+                    "Is `ricky_said` one request put to two or more panellists "
+                    "at once?"
+                ),
+                "clarify": (
+                    "Yes when Ricky wants more than one of them to answer, "
+                    "including when their names are separated only by a full "
+                    f'stop or a comma: "{first}. {second}, what is your view?" '
+                    "is one request to two people. No when he hands the floor "
+                    "to exactly one panellist, stands one down and invites "
+                    f'another ("thanks, {first}. {second}, what do you '
+                    'think?"), opens the floor to the whole panel at once, or '
+                    "invites nobody."
+                ),
+            },
+        }
+    }
+    return {"mode": mode, **addressed, **joint, **unidentifiable}
+
+
+def build_address_state(utterance: str, context: str, cast: PanelCast) -> dict:
+    """The per-call TypeSafe `state` — panel description and the utterance.
+
+    `build_address_prompt`'s panel description sits in a cached system prompt
+    and the volatile context line sits apart in the user turn, because the
+    cache depends on the split. TypeSafe has no equivalent cache, so there is
+    nothing that split protects here; both go in one `state` object.
+
+    Args:
+        utterance: Ricky's transcript segment.
+        context: `build_address_context`'s output, or "" when the panel has
+            not spoken yet.
+        cast: The panel, for the same reason every renderer here needs it —
+            personas are the source of truth.
+    """
+    panel = [
+        {
+            "id": agent_id,
+            "name": persona.name,
+            "job_title": persona.job_title,
+            "employer": persona.employer,
+            "topics_of_authority": list(persona.topics_of_authority),
+            "aliases": list(persona.extra_aliases),
+        }
+        for agent_id, persona in cast.personas.items()
+    ]
+    state: dict = {"panel": panel, "ricky_said": utterance}
+    if context:
+        state["panel_activity"] = context
+    return state
+
+
+@dataclass(frozen=True, slots=True)
+class AddressThresholds:
+    """Probability thresholds `compose_address_verdict` is tuned against.
+
+    Rehearsal dials, same status as the latency numbers in `FloorConfig`.
+    Scored by `packages/panel_runtime/tests/bench_address.py --backend typesafe`.
+    """
+
+    # p(top mode) required before the structural Choice is trusted at all.
+    mode_floor: float = 0.50
+    # p(addressed) that admits an agent to the named set on its own.
+    addressed: float = 0.60
+    # Required gap between the lowest named agent and the highest un-named
+    # one. Without daylight, "named" and "not named" are the same claim.
+    daylight: float = 0.25
+    # p(addressed) that admits a companion to an already-named agent.
+    companion: float = 0.25
+    # Gap a companion must hold over everyone still outside the set, and the
+    # daylight a multi-agent set is held to in place of `daylight`.
+    companion_daylight: float = 0.20
+    # p(joint_request) required before the companion tier runs at all.
+    joint_request: float = 0.50
+    # Mass on NOBODY or INTRODUCTIONS that vetoes a named set outright.
+    mode_veto: float = 0.70
+    # p(unidentifiable) required to report AMBIGUOUS rather than fail closed.
+    ambiguous_p: float = 0.60
+
+
+_DEFAULT_ADDRESS_THRESHOLDS = AddressThresholds()
+
+
+def compose_address_verdict(
+    *,
+    mode_probabilities: Mapping[str, float],
+    agent_probabilities: Mapping[str, float],
+    joint_request: float,
+    unidentifiable: float,
+    cast: PanelCast,
+    thresholds: AddressThresholds = _DEFAULT_ADDRESS_THRESHOLDS,
+) -> str | None:
+    """Recompose `build_address_questions`'s answers into one verdict token.
+
+    Returns the same vocabulary `address_verdicts()` does — a single name, a
+    `VERDICT_JOIN`-joined set in cast order, or one of the four non-agent
+    verdicts — or `None` to fail closed to the regex, exactly as a timed-out or
+    undecodable Haiku stream does today. `None` is reachable from several
+    branches below; `NO_VERDICT` is reachable from exactly one, the mode
+    distribution confidently reading `nobody` — inventing a `NONE` from an
+    unconvincing vector would silently swallow a real invitation.
+
+    Three tiers. Tier 1 reads the per-agent vector into a named set; tier 2
+    accepts that set only if it discriminates a proper subset of the panel;
+    tier 3 falls back to the mode distribution.
+
+    Pure: no I/O, no clock, no network. Every input is a plain float the
+    runtime has already pulled out of the TypeSafe response, so this function
+    and its tests never need a network call or the `typesafe_sdk` dependency.
+
+    Args:
+        mode_probabilities: The `mode` Choice's full probability distribution,
+            keyed by mode name. Read instead of `ChoiceAnswer.confidence`,
+            which is a spread statistic rather than p(top answer).
+        agent_probabilities: `agent_id -> p(addressed)`, one entry per live
+            agent asked.
+        joint_request: p(this is one request put to two or more panellists).
+        unidentifiable: p(Ricky wants someone specific but didn't say who).
+        cast: The panel, for cast-order joining and name lookup.
+        thresholds: Rehearsal dials; see `AddressThresholds`.
+
+    Returns:
+        A canonical verdict token, or `None`.
+    """
+    order = list(cast.personas)
+    ap = {a: agent_probabilities.get(a, 0.0) for a in order}
+    ranked = sorted(order, key=lambda a: -ap[a])
+
+    # Tier 1. Walk the ranked vector. An agent joins on its own probability
+    # clearing `addressed`, or — once a prior agent is in, and only when the
+    # model judged this one request to be put to several people — as a
+    # companion clearing `companion` with `companion_daylight` over everyone
+    # still outside. Stops at the first agent clearing neither, so the named
+    # set is always a prefix of the ranking, never a punched hole.
+    named: list[str] = []
+    for i, a in enumerate(ranked):
+        below = max((ap[b] for b in ranked[i + 1 :]), default=0.0)
+        if ap[a] >= thresholds.addressed:
+            named.append(a)
+            continue
+        if (
+            named
+            and joint_request >= thresholds.joint_request
+            and ap[a] >= thresholds.companion
+            and ap[a] - below >= thresholds.companion_daylight
+        ):
+            named.append(a)
+            continue
+        break
+    named = [a for a in order if a in named]
+
+    # Tier 2. Only a proper, non-empty subset discriminates. Naming everybody
+    # is not evidence of a group — introductions and whole-panel openings both
+    # produce near-unanimous agent vectors — so that case falls through to
+    # mode rather than short-circuiting.
+    if named and len(named) < len(order):
+        best_out = max(ap[a] for a in order if a not in named)
+        worst_in = min(ap[a] for a in named)
+        gap = (
+            thresholds.companion_daylight
+            if joint_request >= thresholds.joint_request and len(named) > 1
+            else thresholds.daylight
+        )
+        # NOBODY and INTRODUCTIONS structurally cannot have a named set, so
+        # real mass on either contradicts a peaked agent vector. WHOLE_PANEL
+        # is deliberately not a veto: discriminating a named subset from the
+        # whole panel is what the per-agent vector is for.
+        if (
+            worst_in - best_out >= gap
+            and mode_probabilities.get(_MODE_NOBODY, 0.0) < thresholds.mode_veto
+            and mode_probabilities.get(_MODE_INTRODUCTIONS, 0.0) < thresholds.mode_veto
+        ):
+            return VERDICT_JOIN.join(cast.personas[a].name.upper() for a in named)
+
+    # Tier 3. Mode decides, read off the actual distribution.
+    if not mode_probabilities:
+        return None
+    top = max(mode_probabilities, key=mode_probabilities.__getitem__)
+    if mode_probabilities[top] < thresholds.mode_floor:
+        return AMBIGUOUS_VERDICT if unidentifiable >= thresholds.ambiguous_p else None
+    if top == _MODE_INTRODUCTIONS:
+        return INTRO_VERDICT
+    if top == _MODE_NOBODY:
+        return NO_VERDICT
+    if top == _MODE_WHOLE_PANEL:
+        return OPEN_VERDICT
+    if top == _MODE_SPECIFIC_PANELLISTS and named and len(named) == len(order):
+        # Naming everybody is not a group — there is nobody left to bar.
+        return OPEN_VERDICT
+    return AMBIGUOUS_VERDICT if unidentifiable >= thresholds.ambiguous_p else None
+
+
 def build_address_prompt(cast: PanelCast) -> str:
     """The classifier's system prompt. Cache this — it never changes mid-show.
 
@@ -567,6 +1046,11 @@ Naming more than one panellist invites all of them, joined by "{VERDICT_JOIN}":
 "{names[0]} and {names[1]}, can you take that between you?" is {example_pair},
 and so is "{names[0]}, {names[1]}, thoughts?". Being asked jointly changes
 nothing — they answer in turns. {OPEN_VERDICT} is for naming nobody, or everybody.
+
+A full stop between two bare names does not split them into separate requests:
+"{names[0]}. {names[1]}, what is your view?" is still {example_pair}. Only
+closing words in front of a name stand that panellist down, per the rule above,
+so "Thanks, {names[0]}. {names[1]}, what do you think?" is {names[1].upper()} alone.
 """
         if count >= 2
         else ""
@@ -698,6 +1182,13 @@ PROPOSAL_SCHEMA = {
             "anyOf": [{"type": "string"}, {"type": "null"}],
             "description": "Agent id better placed to answer. Use sparingly — it hands them the floor.",
         },
+        "invites_next": {
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+            "description": (
+                "Agent id you are inviting to answer after your turn. Use sparingly — "
+                "it gives them the floor when you finish, whatever they scored."
+            ),
+        },
         # Last, and never empty. `minLength: 1` was measured and is *accepted
         # but not enforced* — the API took the constrained schema and the model
         # still returned "" — so the guarantee has to come from the description
@@ -714,7 +1205,7 @@ PROPOSAL_SCHEMA = {
     },
     "required": [
         "relevance", "urgency", "disagreement", "confidence", "expertise",
-        "novelty", "responding_to", "defer_to", "utterance",
+        "novelty", "responding_to", "defer_to", "invites_next", "utterance",
     ],
     "additionalProperties": False,
 }

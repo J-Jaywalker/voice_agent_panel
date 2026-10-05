@@ -15,6 +15,7 @@ from typing import Protocol
 
 from panel_core import (
     PROPOSAL_SCHEMA,
+    PanelCast,
     PanelState,
     Persona,
     Signals,
@@ -75,7 +76,13 @@ class StubBrain:
 class ClaudeBrain:
     """Live brain. Mirrors the production request shape."""
 
-    def __init__(self, model: str = "claude-haiku-4-5-20251001", effort: str = "medium") -> None:
+    def __init__(
+        self,
+        model: str = "claude-haiku-4-5-20251001",
+        effort: str = "medium",
+        *,
+        cast: PanelCast | None = None,
+    ) -> None:
         import anthropic
 
         if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -93,6 +100,7 @@ class ClaudeBrain:
         )
         self.model = model
         self.effort = effort
+        self.cast = cast
 
     def _output_config(self) -> dict:
         config: dict = {"format": {"type": "json_schema", "schema": PROPOSAL_SCHEMA}}
@@ -110,7 +118,7 @@ class ClaudeBrain:
             system=[
                 {
                     "type": "text",
-                    "text": build_system_prompt(persona),
+                    "text": build_system_prompt(persona, cast=self.cast),
                     # The stable prefix. In production this is what makes
                     # speculative generation affordable.
                     "cache_control": {"type": "ephemeral"},

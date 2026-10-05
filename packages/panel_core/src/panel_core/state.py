@@ -24,6 +24,7 @@ class InvitationSource(str, Enum):
     OPEN = "open"  # Ricky asked the room
     OPERATOR = "operator"  # the console opened the floor by hand
     INTRODUCTION = "introduction"  # the one-shot "introduce yourselves" round
+    AGENT = "agent"  # a panellist handed the floor to a colleague on their way out
 
 
 # How specific an invitation is. A vaguer invitation must never quietly
@@ -32,6 +33,9 @@ class InvitationSource(str, Enum):
 # "Melia answers" to "whoever scores best answers". Compared in
 # `FloorController._transcript`; see also `invitation_supersede_window_s`.
 _INVITATION_PRECEDENCE: dict[InvitationSource, int] = {
+    # Lowest of all: the panel inviting itself must never hold off anything
+    # Ricky said, including a fresh open floor.
+    InvitationSource.AGENT: 0,
     InvitationSource.OPEN: 1,
     InvitationSource.ADDRESS: 2,
     InvitationSource.OPERATOR: 2,  # a deliberate human act, as specific as a name
@@ -243,6 +247,13 @@ class PanelState:
     # decides that it opens (the classifier, or the regex) versus who wins it
     # once open (scoring), and CLAUDE.md "Floor closed by default".
     invitation: Invitation | None = None
+    # The colleague the agent currently on the PA invited to follow it, or
+    # None. Written by `FloorController._grant` from the winning proposal's
+    # `Signals.invites_next` (validated there), read and cleared by
+    # `_agent_ended`, and cleared by every path that takes the floor back off
+    # an agent. Defaults to None so a log recorded before this existed replays
+    # identically.
+    pending_invite: str | None = None
     # Agents that tied for "the one Ricky addressed", when the utterance named
     # more than one in the same grammatical role. Ambiguity is an outcome, not
     # an error: the floor stays CLOSED and the tie is surfaced to the operator

@@ -73,7 +73,7 @@ def scenario(cast: PanelCast) -> PanelState:
     )
 
 
-async def measure(client, model: str, effort: str, persona, state) -> dict[str, float]:
+async def measure(client, model: str, effort: str, persona, state, cast) -> dict[str, float]:
     """Stream one proposal, timing the points that matter."""
     started = time.monotonic()
     ttft = signals_at = None
@@ -90,7 +90,7 @@ async def measure(client, model: str, effort: str, persona, state) -> dict[str, 
         system=[
             {
                 "type": "text",
-                "text": build_system_prompt(persona),
+                "text": build_system_prompt(persona, cast=cast),
                 "cache_control": {"type": "ephemeral"},
             }
         ],
@@ -157,7 +157,9 @@ async def main() -> None:
             samples = []
             for _ in range(args.repeat):
                 try:
-                    samples.append(await measure(client, model.strip(), effort.strip(), persona, state))
+                    samples.append(
+                        await measure(client, model.strip(), effort.strip(), persona, state, cast)
+                    )
                 except Exception as exc:  # noqa: BLE001 — report and move on
                     print(f"{model:<22} {effort:<8} failed: {str(exc)[:40]}")
                     break

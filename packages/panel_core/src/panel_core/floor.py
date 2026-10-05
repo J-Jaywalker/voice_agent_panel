@@ -262,6 +262,17 @@ _TRAILING_VOCATIVE_RIGHT_RE = re.compile(
 _COORDINATOR_GAP_RE = re.compile(r"^[\s,]*(?:and|or|&|plus|along with)?[\s,]*$", re.IGNORECASE)
 
 _SENTENCE_RE = re.compile(r"[^.?!;]+[.?!;]?")
+
+# Filler a bare name can hide behind — "Uh, Dexter." is still just a name.
+# Deliberately *not* `_VOCATIVE_LEFT_RE`'s list: "sorry", "thanks" and
+# "apologies" are missing on purpose, because those are the words that stand an
+# agent down (`_DISMISSAL_LEFT_RE`) rather than introduce one, and
+# `_join_bare_name_sentences` must leave "Thanks, Dexter. Melia, ..." alone.
+_NEUTRAL_FILLER_RE = re.compile(
+    r"^(?:(?:so|and|but|or|now|then|okay|ok|right|well|alright|uh|um|er|erm"
+    r"|hey|look|listen|first|firstly|finally|maybe|perhaps|actually)[\s,]+)*",
+    re.IGNORECASE,
+)
 _CLAUSE_SPLIT_RE = re.compile(
     r",\s*(?=(?:and|but|so|then|now|uh|um|er|erm|okay|ok|right|well|alright"
     r"|also|meanwhile|instead)\b)",
@@ -334,6 +345,14 @@ _INTRO_BEAT_PAUSE_S = 0.4
 # most useful thing the console can show.
 _LLM_ADDRESS_ROLE = "llm_address"
 _LLM_OPEN_ROLE = "llm_open"
+
+# An agent handing the floor to a colleague is a one-to-one question, not a
+# round of the panel: one turn for the answer and one for the reply to it.
+# `address_invitation_turns` is sized for a whole-panel round and is far too
+# long here.
+_AGENT_INVITATION_TURNS = 2
+_AGENT_INVITE_ROLE = "agent_handoff"
+_AGENT_INVITE_RULE = "invites_next"
 
 
 def _llm_rule(verdict: str) -> str:
@@ -500,6 +519,7 @@ class FloorController:
                 invitation=None,  # ...and revokes the standing invitation
                 address_conflict=(),  # ...and any unresolved tie with it
                 moderator_cued=False,  # ...and the cue latch, with the question
+                pending_invite=None,  # ...and any handoff the panel had lined up
             )
             # Ricky filling the gap himself is the thing the beat was waiting to
             # avoid, and it has now happened. Cueing him to do what he is
@@ -507,7 +527,15 @@ class FloorController:
             state = state.not_awaiting()
             return state, [self._paint(state)]
 
-        state = replace(state, human_speaking=True, human_speech_started_at=event.t)
+        # An agent is on the PA. Ricky's voice over it cancels the handoff that
+        # turn had lined up, whatever the duck turns out to be: the floor is
+        # his to give once he has started talking.
+        state = replace(
+            state,
+            human_speaking=True,
+            human_speech_started_at=event.t,
+            pending_invite=None,
+        )
         return state, []
 
     def _human_ended(
@@ -552,6 +580,7 @@ class FloorController:
             last_audio_progress_t=None,
             proposals={},
             invitation=None,  # Ricky is taking the floor back
+            pending_invite=None,  # ...so the interrupted turn's handoff goes too
             address_conflict=(),
             # An incomplete introduction round is abandoned, not spent — it
             # has not "been done", so the safety latch does not engage and
@@ -916,7 +945,22 @@ class FloorController:
             # survives: an empty proposal set for two or three seconds is
             # normal, and only the TTL reaps one nobody ever acts on.
             commands: list[Command] = []
-            if self._may_wait_for(state, invitation, reason):
+            if invitation.source is InvitationSource.AGENT:
+                # A colleague's handoff that its target never answered falls
+                # open instead of cueing Ricky. He did not ask this question,
+                # and telling him to fill a gap the panel made for itself puts
+                # an instruction on the console he has no context for.
+                state = replace(
+                    state,
+                    invitation=replace(
+                        invitation,
+                        agents=(),
+                        source=InvitationSource.OPEN,
+                        role="open",
+                        rule="agent_invite_unanswered",
+                    ),
+                )
+            elif self._may_wait_for(state, invitation, reason):
                 # Give the named agent the beat first. `EndOfTurn` arrives within
                 # a few milliseconds of the final that named them, so "they had
                 # nothing" is not yet a fact — it is a measurement taken before
@@ -1280,6 +1324,7 @@ class FloorController:
             duck_confirmed=None,
             proposals={},
             invitation=None,
+            pending_invite=None,
             address_conflict=(),
             # Abandoned, not spent: the round has not "been done", so the
             # one-shot latch stays open and the phrase can restart it cleanly.
@@ -1398,6 +1443,17 @@ class FloorController:
             state = state.cleared_proposals()
         else:
             state = state.proposals_written_since(cutoff).without_proposal(event.agent)
+
+        # The turn that just ended may have named who speaks next. Read and
+        # cleared here whatever becomes of it, so one grant's handoff can never
+        # outlive its own turn.
+        pending = state.pending_invite
+        state = replace(state, pending_invite=None)
+        if pending is not None:
+            state, invite_cmds = self._agent_invitation(
+                state, pending, inviter=event.agent, t=event.t
+            )
+            commands.extend(invite_cmds)
 
         if state.intro_queue is not None and event.agent in state.intro_queue:
             # Pop the agent who just finished and hand the round straight to
@@ -1525,6 +1581,7 @@ class FloorController:
                     floor_holder=None,
                     proposals={},
                     invitation=None,
+                    pending_invite=None,
                     address_conflict=(),
                     intro_queue=None,  # abandoned, not spent — safe to retry later
                 )
@@ -1535,6 +1592,11 @@ class FloorController:
 
             case OperatorAction.MUTE_AGENT if event.agent:
                 state = state.with_agent(event.agent, muted=True, state=AgentState.MUTED)
+                if state.pending_invite == event.agent:
+                    # A mute is an absolute veto everywhere else in this file,
+                    # and a standing handoff to the muted agent is the one way
+                    # the floor could still be headed their way.
+                    state = replace(state, pending_invite=None)
                 return state.without_proposal(event.agent), [self._paint(state)]
 
             case OperatorAction.UNMUTE_AGENT if event.agent:
@@ -1563,6 +1625,7 @@ class FloorController:
                     consecutive_agent_turns=0,
                     proposals={},
                     invitation=None,
+                    pending_invite=None,
                     address_conflict=(),
                     intro_queue=None,  # abandoned, not spent — safe to retry later
                 )
@@ -1752,6 +1815,61 @@ class FloorController:
         ).not_awaiting()
         return state, [self._paint(state)]
 
+    def _invite_target(
+        self, state: PanelState, target: str | None, *, inviter: str
+    ) -> str | None:
+        """The colleague `target` names, or None if it names nobody usable.
+
+        A model wrote this id, so it may be empty, the agent's own id, a muted
+        agent, or a name this cast has nobody for. Each of those is dropped
+        rather than corrected: an invitation nobody can answer closes the floor
+        behind it until the TTL reaps it.
+        """
+        if not target or target == inviter:
+            return None
+        runtime = state.agents.get(target)
+        if runtime is None or runtime.muted:
+            return None
+        return target
+
+    def _agent_invitation(
+        self, state: PanelState, target: str, *, inviter: str, t: float
+    ) -> tuple[PanelState, list[Command]]:
+        """Install the invitation a finished turn handed to a colleague.
+
+        Through `_install_invitation` like every other invitation, so precedence,
+        the supersede window and the cue-latch reset are the same code here as
+        on both of Ricky's paths — `InvitationSource.AGENT` sits at the bottom
+        of the precedence table, so anything he says displaces this.
+
+        Dropped at the turn cap rather than installed and then overruled: the
+        caller's own `AGENT_TURN_LIMIT` branch is about to hand the floor back
+        to Ricky, and a standing invitation it did not make would be left on the
+        state for the TTL to find.
+        """
+        if not self.config.agent_invitations:
+            return state, []
+        if state.intro_queue is not None:
+            # The introduction round paces itself off fixed text and owns the
+            # floor until it is done. Nothing may cut across it.
+            return state, []
+        if state.consecutive_agent_turns >= self.config.max_consecutive_agent_turns:
+            return state, []
+        if self._invite_target(state, target, inviter=inviter) is None:
+            return state, []
+        return self._install_invitation(
+            state,
+            Invitation(
+                agents=(target,),
+                turns_remaining=_AGENT_INVITATION_TURNS,
+                source=InvitationSource.AGENT,
+                t=t,
+                role=_AGENT_INVITE_ROLE,
+                rule=_AGENT_INVITE_RULE,
+            ),
+            t=t,
+        )
+
     def _eligible(self, state: PanelState, invitation: Invitation | None) -> dict[str, Proposal]:
         # Never called with an introduction invitation: `_turn_yielded` routes
         # that round to `_advance_introductions` before arbitration is ever
@@ -1857,7 +1975,14 @@ class FloorController:
             # invitation is a human deciding, at the console, that this agent
             # should speak with whatever it has; that is the backstop for a
             # missed cue and second-guessing its freshness would break it.
-            if invitation.source is InvitationSource.ADDRESS:
+            #
+            # AGENT is exempt for a different reason: the handoff is decided at
+            # the *end* of a 20-30s turn, so every line written during that turn
+            # is older than the invitation by most of its length. Measuring them
+            # against it would refuse the whole mid-turn speculation round and
+            # put a cold generation on every handover.
+            check_freshness = invitation.source is InvitationSource.ADDRESS
+            if check_freshness:
                 candidates = {
                     a: p for a, p in candidates.items() if not self._stale(p, invitation)
                 }
@@ -1894,9 +2019,8 @@ class FloorController:
                 and deferred != first
                 and deferred in targets
                 # The handoff target gets the same freshness test as the agent
-                # who named it: a direct question is still being answered, and
-                # the score floor is still bypassed.
-                and not self._stale(targets[deferred], invitation)
+                # who named it, and is exempt wherever that one is.
+                and not (check_freshness and self._stale(targets[deferred], invitation))
             ):
                 return deferred, None
             return first, None
@@ -2031,7 +2155,7 @@ class FloorController:
         """
         hits: list[_RoleHit] = []
         open_rule = ""
-        for clause, is_question in _clauses(text):
+        for clause, is_question in _clauses(self._join_bare_name_sentences(text)):
             hits.extend(self._classify_clause(clause, is_question=is_question))
             if not open_rule and _opens_to_panel(clause, is_question=is_question):
                 open_rule = "handover" if _is_handover(clause) else "content_question"
@@ -2053,6 +2177,53 @@ class FloorController:
         if open_rule:
             return _Detection(strength=_STRENGTH_OPEN, role="open", rule=open_rule)
         return _Detection()
+
+    def _leading_name(self, chunk: str) -> re.Match[str] | None:
+        """The name at the head of `chunk`, behind neutral filler only."""
+        start = _NEUTRAL_FILLER_RE.match(chunk).end()  # type: ignore[union-attr]
+        for pattern in self._address_patterns.values():
+            # `match` with a `pos` still reads the character before it, so the
+            # leading `\b` holds across the filler's trailing comma or space.
+            found = pattern.match(chunk, start)
+            if found is not None:
+                return found
+        return None
+
+    def _is_bare_name(self, sentence: str) -> bool:
+        """Is this whole sentence nothing but a panellist's name?"""
+        body = sentence.strip().rstrip(".?!;").strip()
+        found = self._leading_name(body)
+        return found is not None and not body[found.end() :].strip(" ,")
+
+    def _join_bare_name_sentences(self, text: str) -> str:
+        """Re-join "Dexter. Melia, ..." into "Dexter, Melia, ...".
+
+        A full stop between two bare names does not separate them into two
+        unrelated requests. Ricky pausing after the first name is not Ricky
+        withdrawing it, so a sentence that is *only* a name, followed by a
+        sentence that *starts* with one, is the same joint address the comma
+        form already gets — one coordinated group with one grammatical role,
+        resolved by `_coordination_groups` exactly as "Melia, Dexter,
+        thoughts?" is. Rewriting the punctuation is the whole fix: nothing
+        downstream has to learn about sentence boundaries.
+
+        What still splits them is closing language in front of a name, never
+        the punctuation — "Thanks, Dexter. Melia, what do you think?" stands
+        Dexter down, and `_NEUTRAL_FILLER_RE` is where that is enforced, by
+        omitting the dismissal words `_DISMISSAL_LEFT_RE` carries.
+        """
+        sentences = [s for s in (s.strip() for s in _SENTENCE_RE.findall(text)) if s]
+        if len(sentences) < 2:
+            return text
+        out = sentences[0]
+        previous = sentences[0]
+        for sentence in sentences[1:]:
+            if self._is_bare_name(previous) and self._leading_name(sentence) is not None:
+                out = f"{out.rstrip().rstrip('.?!;').rstrip()}, {sentence}"
+            else:
+                out = f"{out} {sentence}"
+            previous = sentence
+        return out
 
     def _classify_clause(self, clause: str, *, is_question: bool) -> list[_RoleHit]:
         """Classify every name occurrence in one clause by grammatical role.
@@ -2255,6 +2426,9 @@ class FloorController:
             # turn's value surviving into this one would keep proposals
             # against a cutoff two turns old.
             turn_input_t=None,
+            # Fixed text carries no signals, so an introduction turn can never
+            # invite anyone. Cleared for the same reason as `turn_input_t`.
+            pending_invite=None,
         )
         return state, [
             StartSpeech(
@@ -2319,6 +2493,12 @@ class FloorController:
             # other agents' proposals from the same moment and drops the rest;
             # see `PanelState.turn_input_t`.
             turn_input_t=proposal.written_against_t,
+            # Who this turn hands the floor to when it ends, validated against
+            # the live cast now rather than at turn end. Set unconditionally —
+            # including to None — so no previous turn's handoff survives.
+            pending_invite=self._invite_target(
+                state, proposal.signals.invites_next, inviter=agent_id
+            ),
         )
         return state, [
             StartSpeech(

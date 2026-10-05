@@ -91,6 +91,7 @@ import logging
 import os
 import re
 import time
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -258,49 +259,28 @@ def _unavailable(*, latency_ms: float = 0.0) -> AddressVerdict:
     )
 
 
-class AddressClassifier:
-    """Streaming addressee classifier, optimised for time-to-verdict.
+class BaseAddressClassifier(ABC):
+    """Cache, speculation gates and fail-closed contract, backend-independent.
 
     One instance per show. Not thread-safe and not meant to be: every method
-    runs on the runtime's single event loop.
+    runs on the runtime's single event loop. Subclasses supply
+    `_classify_once` — the model call — and `_close_client`, and inherit
+    everything that decides *when* to call it.
     """
 
-    def __init__(
-        self,
-        cast: PanelCast,
-        *,
-        model: str = DEFAULT_MODEL,
-        api_key: str | None = None,
-    ) -> None:
-        """Initialise the classifier.
+    def __init__(self, cast: PanelCast) -> None:
+        """Initialise the shared half of a classifier.
 
         Args:
-            cast: The panel. Both the prompt and the verdict vocabulary are
-                rendered from it — personas are the source of truth (CLAUDE.md),
-                and the classifier cannot resolve "the financial side" to Wayne
-                without reading Wayne's own topics of authority.
-            model: Model id. Pre-4.6 by default, so no `thinking`,
-                `output_config` or `effort` may ever be sent.
-            api_key: Overrides `ANTHROPIC_API_KEY`. Only used by tests.
+            cast: The panel. The verdict vocabulary is rendered from it —
+                personas are the source of truth (CLAUDE.md).
 
         Raises:
-            RuntimeError: If no API key is available.
             ValueError: From `address_verdicts` if two verdict tokens share an
                 initial, which would silently cost a token per turn on stage.
                 Renaming a persona is the moment to find out, not the show.
         """
-        key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-        if not key:
-            raise RuntimeError("ANTHROPIC_API_KEY is not set")
-
-        self._model = model
         self._verdicts = address_verdicts(cast)
-        self._system_prompt = build_address_prompt(cast)
-        # `anthropic_base_url()`, never the ambient `ANTHROPIC_BASE_URL`: a
-        # token-saving proxy in a dev shell rewrites the prompt in flight,
-        # which destroys the byte-exact prefix prompt caching depends on. See
-        # `panel_runtime.config.anthropic_base_url` for the measured cost.
-        self._client = anthropic.AsyncAnthropic(api_key=key, base_url=anthropic_base_url())
 
         # Keyed on the WHOLE normalised text. Never a prefix — see `classify`.
         self._cache: dict[str, AddressVerdict] = {}
@@ -313,13 +293,6 @@ class AddressClassifier:
         self._last_spec_words = 0
         self._last_spec_at = 0.0
         self._spec_attempted = False
-
-        log.info(
-            "address: classifier ready — model=%s, verdicts=%s, prompt=%d chars",
-            self._model,
-            ",".join(sorted(self._verdicts)),
-            len(self._system_prompt),
-        )
 
     # -- public API ---------------------------------------------------
 
@@ -431,7 +404,11 @@ class AddressClassifier:
         self._background.clear()
         self._cache.clear()
         self._reasons.clear()
-        await self._client.close()
+        await self._close_client()
+
+    @abstractmethod
+    async def _close_client(self) -> None:
+        """Release whatever network client the backend holds."""
 
     # -- speculation --------------------------------------------------
 
@@ -501,6 +478,80 @@ class AddressClassifier:
         self._inflight_key = None
 
     # -- model call ---------------------------------------------------
+
+    @abstractmethod
+    async def _classify_once(
+        self,
+        text: str,
+        context: str,
+        *,
+        key: str,
+        source: VerdictSource,
+        store: bool,
+    ) -> AddressVerdict:
+        """Run one classification against the backend and return the verdict.
+
+        Args:
+            text: The segment to classify.
+            context: The conversation context.
+            key: The cache key for `(text, context)`.
+            source: Provenance to stamp on the returned verdict.
+            store: Whether to cache the result. True for speculation only: a
+                *fresh* verdict must not be cached, or a repeat call would be
+                reported as a `speculative_hit` at zero latency and the hit
+                rate this whole design is judged on would flatter itself.
+
+        Returns:
+            An `AddressVerdict`, fail-closed on timeout or error.
+        """
+
+
+class AddressClassifier(BaseAddressClassifier):
+    """Streaming addressee classifier over Claude, optimised for time-to-verdict."""
+
+    def __init__(
+        self,
+        cast: PanelCast,
+        *,
+        model: str = DEFAULT_MODEL,
+        api_key: str | None = None,
+    ) -> None:
+        """Initialise the classifier.
+
+        Args:
+            cast: The panel. Both the prompt and the verdict vocabulary are
+                rendered from it — personas are the source of truth (CLAUDE.md),
+                and the classifier cannot resolve "the financial side" to Wayne
+                without reading Wayne's own topics of authority.
+            model: Model id. Pre-4.6 by default, so no `thinking`,
+                `output_config` or `effort` may ever be sent.
+            api_key: Overrides `ANTHROPIC_API_KEY`. Only used by tests.
+
+        Raises:
+            RuntimeError: If no API key is available.
+        """
+        key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+        if not key:
+            raise RuntimeError("ANTHROPIC_API_KEY is not set")
+
+        super().__init__(cast)
+        self._model = model
+        self._system_prompt = build_address_prompt(cast)
+        # `anthropic_base_url()`, never the ambient `ANTHROPIC_BASE_URL`: a
+        # token-saving proxy in a dev shell rewrites the prompt in flight,
+        # which destroys the byte-exact prefix prompt caching depends on. See
+        # `panel_runtime.config.anthropic_base_url` for the measured cost.
+        self._client = anthropic.AsyncAnthropic(api_key=key, base_url=anthropic_base_url())
+
+        log.info(
+            "address: classifier ready — model=%s, verdicts=%s, prompt=%d chars",
+            self._model,
+            ",".join(sorted(self._verdicts)),
+            len(self._system_prompt),
+        )
+
+    async def _close_client(self) -> None:
+        await self._client.close()
 
     async def _classify_once(
         self,

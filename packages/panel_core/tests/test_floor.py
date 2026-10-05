@@ -45,6 +45,7 @@ from panel_core import (
 # package root, which `panel_core` reserves for the event/command surface.
 # The phrasing corpus that exercises `AddressRole` lives in test_address.py.
 from panel_core.floor import CueReason
+from panel_core.state import InvitationSource
 
 PERSONA_DIR = Path(__file__).resolve().parents[3] / "personas"
 
@@ -2501,3 +2502,339 @@ def test_a_mid_turn_proposal_still_beats_its_own_sibling(fc, state):
     start = next(c for c in cmds if isinstance(c, StartSpeech))
     assert start.agent == "melia"
     assert start.utterance == "Written against the turn."
+
+
+# ------------------------------------------------- agents inviting agents
+
+
+@pytest.fixture
+def agent_fc(cast: PanelCast) -> FloorController:
+    """Explicit `agent_invitations=True`, same as the default — kept separate
+    from `fc` so these tests still read the flag they depend on."""
+    return FloorController(cast, FloorConfig(agent_invitations=True))
+
+
+def _turn_with_invite(
+    fc: FloorController,
+    state: PanelState,
+    *,
+    speaker: str = "dex",
+    invites: str | None = "wayne",
+    invited_at: float = 0.0,
+    started: float = 1.0,
+):
+    """Ricky opens the floor; `speaker` wins it with a line naming `invites`."""
+    state, cmds = run(
+        fc,
+        state,
+        invite(invited_at, "Where are we on the adoption curve?"),
+        AgentProposal(
+            t=invited_at + 0.1,
+            input_t=invited_at,
+            agent=speaker,
+            utterance="Unevenly.",
+            signals=strong(invites_next=invites),
+        ),
+        TurnYielded(t=started),
+        AgentSpeechStarted(t=started + 0.1, agent=speaker),
+    )
+    assert state.speaking == speaker
+    return state, cmds
+
+
+def _mid_turn_line(agent: str, *, t: float = 5.0, invites: str | None = None) -> AgentProposal:
+    return AgentProposal(
+        t=t,
+        input_t=t - 1.0,
+        agent=agent,
+        utterance=f"{agent} has one ready.",
+        signals=strong(invites_next=invites),
+    )
+
+
+def test_an_invited_colleague_takes_the_floor_when_the_turn_ends(agent_fc, state):
+    """The handoff the feature is for: no cold generation at the boundary."""
+    state, _ = _turn_with_invite(agent_fc, state)
+    assert state.pending_invite == "wayne"
+
+    state, _ = agent_fc.reduce(state, _mid_turn_line("wayne", t=5.0))
+    state, cmds = agent_fc.reduce(
+        state, AgentSpeechEnded(t=31.0, agent="dex", completed=True, utterance="Said.")
+    )
+
+    assert [c.agent for c in cmds if isinstance(c, StartSpeech)] == ["wayne"]
+    assert not [c for c in cmds if isinstance(c, RequestProposals)], (
+        "the invited agent already had a line; asking for another is the gap"
+    )
+    assert state.invitation is not None
+    assert state.invitation.source is InvitationSource.AGENT
+    assert state.pending_invite is None
+
+
+def test_a_mid_turn_line_is_fresh_enough_for_a_peer_handoff(agent_fc, state):
+    """The freshness exemption. A handoff is decided at the *end* of a turn.
+
+    Wayne's line was written three seconds into a thirty-second turn, so it is
+    twenty-seven seconds older than the invitation it wins — far outside
+    `named_proposal_lookback_s`. Measuring it against that window would refuse
+    the whole mid-turn speculation round and put a cold generation on every
+    handover, which is the thing the round exists to remove.
+    """
+    state, _ = _turn_with_invite(agent_fc, state)
+    state, _ = agent_fc.reduce(state, _mid_turn_line("wayne", t=4.0))
+    assert agent_fc.config.named_proposal_lookback_s < 27.0
+
+    state, cmds = agent_fc.reduce(
+        state, AgentSpeechEnded(t=31.0, agent="dex", completed=True, utterance="Said.")
+    )
+    assert [c.agent for c in cmds if isinstance(c, StartSpeech)] == ["wayne"]
+
+
+@pytest.mark.parametrize("target", ["dex", "nobody", ""])
+def test_an_unusable_invite_is_dropped_at_the_grant(agent_fc, state, target):
+    """Itself, a name this cast has nobody for, or nothing at all."""
+    state, _ = _turn_with_invite(agent_fc, state, invites=target)
+    assert state.pending_invite is None
+
+    state, _ = agent_fc.reduce(
+        state, AgentSpeechEnded(t=31.0, agent="dex", completed=True, utterance="Said.")
+    )
+    assert state.invitation is not None
+    assert state.invitation.source is InvitationSource.OPEN
+
+
+def test_an_invite_to_a_muted_agent_is_dropped_at_the_grant(agent_fc, state):
+    state, _ = agent_fc.reduce(
+        state, OperatorCommand(t=-0.5, action=OperatorAction.MUTE_AGENT, agent="wayne")
+    )
+    state, _ = _turn_with_invite(agent_fc, state)
+    assert state.pending_invite is None
+
+
+def test_an_agent_muted_mid_turn_does_not_get_the_handoff(agent_fc, state):
+    """Validated again at turn end, not only when the invite was recorded."""
+    state, _ = _turn_with_invite(agent_fc, state)
+    assert state.pending_invite == "wayne"
+
+    state = state.with_agent("wayne", muted=True, state=AgentState.MUTED)
+    state, cmds = agent_fc.reduce(
+        state, AgentSpeechEnded(t=31.0, agent="dex", completed=True, utterance="Said.")
+    )
+    assert state.pending_invite is None
+    assert state.invitation is not None
+    assert state.invitation.source is not InvitationSource.AGENT
+    assert not [c for c in cmds if isinstance(c, StartSpeech)]
+
+
+def test_the_operator_muting_the_target_clears_the_pending_invite(agent_fc, state):
+    state, _ = _turn_with_invite(agent_fc, state)
+    state, _ = agent_fc.reduce(
+        state, OperatorCommand(t=5.0, action=OperatorAction.MUTE_AGENT, agent="wayne")
+    )
+    assert state.pending_invite is None
+
+
+def test_kill_all_clears_the_pending_invite(agent_fc, state):
+    state, _ = _turn_with_invite(agent_fc, state)
+    state, _ = agent_fc.reduce(state, OperatorCommand(t=5.0, action=OperatorAction.KILL_ALL))
+    assert state.pending_invite is None
+
+
+def test_ricky_speaking_mid_turn_cancels_the_handoff(agent_fc, state):
+    """VAD alone. The floor is his the moment he starts talking."""
+    state, _ = _turn_with_invite(agent_fc, state)
+    state, _ = agent_fc.reduce(state, HumanSpeechStarted(t=6.0))
+    assert state.pending_invite is None
+
+    state, _ = agent_fc.reduce(
+        state, AgentSpeechEnded(t=31.0, agent="dex", completed=True, utterance="Said.")
+    )
+    assert state.invitation is None or state.invitation.source is not InvitationSource.AGENT
+
+
+def test_a_committed_interrupt_cancels_the_handoff(agent_fc, state):
+    """Substantive words from Ricky over the turn — `_commit_human_interrupt`."""
+    state, _ = _turn_with_invite(agent_fc, state)
+    state, cmds = agent_fc.reduce(
+        state,
+        TranscriptUpdated(
+            t=6.0, speaker=HUMAN, text="Hold on, let me stop you there.", is_final=True
+        ),
+    )
+    assert [c for c in cmds if isinstance(c, StopSpeech)]
+    assert state.pending_invite is None
+    assert state.invitation is None
+
+    state, _ = agent_fc.reduce(
+        state, AgentSpeechEnded(t=6.2, agent="dex", completed=False, utterance="Un…")
+    )
+    assert state.invitation is None or state.invitation.source is not InvitationSource.AGENT
+
+
+def test_a_stalled_speaker_clears_the_pending_invite(agent_fc, state):
+    state, _ = _turn_with_invite(agent_fc, state)
+    state, cmds = agent_fc.reduce(
+        state, Tick(t=1.1 + agent_fc.config.agent_first_audio_timeout_s + 0.1)
+    )
+    assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [CueReason.AGENT_STALLED]
+    assert state.pending_invite is None
+
+
+@pytest.mark.parametrize(
+    "text", ["Where does that leave us?", "Wayne, what do you make of that?"]
+)
+def test_ricky_supersedes_a_standing_peer_invitation(agent_fc, state, text):
+    """Lowest precedence of all: an open floor from Ricky displaces it too."""
+    state, _ = _turn_with_invite(agent_fc, state, invites="melia")
+    state, _ = agent_fc.reduce(state, _mid_turn_line("melia", t=5.0))
+    state, _ = agent_fc.reduce(
+        state, AgentSpeechEnded(t=31.0, agent="dex", completed=True, utterance="Said.")
+    )
+    assert state.invitation.source is InvitationSource.AGENT
+
+    state, _ = agent_fc.reduce(
+        state, TranscriptUpdated(t=31.5, speaker=HUMAN, text=text, is_final=True)
+    )
+    assert state.invitation.source in (InvitationSource.OPEN, InvitationSource.ADDRESS)
+
+
+def test_at_the_turn_cap_the_invite_is_dropped_and_ricky_gets_the_floor(agent_fc, state):
+    """The `AGENT_TURN_LIMIT` hand-back must not be left holding an invite."""
+    state = replace(
+        state, consecutive_agent_turns=agent_fc.config.max_consecutive_agent_turns - 1
+    )
+    state, _ = _turn_with_invite(agent_fc, state)
+    assert state.consecutive_agent_turns == agent_fc.config.max_consecutive_agent_turns
+    state, _ = agent_fc.reduce(state, _mid_turn_line("wayne", t=5.0))
+
+    state, cmds = agent_fc.reduce(
+        state, AgentSpeechEnded(t=31.0, agent="dex", completed=True, utterance="Said.")
+    )
+    assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [
+        CueReason.AGENT_TURN_LIMIT
+    ]
+    assert not [c for c in cmds if isinstance(c, StartSpeech)]
+    assert state.invitation is None
+    assert state.pending_invite is None
+
+
+def test_a_ping_pong_of_invitations_terminates_at_the_cap(agent_fc, state):
+    """Two agents handing the floor back and forth are still bounded."""
+    state, cmds = _turn_with_invite(agent_fc, state)
+    granted = ["dex"]
+    cues: list[CueReason] = []
+    t = 1.0
+    while True:
+        speaker = granted[-1]
+        other = "wayne" if speaker == "dex" else "dex"
+        state, _ = agent_fc.reduce(state, _mid_turn_line(other, t=t + 5.0, invites=speaker))
+        state, cmds = agent_fc.reduce(
+            state, AgentSpeechEnded(t=t + 30.0, agent=speaker, completed=True, utterance="Said.")
+        )
+        cues.extend(c.reason for c in cmds if isinstance(c, CueModerator))
+        starts = [c.agent for c in cmds if isinstance(c, StartSpeech)]
+        if not starts:
+            break
+        assert len(starts) == 1
+        granted.append(starts[0])
+        t += 40.0
+        state, _ = agent_fc.reduce(state, AgentSpeechStarted(t=t, agent=starts[0]))
+
+    assert granted == ["dex", "wayne", "dex", "wayne", "dex"]
+    assert len(granted) == agent_fc.config.max_consecutive_agent_turns
+    assert cues[-1] is CueReason.AGENT_TURN_LIMIT
+    assert state.invitation is None
+
+
+def test_an_unanswered_peer_invitation_falls_open_without_cueing_ricky(agent_fc, state):
+    """Ricky did not ask this question and must not be told to fill the gap."""
+    state, _ = _turn_with_invite(agent_fc, state)
+    state, cmds = agent_fc.reduce(
+        state, AgentSpeechEnded(t=31.0, agent="dex", completed=True, utterance="Said.")
+    )
+    assert not [c for c in cmds if isinstance(c, StartSpeech)], "Wayne had nothing ready"
+    assert not [c for c in cmds if isinstance(c, CueModerator)]
+    assert state.invitation.source is InvitationSource.AGENT
+
+    # The runtime re-drives arbitration when a proposal lands; Wayne still has
+    # nothing and somebody else does.
+    state, _ = agent_fc.reduce(state, _mid_turn_line("melia", t=32.0))
+    state, cmds = agent_fc.reduce(state, TurnYielded(t=32.5))
+
+    assert not [c for c in cmds if isinstance(c, CueModerator)]
+    assert state.moderator_cued is False
+    assert state.awaiting_agents == ()
+    assert state.invitation is not None
+    assert state.invitation.source is InvitationSource.OPEN
+    assert state.invitation.agents == ()
+
+
+def test_the_introduction_round_ignores_a_pending_invite(agent_fc, state):
+    """Fixed text invites nobody, and nothing may cut across the round."""
+    state, cmds = agent_fc.reduce(state, _introduce(0.0))
+    first = next(c for c in cmds if isinstance(c, StartSpeech)).agent
+    state, _ = agent_fc.reduce(state, AgentSpeechStarted(t=1.0, agent=first))
+
+    # Nothing in the reducer can set this during a round — `_grant_introduction`
+    # clears it at every grant — so it is planted here to prove the round is
+    # guarded rather than merely never reached.
+    state = replace(state, pending_invite="wayne")
+    state, cmds = agent_fc.reduce(
+        state, AgentSpeechEnded(t=2.0, agent=first, completed=True, utterance="Hello.")
+    )
+
+    assert state.pending_invite is None
+    assert state.invitation is not None
+    assert state.invitation.source is InvitationSource.INTRODUCTION
+    assert [c.agent for c in cmds if isinstance(c, StartSpeech)] != [], "the round continues"
+
+
+def test_a_log_without_the_new_fields_replays_identically(fc, state):
+    """Both defaults hold, so an older recording reduces to the same state."""
+    assert Signals(relevance=0.9).invites_next is None
+    assert PanelState.for_agents(("dex",)).pending_invite is None
+
+    old = Signals(
+        relevance=0.9, urgency=0.5, disagreement=0.3, confidence=0.9, expertise=0.6
+    )
+    new = replace(old, invites_next=None)
+    events = lambda signals: (
+        invite(0.0),
+        AgentProposal(t=0.1, input_t=0.0, agent="dex", utterance="Unevenly.", signals=signals),
+        TurnYielded(t=1.0),
+        AgentSpeechStarted(t=1.1, agent="dex"),
+        AgentSpeechEnded(t=31.0, agent="dex", completed=True, utterance="Said."),
+    )
+    before, before_cmds = run(fc, state, *events(old))
+    after, after_cmds = run(fc, state, *events(new))
+    assert before == after
+    assert before_cmds == after_cmds
+
+
+def test_agent_invitations_are_on_by_default(cast: PanelCast, state):
+    """A plain `FloorConfig()` is the default — the feature just works."""
+    assert FloorConfig().agent_invitations is True
+    default_fc = FloorController(cast, FloorConfig())
+    state, _ = _turn_with_invite(default_fc, state)
+
+    state, _ = default_fc.reduce(state, _mid_turn_line("wayne", t=5.0))
+    state, cmds = default_fc.reduce(
+        state, AgentSpeechEnded(t=31.0, agent="dex", completed=True, utterance="Said.")
+    )
+    start = next(c for c in cmds if isinstance(c, StartSpeech))
+    assert start.agent == "wayne"
+
+
+def test_agent_invitations_can_be_disabled(cast: PanelCast, state):
+    """The flag ships as a kill switch: the field is read and stored, never acted on."""
+    off_fc = FloorController(cast, FloorConfig(agent_invitations=False))
+    state, _ = _turn_with_invite(off_fc, state)
+    assert state.pending_invite == "wayne"
+
+    state, _ = off_fc.reduce(state, _mid_turn_line("wayne", t=5.0))
+    state, _ = off_fc.reduce(
+        state, AgentSpeechEnded(t=31.0, agent="dex", completed=True, utterance="Said.")
+    )
+    assert state.pending_invite is None
+    assert state.invitation is not None
+    assert state.invitation.source is InvitationSource.OPEN

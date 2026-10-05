@@ -98,7 +98,7 @@ class StubBrain:
     re-arbitration race rather than hiding it behind sequential execution.
     """
 
-    async def stream(self, persona, state):
+    async def stream(self, persona, state, **_kwargs):
         del state
         await asyncio.sleep(0)
         yield SignalsReady(agent=persona.id, signals=Signals(relevance=0.8), elapsed_ms=1.0)
@@ -850,7 +850,7 @@ class SlowBrain:
         self.delay = delay
         self.started: list[str] = []
 
-    async def stream(self, persona, state):
+    async def stream(self, persona, state, **_kwargs):
         del state
         self.started.append(persona.id)
         if persona.id == self.slow_agent:

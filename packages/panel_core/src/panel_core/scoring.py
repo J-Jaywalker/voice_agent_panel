@@ -226,7 +226,17 @@ class FloorConfig:
     # --- safety valve ---
     # After this many agent turns in a row, hand back to the moderator so the
     # panel cannot drift into an unbounded machine-to-machine conversation.
-    max_consecutive_agent_turns: int = 3
+    max_consecutive_agent_turns: int = 5
+
+    # --- agents inviting agents ---
+    # On by default. A winning proposal may name the colleague who speaks next
+    # when its turn ends, and that colleague takes the floor without having
+    # proposed — see `FloorController._agent_invitation`.
+    # `max_consecutive_agent_turns` is what bounds the resulting exchange.
+    # Off still disables it outright: `Signals.invites_next` is read, validated
+    # and stored but never installs an invitation, so the floor behaves exactly
+    # as it did before the field existed.
+    agent_invitations: bool = True
 
     # --- liveness watchdog ---
     #

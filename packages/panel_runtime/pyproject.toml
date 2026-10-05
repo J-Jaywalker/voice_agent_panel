@@ -19,6 +19,7 @@ dependencies = [
     "livekit-plugins-silero>=1.7.1",
     "anthropic>=1.2",
     "rich>=13.7",
+    "typesafe-sdk[http2]>=0.7",
 ]
 
 [project.scripts]

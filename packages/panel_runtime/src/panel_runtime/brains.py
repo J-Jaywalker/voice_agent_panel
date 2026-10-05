@@ -57,6 +57,7 @@ from typing import Protocol
 
 from panel_core import (
     PROPOSAL_SCHEMA,
+    PanelCast,
     PanelState,
     Persona,
     Signals,
@@ -78,9 +79,25 @@ SIGNAL_FIELDS = (
     "novelty",
 )
 
+# The string-valued fields of `PROPOSAL_SCHEMA`, other than `utterance`. They
+# are read from the stream exactly like the numbers above: by name, once the
+# value has been closed off by the following comma. `utterance` is last in the
+# schema and so never carries that comma, which is also what keeps a quoted
+# fragment inside it from being mistaken for one of these.
+STRING_FIELDS = (
+    "responding_to",
+    "defer_to",
+    "invites_next",
+)
+
 # Matches a completed numeric field in the partial JSON. Cheaper and far more
 # predictable than running a tolerant JSON parser on every token.
 _FIELD_DONE = re.compile(r'"(\w+)"\s*:\s*(-?[\d.]+)\s*,')
+# ...and the same for a completed string field, or an explicit null. Group 2 is
+# the still-escaped value; group 3 is set when the model wrote `null`.
+_STRING_FIELD_DONE = re.compile(
+    r'"(' + "|".join(STRING_FIELDS) + r')"\s*:\s*(?:"((?:[^"\\]|\\.)*)"|(null))\s*,'
+)
 # The utterance value, as it streams. Group 1 is whatever has arrived so far.
 _UTTERANCE_OPEN = re.compile(r'"utterance"\s*:\s*"((?:[^"\\]|\\.)*)')
 
@@ -125,23 +142,26 @@ class BrainConfig:
 
 class AsyncBrain(Protocol):
     async def propose(
-        self, persona: Persona, state: PanelState
+        self, persona: Persona, state: PanelState, *, near_turn_limit: bool = False
     ) -> tuple[str, Signals] | None: ...
 
 
 class ClaudeBrain:
     """One request per proposal, returning signals and utterance together."""
 
-    def __init__(self, config: BrainConfig | None = None) -> None:
+    def __init__(self, config: BrainConfig | None = None, *, cast: PanelCast | None = None) -> None:
         import anthropic
 
         if not os.environ.get("ANTHROPIC_API_KEY"):
             raise RuntimeError("ANTHROPIC_API_KEY is not set")
         self.config = config or BrainConfig()
+        self.cast = cast
         self.client = anthropic.AsyncAnthropic(base_url=anthropic_base_url())
         self.last_latency_ms: dict[str, float] = {}
 
-    async def propose(self, persona: Persona, state: PanelState) -> tuple[str, Signals] | None:
+    async def propose(
+        self, persona: Persona, state: PanelState, *, near_turn_limit: bool = False
+    ) -> tuple[str, Signals] | None:
         started = time.monotonic()
         try:
             response = await asyncio.wait_for(
@@ -152,13 +172,20 @@ class ClaudeBrain:
                     system=[
                         {
                             "type": "text",
-                            "text": build_system_prompt(persona),
+                            "text": build_system_prompt(persona, cast=self.cast),
                             # The stable prefix. Caching it is what makes asking
                             # every agent on every partial transcript viable.
                             "cache_control": {"type": "ephemeral"},
                         }
                     ],
-                    messages=[{"role": "user", "content": build_turn_prompt(state, persona)}],
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": build_turn_prompt(
+                                state, persona, near_turn_limit=near_turn_limit
+                            ),
+                        }
+                    ],
                 ),
                 timeout=self.config.timeout_s,
             )
@@ -278,15 +305,32 @@ def _escaped_stable_prefix(raw: str) -> str:
     return raw[: match.start()] if match else raw
 
 
+def _string_fields(buffer: str) -> dict[str, str | None]:
+    """The string-valued signal fields that have finished arriving.
+
+    `null` and `""` both come back as None: the floor reads these as agent ids
+    and an empty one names nobody.
+    """
+    found: dict[str, str | None] = {}
+    for match in _STRING_FIELD_DONE.finditer(buffer):
+        if match.group(3):
+            found[match.group(1)] = None
+            continue
+        value = _unescape(match.group(2)).strip()
+        found[match.group(1)] = value or None
+    return found
+
+
 class StreamingClaudeBrain:
     """Emits signals and sentences as they arrive, not when the turn is done."""
 
-    def __init__(self, config: BrainConfig | None = None) -> None:
+    def __init__(self, config: BrainConfig | None = None, *, cast: PanelCast | None = None) -> None:
         import anthropic
 
         if not os.environ.get("ANTHROPIC_API_KEY"):
             raise RuntimeError("ANTHROPIC_API_KEY is not set")
         self.config = config or BrainConfig()
+        self.cast = cast
         self.client = anthropic.AsyncAnthropic(base_url=anthropic_base_url())
 
     async def stream(
@@ -295,6 +339,7 @@ class StreamingClaudeBrain:
         state: PanelState,
         *,
         on_event: Callable[[StreamEvent], None] | None = None,
+        near_turn_limit: bool = False,
     ) -> AsyncIterator[StreamEvent]:
         started = time.monotonic()
         chunker = SentenceChunker()
@@ -329,11 +374,18 @@ class StreamingClaudeBrain:
             system=[
                 {
                     "type": "text",
-                    "text": build_system_prompt(persona),
+                    "text": build_system_prompt(persona, cast=self.cast),
                     "cache_control": {"type": "ephemeral"},
                 }
             ],
-            messages=[{"role": "user", "content": build_turn_prompt(state, persona)}],
+            messages=[
+                {
+                    "role": "user",
+                    "content": build_turn_prompt(
+                        state, persona, near_turn_limit=near_turn_limit
+                    ),
+                }
+            ],
         ) as response:
             async for text in response.text_stream:
                 buffer += text
@@ -386,7 +438,15 @@ class StreamingClaudeBrain:
                         signals_sent = True
                         event = SignalsReady(
                             agent=persona.id,
-                            signals=Signals(**{f: float(found[f]) for f in SIGNAL_FIELDS}),
+                            signals=Signals(
+                                **{f: float(found[f]) for f in SIGNAL_FIELDS},
+                                # The string fields sit between `novelty` and
+                                # `utterance` in the schema, so by the time the
+                                # utterance has a first character they have all
+                                # arrived. Anything that has not is left at its
+                                # default rather than guessed at.
+                                **_string_fields(buffer),
+                            ),
                             elapsed_ms=ms(),
                         )
                         if on_event:

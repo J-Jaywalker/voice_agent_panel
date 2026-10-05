@@ -105,7 +105,8 @@ from rich.live import Live
 from rich.markup import escape
 from rich.text import Text
 
-from .address import AddressClassifier, AddressVerdict
+from .address import AddressClassifier, AddressVerdict, BaseAddressClassifier
+from .address_typesafe import TypeSafeAddressClassifier
 from .brains import (
     BrainConfig,
     ProposalComplete,
@@ -291,7 +292,8 @@ class PanelRuntime:
         block_size: int = 256,
         use_tts: bool = True,
         log_path: Path | None = None,
-        address_classifier: AddressClassifier | None = None,
+        address_classifier: BaseAddressClassifier | None = None,
+        address_backend: str = "typesafe",
         display: DisplayServer | None = None,
         speakers_path: Path | None = None,
         re_enrol: bool = False,
@@ -305,7 +307,7 @@ class PanelRuntime:
         self.use_tts = use_tts
         self.log_path = log_path
 
-        self.brain = StreamingClaudeBrain(BrainConfig())
+        self.brain = StreamingClaudeBrain(BrainConfig(), cast=cast)
         # Built undiarized, exactly as before, and reconfigured in `run()` once
         # enrolment has identifiers for Ricky — see `_enrol` and
         # `PanelSTT.identify`. The diarization default is not moved, because
@@ -386,7 +388,11 @@ class PanelRuntime:
         # TurnYielded logic with no network call and no API key.
         self._address = address_classifier
         if self._address is None and self.fc.config.llm_address_detection:
-            self._address = AddressClassifier(cast)
+            self._address = (
+                TypeSafeAddressClassifier(cast)
+                if address_backend == "typesafe"
+                else AddressClassifier(cast)
+            )
 
         # The 12m video wall, or None. It is handed every event and every
         # command and is never asked anything, so nothing on stage depends on
@@ -915,8 +921,16 @@ class PanelRuntime:
         """
         persona = self.cast[candidate.agent]
         spoke = False
+        # Whether a turn granted off this generation would be the last one
+        # before the floor returns to Ricky — read off the same snapshot the
+        # prompt is built from, so it describes the moment this line answers.
+        near_turn_limit = (
+            snapshot.consecutive_agent_turns + 1 >= self.fc.config.max_consecutive_agent_turns
+        )
         try:
-            async for event in self.brain.stream(persona, snapshot):
+            async for event in self.brain.stream(
+                persona, snapshot, near_turn_limit=near_turn_limit
+            ):
                 if isinstance(event, SignalsReady):
                     # The floor can be arbitrated now. The utterance is carried
                     # by the Candidate, not by the event — the reducer decides
@@ -1357,7 +1371,7 @@ class PanelRuntime:
         barge-in content check and speculative generation, and delaying it by
         even one classifier round trip would undo both.
 
-        With `--llm-address` on, a human final additionally kicks off address
+        With a model address backend on, a human final additionally kicks off address
         classification — non-blocking; this loop must keep pumping or every
         other STT event stalls behind it — and `TurnYielded`, and only
         `TurnYielded`, is held back until that verdict lands. See
@@ -1455,7 +1469,7 @@ class PanelRuntime:
             previous.cancel()
 
     async def _classify_address(
-        self, classifier: AddressClassifier, text: str, *, context: str, t: float
+        self, classifier: BaseAddressClassifier, text: str, *, context: str, t: float
     ) -> None:
         """Classify one human final and emit the verdict as an event.
 
@@ -1897,11 +1911,12 @@ def main() -> None:
     parser.add_argument("--block", type=int, default=256)
     parser.add_argument("--no-tts", action="store_true", help="print turns instead of speaking")
     parser.add_argument(
-        "--llm-address",
-        action="store_true",
+        "--address-backend",
+        choices=("regex", "haiku", "typesafe"),
+        default="typesafe",
         help=(
-            "resolve who Ricky addressed with a model instead of the regex "
-            "(off by default; needs ANTHROPIC_API_KEY)"
+            "who resolves the addressee: the regex, Haiku (ANTHROPIC_API_KEY), "
+            "or TypeSafe/Jev (TYPESAFE_API_KEY). Default: typesafe"
         ),
     )
     parser.add_argument("--input-device", default=None)
@@ -1946,11 +1961,12 @@ def main() -> None:
     runtime = PanelRuntime(
         cast,
         floor_config=FloorConfig(
-            # One flag does both halves: the reducer starts reading
-            # `AddressDetected`, and `PanelRuntime` builds the classifier that
-            # produces it. Off, neither exists.
-            llm_address_detection=args.llm_address,
+            # `FloorConfig` means only "read `AddressDetected`", never which
+            # backend produced it — so an old recording replays identically
+            # whatever is wired up here.
+            llm_address_detection=args.address_backend != "regex",
         ),
+        address_backend=args.address_backend,
         block_size=args.block,
         use_tts=not args.no_tts,
         log_path=args.log,

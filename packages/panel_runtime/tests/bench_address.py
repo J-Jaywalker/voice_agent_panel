@@ -45,23 +45,35 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import functools
 import importlib.util
+import json
 import statistics
 import sys
 import time
+from collections.abc import Awaitable, Callable
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TextIO
 
 import anthropic
+import typesafe_sdk
 from panel_core import PanelCast
 from panel_core.prompts import (
     AMBIGUOUS_VERDICT,
     INTRO_VERDICT,
+    JOINT_REQUEST_QUESTION,
     NO_VERDICT,
     OPEN_VERDICT,
+    UNIDENTIFIABLE_QUESTION,
     VERDICT_JOIN,
+    _addressed_question_name,
     address_verdicts,
     build_address_prompt,
+    build_address_questions,
+    build_address_state,
+    compose_address_verdict,
     decode_address_verdict,
 )
 
@@ -86,6 +98,15 @@ from panel_runtime.config import anthropic_base_url
 DEFAULT_MODEL = "claude-haiku-4-5"
 MAX_TOKENS = 32
 TIMEOUT_S = 5.0
+
+# Pinned, never `jev-latest` — that alias moves, and a bench result against a
+# moving target is not a claim about what runs on show night, the same reason
+# the system prompt above is byte-identical and cached rather than re-derived
+# per call.
+TYPESAFE_DEFAULT_MODEL = "jev-1.13.0"
+# Bench headroom, not the stage budget — `ADDRESS_HOLD_TIMEOUT_S` (0.9s) is
+# what bounds the live path; this just keeps one slow case from stalling a run.
+TYPESAFE_TIMEOUT_S = 0.6
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CORPUS_PATH = REPO_ROOT / "packages" / "panel_core" / "tests" / "test_address.py"
@@ -264,11 +285,90 @@ async def classify(
     return Result(text, want, got, reason, verdict_ms, total_ms)
 
 
-async def run_set(
-    client: anthropic.AsyncAnthropic,
+async def classify_typesafe(
+    client: typesafe_sdk.AsyncTypeSafeClient,
     model: str,
-    system: str,
-    verdicts: dict[str, str | None],
+    questions: dict[str, dict],
+    cast: PanelCast,
+    text: str,
+    want: str,
+    context: str = "",
+    *,
+    dump: TextIO | None = None,
+) -> Result:
+    """One atomic TypeSafe call, recomposed through `compose_address_verdict`.
+
+    No streaming decode to time separately: the call is request-in,
+    typed-answer-out, so `verdict_ms` and `total_ms` are the same number. That
+    equality is itself the thing worth reading off a report — it is what "no
+    streaming support" (see the TypeSafe spike plan) costs or saves in practice.
+    """
+    started = time.perf_counter()
+    state = build_address_state(text, context, cast)
+    try:
+        response = await client.system_one(
+            state=state,
+            questions=questions,
+            model=model,
+            retry=typesafe_sdk.RetryPolicy(max_retries=0),
+            timeout=TYPESAFE_TIMEOUT_S,
+        )
+    except Exception as exc:  # noqa: BLE001 — a bench reports failures, it does not raise them
+        elapsed = (time.perf_counter() - started) * 1000
+        return Result(text, want, None, "", 0.0, elapsed, repr(exc))
+
+    elapsed = (time.perf_counter() - started) * 1000
+    mode_answer = response.choices.get("mode")
+    if mode_answer is None:
+        return Result(text, want, None, "", 0.0, elapsed, "no 'mode' answer in response")
+
+    agent_probabilities = {
+        agent_id: response.nouls[name].noul
+        for agent_id in cast.personas
+        if (name := _addressed_question_name(agent_id)) in response.nouls
+    }
+
+    def noul(name: str) -> float:
+        answer = response.nouls.get(name)
+        return answer.noul if answer is not None else 0.0
+
+    # `.probabilities`, never `.confidence` — the latter is a distribution
+    # spread statistic and reads well below p(top answer) on a four-option
+    # Choice, so a confidence floor rejects answers the distribution supports.
+    mode_probabilities = dict(mode_answer.probabilities)
+    joint_request = noul(JOINT_REQUEST_QUESTION)
+    unidentifiable = noul(UNIDENTIFIABLE_QUESTION)
+
+    got = compose_address_verdict(
+        mode_probabilities=mode_probabilities,
+        agent_probabilities=agent_probabilities,
+        joint_request=joint_request,
+        unidentifiable=unidentifiable,
+        cast=cast,
+    )
+    if dump is not None:
+        dump.write(
+            json.dumps(
+                {
+                    "text": text,
+                    "want": want,
+                    "got": got,
+                    "mode_probabilities": mode_probabilities,
+                    "agent_probabilities": agent_probabilities,
+                    "joint_request": joint_request,
+                    "unidentifiable": unidentifiable,
+                }
+            )
+            + "\n"
+        )
+        dump.flush()
+    # TypeSafe returns typed answers, not prose — there is no reason text to
+    # show here, unlike the Haiku path's trailing explanation.
+    return Result(text, want, got, "", elapsed, elapsed)
+
+
+async def run_set(
+    classify_one: Callable[[str, str, str], Awaitable[Result]],
     cases: list[tuple[str, str, str]],
     repeat: int,
     concurrency: int,
@@ -277,10 +377,7 @@ async def run_set(
 
     async def one(text: str, want: str, context: str) -> Result:
         async with gate:
-            return await asyncio.wait_for(
-                classify(client, model, system, verdicts, text, want, context),
-                TIMEOUT_S * 2,
-            )
+            return await asyncio.wait_for(classify_one(text, want, context), TIMEOUT_S * 2)
 
     jobs = [one(*case) for _ in range(repeat) for case in cases]
     return list(await asyncio.gather(*jobs))
@@ -316,7 +413,7 @@ def report(name: str, results: list[Result], *, verbose: bool) -> int:
 async def main_async(args: argparse.Namespace) -> int:
     cast = PanelCast.from_dir(args.personas)
     verdicts = address_verdicts(cast)
-    system = build_address_prompt(cast)
+    model = args.model or (DEFAULT_MODEL if args.backend == "haiku" else TYPESAFE_DEFAULT_MODEL)
 
     corpus = [
         (text, expected_token(want, verdicts), context)
@@ -327,26 +424,36 @@ async def main_async(args: argparse.Namespace) -> int:
         for text, want, context in NEW_CAPABILITY
     ]
 
-    print(f"model:     {args.model}")
-    print(f"endpoint:  {anthropic_base_url()}")
+    print(f"backend:   {args.backend}")
+    print(f"model:     {model}")
     print(f"verdicts:  {', '.join(sorted(verdicts))}")
-    print(f"prompt:    {len(system)} chars")
     print(f"cases:     {len(corpus)} regression + {len(new_cases)} new, ×{args.repeat}")
 
-    client = anthropic.AsyncAnthropic(base_url=anthropic_base_url())
-    try:
-        # Prime the prompt cache so the latency figures are not dominated by
-        # whichever case happened to go first.
-        await classify(client, args.model, system, verdicts, "Thanks, everybody.", NO_VERDICT)
-
-        corpus_results = await run_set(
-            client, args.model, system, verdicts, corpus, args.repeat, args.concurrency
-        )
-        new_results = await run_set(
-            client, args.model, system, verdicts, new_cases, args.repeat, args.concurrency
-        )
-    finally:
-        await client.close()
+    if args.backend == "haiku":
+        system = build_address_prompt(cast)
+        print(f"endpoint:  {anthropic_base_url()}")
+        print(f"prompt:    {len(system)} chars")
+        client = anthropic.AsyncAnthropic(base_url=anthropic_base_url())
+        try:
+            # Prime the prompt cache so the latency figures are not dominated
+            # by whichever case happened to go first.
+            await classify(client, model, system, verdicts, "Thanks, everybody.", NO_VERDICT)
+            classify_one = functools.partial(classify, client, model, system, verdicts)
+            corpus_results = await run_set(classify_one, corpus, args.repeat, args.concurrency)
+            new_results = await run_set(classify_one, new_cases, args.repeat, args.concurrency)
+        finally:
+            await client.close()
+    else:
+        questions = build_address_questions(cast)
+        print(f"questions: {', '.join(sorted(questions))}")
+        with ExitStack() as files:
+            dump = files.enter_context(args.dump.open("w")) if args.dump else None
+            async with typesafe_sdk.AsyncTypeSafeClient() as client:
+                classify_one = functools.partial(
+                    classify_typesafe, client, model, questions, cast, dump=dump
+                )
+                corpus_results = await run_set(classify_one, corpus, args.repeat, args.concurrency)
+                new_results = await run_set(classify_one, new_cases, args.repeat, args.concurrency)
 
     regressions = report("regression corpus", corpus_results, verbose=args.verbose)
     report("new capability (not in the regression score)", new_results, verbose=args.verbose)
@@ -361,10 +468,17 @@ async def main_async(args: argparse.Namespace) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(prog="bench_address")
     parser.add_argument("--personas", type=Path, default=REPO_ROOT / "personas")
-    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--backend", choices=("haiku", "typesafe"), default="haiku")
+    parser.add_argument("--model", default=None, help="overrides the backend's pinned default")
     parser.add_argument("--repeat", type=int, default=1, help="runs per case, for stability")
     parser.add_argument("--concurrency", type=int, default=6)
     parser.add_argument("--verbose", action="store_true", help="also list the passes")
+    parser.add_argument(
+        "--dump",
+        type=Path,
+        default=None,
+        help="TypeSafe backend only: write one JSON line of raw answers per call",
+    )
     args = parser.parse_args()
     sys.exit(asyncio.run(main_async(args)))
 

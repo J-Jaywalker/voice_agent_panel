@@ -1035,6 +1035,10 @@ body {
   color: var(--accent-amber);
 }
 
+.bubble-row[data-accent="purple"] .bubble__tag {
+  color: var(--accent-purple);
+}
+
 .bubble {
   /*
    * The transcript lane is 832px of usable width inside its padding (960
@@ -1150,6 +1154,10 @@ body {
    two by construction, so one rule covers three agents. */
 .bubble-row[data-accent="amber"] {
   --bg-bubble: color-mix(in srgb, var(--accent-amber-quiet) var(--bubble-tint), transparent);
+}
+
+.bubble-row[data-accent="purple"] {
+  --bg-bubble: color-mix(in srgb, var(--accent-purple-quiet) var(--bubble-tint), transparent);
 }
 
 /* The most recent finalised bubble is the one still in play. */

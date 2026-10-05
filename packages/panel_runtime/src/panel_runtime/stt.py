@@ -257,7 +257,8 @@ class STTConfig:
 SHOW_VOCAB: tuple[dict[str, Any], ...] = (
     {"content": "Speechmatics", "sounds_like": ["speech maticks", "speech matticks"]},
     {"content": "LLM", "sounds_like": ["ell ell emm", "elelem"]},
-    {"content": "Melia", "sounds_like": ["mell ee ya", "muh lee uh", "meliya"]}
+    {"content": "Melia", "sounds_like": ["mell ee ya", "muh lee uh", "meliya"]},
+    {"content": "Servv.AI", "sounds_like": ["serve eyy eye", "serve ai", "serv ey ai"]},
 )
 
 
