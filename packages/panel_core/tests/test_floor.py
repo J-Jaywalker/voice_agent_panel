@@ -470,17 +470,19 @@ def test_addressed_agent_gets_the_floor_over_a_higher_score(fc, state):
     state, cmds = fc.reduce(state, TurnYielded(t=1.0))
     starts = [c for c in cmds if isinstance(c, StartSpeech)]
     assert [s.agent for s in starts] == ["wayne"]
-    assert state.invitation.is_live(), (
-        "Dexter and Melia are still owed a turn each — one grant does not spend "
-        "the whole invitation any more"
+    assert not state.invitation.is_live(), (
+        "a direct question to Wayne alone is spent the moment he answers it — "
+        "there is nobody else this invitation could ever admit"
     )
     assert state.invitation.spoken == ("wayne",)
 
 
-def test_every_live_agent_chips_in_once_before_the_floor_closes(fc, state):
-    """Ricky names Wayne. Dexter and Melia still each get a turn afterwards,
-    and the floor closes the moment all three have spoken — not before, and
-    not by relaying indefinitely either.
+def test_a_named_invitation_never_opens_to_the_rest_of_the_panel(fc, state):
+    """Ricky names Wayne. Dexter and Melia must not take the floor off the
+    back of his question, however strong their proposals score — not while
+    Wayne is still speaking, and not after he has finished either. Wayne
+    answers once and the floor goes straight back to Ricky — it does not keep
+    re-granting Wayne for lack of anyone else to compete with him.
     """
     state, _ = run(
         fc,
@@ -494,40 +496,24 @@ def test_every_live_agent_chips_in_once_before_the_floor_closes(fc, state):
     assert [c.agent for c in cmds if isinstance(c, StartSpeech)] == ["wayne"]
     state, _ = fc.reduce(state, AgentSpeechStarted(t=1.1, agent="wayne"))
 
-    # Granting Wayne the floor is what opens the invitation up to the others —
-    # `admits()` reacts to `invitation.spoken`, stamped at grant time, not to
-    # whether his audio has actually finished yet.
-    assert state.invitation.admits("dex")
-    assert state.invitation.admits("melia")
-    assert not state.invitation.admits("wayne"), "already had a turn this invitation"
+    # Granting Wayne the floor does NOT open the invitation up to the others —
+    # `admits()` confines a named invitation to its own set for its whole
+    # life — and for a lone addressee that set is spent the instant he has
+    # had his turn, not reusable, or he would just keep re-winning arbitration
+    # against nobody until `address_invitation_turns` ran out from under him.
+    assert not state.invitation.admits("dex")
+    assert not state.invitation.admits("melia")
+    assert not state.invitation.admits("wayne"), "already had his one turn"
 
     state, _ = fc.reduce(
         state,
-        AgentProposal(t=1.5, agent="dex", utterance="Historically, no.", signals=weak()),
+        AgentProposal(t=1.5, agent="dex", utterance="Historically, no.", signals=strong()),
     )
     state, cmds = fc.reduce(state, AgentSpeechEnded(t=6.0, agent="wayne", completed=True))
-    assert [c.agent for c in cmds if isinstance(c, StartSpeech)] == ["dex"], (
-        "the score floor does not apply once someone is still owed a turn, "
-        "even on a weak-scoring proposal"
-    )
-    assert state.invitation.is_live(), "Melia is still owed hers"
-    assert set(state.invitation.spoken) == {"wayne", "dex"}
-    state, _ = fc.reduce(state, AgentSpeechStarted(t=6.1, agent="dex"))
-
-    assert not state.invitation.admits("wayne"), "already had a turn this invitation"
-    assert not state.invitation.admits("dex"), "already had a turn this invitation"
-
-    state, _ = fc.reduce(
-        state,
-        AgentProposal(t=6.5, agent="melia", utterance="Mm.", signals=weak()),
-    )
-    state, cmds = fc.reduce(state, AgentSpeechEnded(t=10.0, agent="dex", completed=True))
-    assert [c.agent for c in cmds if isinstance(c, StartSpeech)] == ["melia"]
-    state, _ = fc.reduce(state, AgentSpeechStarted(t=10.1, agent="melia"))
-
-    state, cmds = fc.reduce(state, AgentSpeechEnded(t=13.0, agent="melia", completed=True))
     assert not [c for c in cmds if isinstance(c, StartSpeech)], (
-        "everyone has spoken — the floor goes back to Ricky, not round again"
+        "nobody is left this invitation could ever admit — not Dex, who was "
+        "never addressed even on the stronger-scoring proposal, and not "
+        "Wayne, who already answered"
     )
     assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [
         CueReason.INVITATION_SPENT

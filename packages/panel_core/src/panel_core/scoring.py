@@ -58,21 +58,23 @@ class FloorConfig:
     # Ricky opens it. A statement invites nobody; a question invites the room.
     #
     # How many agent turns one invitation is worth before the floor goes back
-    # to the moderator, at most. Every agent chips in once per prompt
-    # (CLAUDE.md) — `Invitation.admits()` opens the floor to whoever has not
-    # yet spoken once the first agent has, and `FloorController._grant` closes
-    # the invitation outright the moment every live agent has had a turn, so
-    # in ordinary running neither of these numbers is what ends the round.
-    # They are the ceiling for when that mechanism should not apply (an
-    # invitation nobody ever fully uses) or should not run away (a persona
-    # added without updating this), so both default to the current cast size
-    # — three — with headroom rather than exactly matching it. Set lower in a
-    # config or an `OperatorAction.OPEN_FLOOR` to bound a round more tightly;
-    # that override is still respected exactly (see
+    # to the moderator, at most. On an open floor every live agent chips in
+    # once — `Invitation.admits()` admits whoever has not yet spoken, and
+    # `FloorController._grant` closes the invitation outright the moment every
+    # live agent has had a turn, so in ordinary running this number is not
+    # what ends the round. It is the ceiling for when that mechanism should
+    # not apply (an invitation nobody ever fully uses) or should not run away
+    # (a persona added without updating this), so it defaults to the current
+    # cast size — three — with headroom rather than exactly matching it. Set
+    # lower in a config or an `OperatorAction.OPEN_FLOOR` to bound a round more
+    # tightly; that override is still respected exactly (see
     # `test_an_open_invitation_is_spent_and_the_floor_goes_back`).
     open_invitation_turns: int = 4
-    # A named agent is guaranteed to answer first; the other live agents are
-    # then each owed one turn too — see above.
+    # A named invitation (one agent or several) is confined to exactly those
+    # agents for its whole life — `Invitation.admits()` never opens it to the
+    # rest of the panel, however many turns it produces. This is the ceiling
+    # on how long a direct question, or a named exchange between two
+    # panellists, may run before the floor goes back to Ricky regardless.
     address_invitation_turns: int = 4
     # An invitation nobody ever acts on must not sit on the floor for the rest
     # of the show. `no_candidate` deliberately does NOT clear the invitation —

@@ -1471,15 +1471,23 @@ class FloorController:
             commands.extend(advance_cmds)
             return state, commands
 
+        # The panel-wide relay cap is checked before the invitation's own
+        # liveness. A solo named invitation now closes itself the instant its
+        # one agent answers (see the comment in `_grant`), so by the time a
+        # chain of agent-to-agent handoffs reaches the turn that trips this
+        # cap, `state.invitation` is already a fresh single-name invitation
+        # for whoever comes next — which, read in the other order, would
+        # report "that question was answered" (INVITATION_SPENT) and mask the
+        # real reason the relay is stopping.
+        if state.consecutive_agent_turns >= self.config.max_consecutive_agent_turns:
+            state = replace(state, invitation=None)
+            commands.append(CueModerator(reason=CueReason.AGENT_TURN_LIMIT))
+            return state, commands
+
         invitation = state.invitation
         if invitation is None or not invitation.is_live():
             state = replace(state, invitation=None, address_conflict=())
             commands.append(CueModerator(reason=CueReason.INVITATION_SPENT))
-            return state, commands
-
-        if state.consecutive_agent_turns >= self.config.max_consecutive_agent_turns:
-            state = replace(state, invitation=None)
-            commands.append(CueModerator(reason=CueReason.AGENT_TURN_LIMIT))
             return state, commands
 
         # The turn that just ended is this invitation's activity. Without this
@@ -2044,14 +2052,16 @@ class FloorController:
         best_score, best_agent = scored[0]
 
         # The score floor exists to let silence win a turn nobody was owed.
-        # Once somebody has already spoken this invitation, every other live
-        # agent *is* owed one (CLAUDE.md: "every agent chips in once per
-        # prompt"), so `min_floor_priority` no longer applies — it would let a
-        # deliberately low, declining-but-not-empty score (GUARDRAILS: agents
-        # decline by scoring low, never by an empty utterance) silently skip
-        # the last panellist still waiting their turn. It still governs
-        # whether the *first* speaker on a genuinely open floor gets one at
-        # all — that property is unchanged.
+        # Once somebody has already spoken this invitation, every other
+        # *admitted* agent is owed one — the rest of a named set, or the rest
+        # of the panel on a genuinely open floor — so `min_floor_priority` no
+        # longer applies to them: it would let a deliberately low,
+        # declining-but-not-empty score (GUARDRAILS: agents decline by scoring
+        # low, never by an empty utterance) silently skip the last one still
+        # waiting their turn. It still governs whether the *first* speaker on
+        # a genuinely open floor gets one at all — that property is unchanged.
+        # `candidates` is already confined to `invitation.admits()`, so this
+        # can never reach an agent Ricky did not address.
         if not invitation.spoken and best_score < self.config.min_floor_priority:
             return None, CueReason.BELOW_FLOOR
 
@@ -2465,24 +2475,39 @@ class FloorController:
         if state.invitation is not None:
             # `now` refreshes the TTL clock: an invitation producing turns is
             # live conversation and must not age out mid-exchange. `agent_id`
-            # records that this agent has now had their turn, which is what
-            # `admits()` opens the floor on for everyone else.
+            # records that this agent has now had their turn, for `admits()`
+            # and the check below.
             invitation = state.invitation.spent(t=now, agent_id=agent_id)
-            live_agents = {a for a, rt in state.agents.items() if not rt.muted}
-            # Deliberately against the whole live panel and not against the
-            # invitation's own scope. A *group* invitation therefore never
-            # closes here — the panellist Ricky left out never speaks, so the
-            # set never covers the panel — and runs its `turns_remaining`
-            # instead, which is what gives the two of them a second turn each.
-            # Closing it as soon as both had spoken once would make "take that
-            # between you" mean one line each, which is not an exchange.
-            if set(invitation.spoken) >= live_agents:
-                # Every live agent has now had a turn this invitation — close
-                # it outright rather than let it sit on `turns_remaining` a
-                # config value happens not to have exhausted yet. CLAUDE.md:
-                # "every agent chips in once per prompt," and once they have,
-                # this cue belongs back with Ricky.
-                invitation = replace(invitation, turns_remaining=0)
+            # Close early once nobody further is owed a turn — but what that
+            # means differs by shape, and only two of the three ever close
+            # here at all:
+            #
+            # * **Open.** Against the whole live panel, not the invitation's
+            #   own scope (which is empty). Closes the moment every live agent
+            #   has spoken, rather than sitting on `turns_remaining` a config
+            #   value happens not to have exhausted yet.
+            # * **One name.** Against that one agent alone — closed the
+            #   instant they answer. A direct question wants one answer, not
+            #   the same agent re-winning arbitration against nobody turn
+            #   after turn because `admits()` keeps everyone else out and he
+            #   is the only candidate left standing; that ran for four grants
+            #   on a live show before `address_invitation_turns` happened to
+            #   catch it.
+            # * **Several names.** Never closes here. "Melia and Wayne, take
+            #   that between you" means an exchange, and `admits()` has no
+            #   once-each limit for a group precisely so they can alternate —
+            #   closing the moment both had spoken once would undo that and
+            #   turn it back into one line each. A group instead runs on
+            #   `turns_remaining` / `max_consecutive_agent_turns`, same as any
+            #   other agent-to-agent handoff.
+            if not invitation.is_group:
+                admitted = (
+                    {a for a, rt in state.agents.items() if not rt.muted}
+                    if not invitation.agents
+                    else {invitation.agent}
+                )
+                if set(invitation.spoken) >= admitted:
+                    invitation = replace(invitation, turns_remaining=0)
         state = replace(
             state,
             turn_id=state.turn_id + 1,

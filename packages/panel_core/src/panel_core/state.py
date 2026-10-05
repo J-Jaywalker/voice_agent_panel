@@ -142,29 +142,35 @@ class Invitation:
 
         Three shapes of invitation, three rules:
 
-        * **Open** (``agents`` empty). Anyone who has not yet spoken under it.
-        * **One name.** The addressee alone until they have answered — a direct
-          question is theirs to answer first — and then every other live agent,
-          because every agent chips in once per prompt (CLAUDE.md). Nobody is
-          ever admitted twice.
+        * **Open** (``agents`` empty). Anyone who has not yet spoken under it —
+          every agent chips in once before the floor goes back to Ricky.
+        * **One name.** The addressee, once, and nobody else — the rest of the
+          panel is *excluded*, not merely deprioritised, so an unaddressed
+          agent can never take the floor off the back of someone else's
+          question, which is indistinguishable on stage from an agent cutting
+          in. And the addressee is excluded too once they have answered: a
+          direct question wants one answer, not the same agent re-winning
+          arbitration against nobody turn after turn because he is the only
+          candidate left standing. That was tried — admitting him
+          indefinitely — and the only thing that stopped a solo address
+          running away was `address_invitation_turns` happening to run out,
+          four turns and about ninety seconds into what should have been one.
+          A colleague may still be handed the floor explicitly
+          (``Signals.defer_to`` / ``invites_next``, which install their own
+          invitation and do not go through this check); nobody may take it by
+          simply out-scoring the agent Ricky actually asked.
         * **Several names.** Those panellists and nobody else, with no
-          once-each limit. Ricky naming two of them is Ricky asking those two
-          to take it between them, so a second turn each is the point of the
-          invitation rather than an overrun. ``recency_penalty`` in the scoring
-          is what makes it alternate, and in practice
-          ``FloorConfig.max_consecutive_agent_turns`` is what ends it before
-          ``turns_remaining`` does — the same safety valve that bounds any
-          agent-to-agent exchange, since that is what this is. Opening the
-          floor back up to the panellist he left out would undo the only thing
-          the extra name said.
+          once-each limit: Ricky naming two of them is Ricky asking those two
+          to take it between them, so alternating turns is the point of the
+          invitation rather than an overrun. ``recency_penalty`` in the
+          scoring and ``FloorConfig.max_consecutive_agent_turns`` are what
+          keep that exchange from running away instead.
         """
         if self.is_group:
             return agent_id in self.agents
-        if agent_id in self.spoken:
-            return False
-        if not self.spoken:
-            return self.agent is None or self.agent == agent_id
-        return True
+        if self.agents:
+            return agent_id == self.agent and agent_id not in self.spoken
+        return agent_id not in self.spoken
 
     def precedence(self) -> int:
         """How specific this invitation is. Higher wins a collision."""
