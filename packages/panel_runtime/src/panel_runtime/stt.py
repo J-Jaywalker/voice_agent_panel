@@ -216,9 +216,7 @@ class STTConfig:
         """
         if self.diarization == "none":
             return frozenset()
-        return frozenset(
-            str(entry["label"]) for entry in self.speakers if entry.get("label")
-        )
+        return frozenset(str(entry["label"]) for entry in self.speakers if entry.get("label"))
 
     def to_start_recognition(self) -> dict[str, Any]:
         return {
@@ -454,9 +452,7 @@ class _AgentSTTSession:
         # sample rate, ...) is unaffected by a prior rejection and keeps
         # coming from `self._config` directly.
         start_config = (
-            self._config
-            if self._vocab_enabled
-            else replace(self._config, additional_vocab=())
+            self._config if self._vocab_enabled else replace(self._config, additional_vocab=())
         )
         async with websockets.connect(
             self._config.url,
@@ -762,9 +758,7 @@ class PanelSTT:
                 name=channel,
             )
             self._sessions[channel] = session
-            self._tasks.append(
-                asyncio.create_task(session.run(), name=f"agent-stt-{channel}")
-            )
+            self._tasks.append(asyncio.create_task(session.run(), name=f"agent-stt-{channel}"))
 
     def feed(self, channel: str, pcm: bytes) -> None:
         """Push one block of audio. Safe to call from the PortAudio callback."""

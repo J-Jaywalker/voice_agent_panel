@@ -40,7 +40,7 @@ def test_first_chunk_arrives_before_the_rest_is_written():
 def test_does_not_split_inside_an_abbreviation():
     text = "I worked with Dr. Chen on exactly this problem for two years."
     chunks, tail = stream(text)
-    assert [*chunks, tail] .count(text) == 1, "must stay one utterance"
+    assert [*chunks, tail].count(text) == 1, "must stay one utterance"
     assert not any(c.endswith("Dr.") for c in chunks)
 
 

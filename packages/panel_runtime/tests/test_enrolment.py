@@ -456,8 +456,13 @@ def test_partials_do_not_count_towards_verification(
     _install(
         monkeypatch,
         _FakeWebSocket(
-            [{"message": "RecognitionStarted"}, partial, partial, partial,
-             {"message": "EndOfTranscript"}]
+            [
+                {"message": "RecognitionStarted"},
+                partial,
+                partial,
+                partial,
+                {"message": "EndOfTranscript"},
+            ]
         ),
     )
     assert asyncio.run(_enrolment().verify(("id",))) is False

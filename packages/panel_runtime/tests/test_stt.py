@@ -121,9 +121,7 @@ def test_rejected_vocab_falls_back_to_a_working_session(
     retry once with the vocabulary dropped and reach `RecognitionStarted`.
     """
     first = _FakeWebSocket([{"message": "Error", "reason": "bad config"}])
-    second = _FakeWebSocket(
-        [{"message": "RecognitionStarted"}, {"message": "EndOfTranscript"}]
-    )
+    second = _FakeWebSocket([{"message": "RecognitionStarted"}, {"message": "EndOfTranscript"}])
     connections = [first, second]
 
     def fake_connect(*args: object, **kwargs: object) -> _FakeWebSocket:

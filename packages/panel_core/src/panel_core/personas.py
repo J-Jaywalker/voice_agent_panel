@@ -10,7 +10,71 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+# Audio tags the TTS model *performs* rather than reads aloud, written inline
+# as `[laughs]`. The vendor's set is free text, not an enumeration — the model
+# interprets whatever is in the brackets — so this is our closed list, and
+# being closed is the whole safety property. `sanitise()` keeps exactly these
+# and destroys every other bracket expression, which is what stops a model
+# that has learned the mechanism from reaching the documented tags that would
+# end the show: `[gunshot]`, `[applause]`, `[sings]`, `[strong French accent]`.
+#
+# Measured on `eleven_v3_conversational` (5 Oct 2026), each adds roughly
+# 0.5-1.0s of performed audio. Deliberately excluded:
+#
+# * `[laughs harder]` — +2.0s of stage time from one token.
+# * `[whispers]` — a whisper into a PA for 400 people is a dead spot, and the
+#   vendor warns a serious voice will not do it convincingly.
+# * `[hesitates]` — collides with the hesitation rule in `prompts.GUARDRAILS`,
+#   which deliberately wants hesitation as a *spoken word* ("let me think")
+#   and not as a direction. A tag here would give the model a way to satisfy
+#   that instinct without saying anything, which is the opposite of the intent.
+# * every other sound effect and accent tag.
+#
+# Stored without brackets; canonical form is lowercase, single-spaced.
+AUDIO_TAGS: frozenset[str] = frozenset(
+    {
+        "laughs",
+        "chuckles",
+        "sighs",
+        "exhales",
+        "dryly",
+        "clears throat",
+        "northern english accent",
+    }
+)
+
+# `ACCENT_TAGS` is the subset of the above that is a standing characteristic
+# of a voice, not a performance cue — and that difference is why it is not
+# handled the way the rest of `AUDIO_TAGS` is.
+#
+# Flash's `similarity_boost` used to pin a cloned voice close to its
+# reference recording's accent; v3 does not implement that setting at all
+# (dropped in `panel_runtime.tts`'s `TTSConfig`), and every persona's
+# `stability` separately collapsed onto the same 0.5 preset (`_preset_stability`,
+# same module) — between the two, Dexter's Northern accent read as flattened
+# towards the model's generic defaults. (Melia's `strong irish accent` was
+# tried the same way and dropped 5 Oct 2026 — the tag did not move this
+# particular voice; see `personas/melia.yaml`. A `pace` field and `[rapid-fire]`
+# tag were tried the same way for Wayne the same day, to compensate for v3
+# dropping `speed` entirely — measured as working, ~15% shorter audio for the
+# same text, but it read as shouting rather than brisk and was reverted; see
+# `personas/wayne.yaml`.)
+#
+# The vendor's fix for an accent is an inline tag, but rendering it into the
+# "sounds your voice can actually make" prompt block (below) is the wrong
+# mechanism: that block is deliberately written for an occasional performance
+# choice — "at most one in a turn, most turns none" — and an accent that shows
+# up in a minority of turns is not standing, it is a tic.
+#
+# So `Persona.accent` is not rendered into any prompt, and the model never
+# writes it. `panel_runtime.tts` reads it directly and prepends it to every
+# push, deterministically — the same reasoning as the introduction text being
+# fixed rather than generated: the failure mode of leaving it to the model is
+# a turn where it quietly does not show up, and there is no way to notice
+# that without listening to the whole show.
+ACCENT_TAGS: frozenset[str] = frozenset({"northern english accent"})
 
 
 class Persona(BaseModel):
@@ -95,7 +159,47 @@ class Persona(BaseModel):
     # trimmed voice still ducks for a backchannel and comes back to its own
     # level rather than everyone else's. 0.0 is unity, i.e. untouched.
     output_gain_db: float = 0.0
+    # Which of `AUDIO_TAGS` this persona is told it may use, bracketless. A
+    # subset per persona rather than the whole list to everyone: the tags are
+    # characterisation, and a bombastic voice laughing is as specific as a dry
+    # one sighing. An empty list means this persona is never told the
+    # mechanism exists — `sanitise()` still polices the full list regardless,
+    # because the prompt is guidance and the sanitiser is the guarantee.
+    audio_tags: list[str] = Field(default_factory=list)
+    # A standing vocal characteristic, read by `panel_runtime.tts` and never
+    # by a prompt — see `ACCENT_TAGS`' comment for why this is not folded
+    # into `audio_tags`. `None` means this voice's engine-default rendering,
+    # i.e. unchanged.
+    accent: str | None = Field(default=None)
     communication_style: str
+
+    @field_validator("audio_tags")
+    @classmethod
+    def _tags_are_allowlisted(cls, value: list[str]) -> list[str]:
+        """A typo here would be stripped at runtime and silently do nothing.
+
+        Cast data is the one place this can be caught loudly, so it is — the
+        failure otherwise is a persona that simply never laughs and no error
+        anywhere saying why.
+        """
+        unknown = [tag for tag in value if tag not in AUDIO_TAGS]
+        if unknown:
+            raise ValueError(
+                f"audio_tags not in the allowlist: {unknown}. Allowed: {sorted(AUDIO_TAGS)}"
+            )
+        return value
+
+    @field_validator("accent")
+    @classmethod
+    def _accent_is_allowlisted(cls, value: str | None) -> str | None:
+        """Same failure shape as `audio_tags` above: a typo here is a persona
+        that quietly never gets its accent applied, with nothing to say why."""
+        if value is not None and value not in ACCENT_TAGS:
+            raise ValueError(
+                f"accent not in ACCENT_TAGS: {value!r}. Allowed: {sorted(ACCENT_TAGS)}"
+            )
+        return value
+
     speech_tics: list[str] = Field(
         default_factory=list,
         description="Short verbal habits. Distinctiveness survives a PA better than timbre.",

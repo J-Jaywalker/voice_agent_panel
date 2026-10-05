@@ -380,7 +380,16 @@ class PanelRuntime:
         voice_overrides = {
             p.voice_id: p.voice_settings for p in cast.personas.values() if p.voice_settings
         }
-        self.tts = ElevenLabsTTS(TTSConfig(), voice_overrides=voice_overrides) if use_tts else None
+        accent_tags = {p.voice_id: p.accent for p in cast.personas.values() if p.accent}
+        self.tts = (
+            ElevenLabsTTS(
+                TTSConfig(),
+                voice_overrides=voice_overrides,
+                accent_tags=accent_tags,
+            )
+            if use_tts
+            else None
+        )
 
         # Built only when `FloorConfig.llm_address_detection` is on: it holds an
         # HTTP client and a model choice, and the regex path must cost nothing
@@ -637,8 +646,7 @@ class PanelRuntime:
                 if task is not None:
                     task.cancel()
                 self._print(
-                    f"  [red]⏹ {self.cast[command.agent].name}[/] "
-                    f"[dim]({command.reason.value})[/]"
+                    f"  [red]⏹ {self.cast[command.agent].name}[/] [dim]({command.reason.value})[/]"
                 )
                 # `speak()`'s own CancelledError handler emits AgentSpeechEnded
                 # with the utterance actually spoken so far. Emitting it again
@@ -658,9 +666,7 @@ class PanelRuntime:
                 self.mixer.resume(command.agent, command.ramp_ms)
 
             case HandsRaised():
-                hands = "  ".join(
-                    f"{self.cast[a].name} {s:.2f}" for a, s in command.agents
-                )
+                hands = "  ".join(f"{self.cast[a].name} {s:.2f}" for a, s in command.agents)
                 self._print(f"  [yellow]✋ wants in:[/] {hands} [dim](not invited)[/]")
 
             case CueModerator():
@@ -717,9 +723,7 @@ class PanelRuntime:
                 who = self._names(invited) or "the panel"
                 role = command.extra.get("invitation_role") or "-"
                 rule = command.extra.get("invitation_rule") or "-"
-                self._print(
-                    f"  [dim]floor: invited {who} — {source}/{role} ({rule})[/]"
-                )
+                self._print(f"  [dim]floor: invited {who} — {source}/{role} ({rule})[/]")
 
         awaiting = tuple(command.extra.get("awaiting_agents") or ())
         if awaiting != self._last_awaiting:
@@ -894,7 +898,9 @@ class PanelRuntime:
         is a genuine supersede rather than a guess about freshness, which is
         why it is safe to do pre-emptively where the epoch test was not.
         """
-        for key in [k for k in self._proposal_tasks if self._proposal_turn.get(k, turn_id) != turn_id]:
+        for key in [
+            k for k in self._proposal_tasks if self._proposal_turn.get(k, turn_id) != turn_id
+        ]:
             if key[0] == speaking:
                 continue
             task = self._proposal_tasks.pop(key)
@@ -936,8 +942,7 @@ class PanelRuntime:
                     # by the Candidate, not by the event — the reducer decides
                     # who speaks and never needs to know what they will say.
                     self._print(
-                        f"  [dim]· {persona.name} ready ({event.elapsed_ms:.0f}ms, "
-                        f"e{epoch})[/]"
+                        f"  [dim]· {persona.name} ready ({event.elapsed_ms:.0f}ms, e{epoch})[/]"
                     )
                     # Now — and only now — this agent's older generations are
                     # surplus. Retiring them here rather than when the newer
@@ -1100,9 +1105,7 @@ class PanelRuntime:
             # consumed, which from the console was indistinguishable from an
             # agent choosing to say nothing.
             self._print(f"  [red]x {persona.name} has nothing to say — turn skipped[/]")
-            self.emit(
-                AgentSpeechEnded(t=time.monotonic(), agent=command.agent, completed=False)
-            )
+            self.emit(AgentSpeechEnded(t=time.monotonic(), agent=command.agent, completed=False))
             return
 
         console.print()
@@ -1207,9 +1210,7 @@ class PanelRuntime:
                 # console says which agent broke and why, and the turn is
                 # recorded as `completed=False` with the words actually spoken
                 # instead of being inferred from silence.
-                self._print(
-                    f"  [red]x {persona.name} speech failed: {str(exc)[:80]}[/]"
-                )
+                self._print(f"  [red]x {persona.name} speech failed: {str(exc)[:80]}[/]")
                 self.emit(
                     AgentSpeechEnded(
                         t=time.monotonic(),
@@ -1290,11 +1291,7 @@ class PanelRuntime:
         while self._running:
             await asyncio.sleep(HEARTBEAT_INTERVAL_S)
             buffered_now = self.mixer.buffered_seconds(agent)
-            advanced = (
-                progress.chunks != seen
-                or buffered_now < buffered
-                or candidate.awaiting_text
-            )
+            advanced = progress.chunks != seen or buffered_now < buffered or candidate.awaiting_text
             seen = progress.chunks
             buffered = buffered_now
             if advanced:
@@ -1514,9 +1511,7 @@ class PanelRuntime:
             if self._address_task is current:
                 self._release_held_turn()
 
-    def _as_detected(
-        self, outcome: AddressVerdict, *, text: str, t: float
-    ) -> AddressDetected:
+    def _as_detected(self, outcome: AddressVerdict, *, text: str, t: float) -> AddressDetected:
         """Translate a classifier result into the event the reducer reads.
 
         `t` is the *final's* timestamp, not the verdict's arrival time. The
@@ -1601,11 +1596,7 @@ class PanelRuntime:
         measures it, on stage or in rehearsal.
         """
         who = detected.verdict or "unavailable"
-        named = [
-            self.cast.personas[a].name
-            for a in detected.agents
-            if a in self.cast.personas
-        ]
+        named = [self.cast.personas[a].name for a in detected.agents if a in self.cast.personas]
         if named:
             who = f"{who} → {' + '.join(named)}"
         label = _ADDRESS_SOURCE_LABELS.get(detected.source, detected.source)
@@ -1754,8 +1745,7 @@ class PanelRuntime:
         match phase:
             case "capture_segment":
                 self._print(
-                    f"  [dim]listening… {detail['segments']} segments "
-                    f"({detail['speaker']})[/]"
+                    f"  [dim]listening… {detail['segments']} segments ({detail['speaker']})[/]"
                 )
             case "capture_done":
                 self._print(
@@ -1764,14 +1754,10 @@ class PanelRuntime:
                     f"{detail['speakers_seen']} voice(s) in the room[/]"
                 )
                 console.print(
-                    "[dim]Now say a couple more sentences so I can check I "
-                    "recognise you.[/]"
+                    "[dim]Now say a couple more sentences so I can check I recognise you.[/]"
                 )
             case "verify_segment":
-                self._print(
-                    f"  [dim]recognised you {detail['matched']}/"
-                    f"{detail['needed']}[/]"
-                )
+                self._print(f"  [dim]recognised you {detail['matched']}/{detail['needed']}[/]")
             case "verify_done":
                 self._print("  [green]voice confirmed[/]")
             case "enrolled":
@@ -1807,7 +1793,11 @@ class PanelRuntime:
 
         if self.tts is not None:
             voices = [p.voice_id for p in self.cast.personas.values()]
-            self._print("[dim]pre-warming TTS connections…[/]")
+            # Connections *and* voices: on eleven_v3_conversational this also
+            # generates and discards one utterance per voice, because the model
+            # has a per-voice warm-up the handshake does not cover. See
+            # `ElevenLabsTTS.prewarm`.
+            self._print("[dim]pre-warming TTS connections and voices…[/]")
             t0 = time.monotonic()
             await self.tts.prewarm(voices)
             self._print(f"[dim]  {1000 * (time.monotonic() - t0):.0f}ms (paid once)[/]")
@@ -1855,13 +1845,9 @@ class PanelRuntime:
                     asyncio.create_task(self._run_ticks(), name="ticks"),
                 ]
                 if self._display is not None:
-                    tasks.append(
-                        asyncio.create_task(self._pump_levels(), name="display-levels")
-                    )
+                    tasks.append(asyncio.create_task(self._pump_levels(), name="display-levels"))
                 if self.agent_stt is not None:
-                    tasks.append(
-                        asyncio.create_task(self._run_agent_stt(), name="agent-stt")
-                    )
+                    tasks.append(asyncio.create_task(self._run_agent_stt(), name="agent-stt"))
 
                 gated = "" if speaker is None else f" [dim]mic gated to {speaker.label}.[/]"
                 console.print(
@@ -1934,8 +1920,7 @@ def main() -> None:
         type=Path,
         default=DEFAULT_STORE_PATH,
         help=(
-            "where Ricky's speaker enrolment is kept between runs "
-            f"(default: {DEFAULT_STORE_PATH})"
+            f"where Ricky's speaker enrolment is kept between runs (default: {DEFAULT_STORE_PATH})"
         ),
     )
     parser.add_argument(
@@ -1977,9 +1962,7 @@ def main() -> None:
     )
 
     with contextlib.suppress(KeyboardInterrupt):
-        asyncio.run(
-            runtime.run(input_device=args.input_device, output_device=args.output_device)
-        )
+        asyncio.run(runtime.run(input_device=args.input_device, output_device=args.output_device))
 
 
 if __name__ == "__main__":

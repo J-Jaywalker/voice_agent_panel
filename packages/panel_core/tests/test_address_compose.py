@@ -120,10 +120,7 @@ def test_two_agents_above_threshold_join_in_cast_order(cast: PanelCast):
 def test_naming_everybody_falls_through_to_mode(cast: PanelCast):
     """A unanimous agent vector is not evidence of a group — mode decides."""
     assert verdict(cast, dex=0.9, melia=0.95, wayne=0.88) == OPEN_VERDICT
-    assert (
-        verdict(cast, mode=_MODE_INTRODUCTIONS, dex=0.9, melia=0.95, wayne=0.88)
-        == INTRO_VERDICT
-    )
+    assert verdict(cast, mode=_MODE_INTRODUCTIONS, dex=0.9, melia=0.95, wayne=0.88) == INTRO_VERDICT
     assert verdict(cast, mode=_MODE_NOBODY, dex=0.9, melia=0.95, wayne=0.88) == NO_VERDICT
 
 
@@ -228,7 +225,9 @@ def test_nobody_clears_the_bar_and_unidentifiable_is_low_fails_closed(cast: Pane
 
 
 @pytest.mark.parametrize("top", _MODES)
-@pytest.mark.parametrize("agent_vector", [(0.95, 0.05, 0.05), (0.9, 0.5, 0.05), (0.3, 0.35, 0.1), (0.9, 0.95, 0.88)])
+@pytest.mark.parametrize(
+    "agent_vector", [(0.95, 0.05, 0.05), (0.9, 0.5, 0.05), (0.3, 0.35, 0.1), (0.9, 0.95, 0.88)]
+)
 @pytest.mark.parametrize("joint_request", [0.0, 0.9])
 @pytest.mark.parametrize("unidentifiable", [0.0, 0.9])
 def test_no_verdict_only_ever_comes_from_a_confident_nobody(

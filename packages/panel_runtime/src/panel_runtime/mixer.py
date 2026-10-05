@@ -121,6 +121,7 @@ def _spectrum(samples: np.ndarray, window: np.ndarray, edges: list[tuple[int, in
     scale = 2.0 / (len(window) * 0.5)
     return [round(float(mag[lo:hi].max()) * scale, 4) for lo, hi in edges]
 
+
 def _soft_limit(out: np.ndarray) -> np.ndarray:
     """Turn a block down, never reshape its waveform.
 
@@ -346,9 +347,7 @@ class Mixer:
         self.on_played = on_played
         gains = unity_db or {}
         window = _window_length(sample_rate)
-        self.voices = {
-            a: AgentVoice(a, sample_rate, gains.get(a, 0.0), window) for a in agent_ids
-        }
+        self.voices = {a: AgentVoice(a, sample_rate, gains.get(a, 0.0), window) for a in agent_ids}
         # Both derived from the rate once, here, because both are pure
         # functions of it and `take_bands` runs thirty times a second.
         self._window = np.hanning(window).astype(np.float32)

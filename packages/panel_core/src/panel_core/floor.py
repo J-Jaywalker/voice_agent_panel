@@ -313,6 +313,7 @@ class _Detection:
     role: str = ""
     rule: str = ""
 
+
 # The one-shot introduction round. Deliberately not folded into _HANDOVER_RE:
 # this is usually a statement, not a question, and it must guarantee every
 # agent a turn rather than let the strongest score win repeatedly.
@@ -593,9 +594,7 @@ class FloorController:
     def _resume_ducked(self, state: PanelState) -> tuple[PanelState, list[Command]]:
         """It was only an acknowledgement. Bring the agent back to full gain."""
         agent = state.ducked_agent
-        state = replace(
-            state, ducked_agent=None, human_speech_started_at=None, duck_confirmed=None
-        )
+        state = replace(state, ducked_agent=None, human_speech_started_at=None, duck_confirmed=None)
         if agent is None:
             return state, []
         return state, [ResumeSpeech(agent=agent, ramp_ms=self.config.resume_ramp_ms)]
@@ -685,11 +684,7 @@ class FloorController:
         # fires on "intro" anywhere in the sentence, which is exactly the
         # over-trigger the classifier is there to replace.
         if event.speaker == HUMAN and event.is_final and not self.config.llm_address_detection:
-            if (
-                not state.intro_done
-                and state.intro_queue is None
-                and _INTRODUCTION_RE.search(text)
-            ):
+            if not state.intro_done and state.intro_queue is None and _INTRODUCTION_RE.search(text):
                 state, intro_cmds = self._start_introductions(state, t=event.t)
                 commands.extend(intro_cmds)
             else:
@@ -871,9 +866,7 @@ class FloorController:
                         if named
                         else self.config.open_invitation_turns
                     ),
-                    source=(
-                        InvitationSource.ADDRESS if named else InvitationSource.OPEN
-                    ),
+                    source=(InvitationSource.ADDRESS if named else InvitationSource.OPEN),
                     t=event.t,
                     role=_LLM_ADDRESS_ROLE if named else _LLM_OPEN_ROLE,
                     rule=_llm_rule(verdict),
@@ -966,9 +959,7 @@ class FloorController:
                 # nothing" is not yet a fact — it is a measurement taken before
                 # anyone could have answered. `_tick` cues Ricky if the grace
                 # runs out; a proposal landing first cancels it in `_proposal`.
-                state = replace(
-                    state, awaiting_agents=invitation.agents, awaiting_since=event.t
-                )
+                state = replace(state, awaiting_agents=invitation.agents, awaiting_since=event.t)
             elif not state.moderator_cued:
                 # Cue once per invitation, not once per failed arbitration. Every
                 # proposal re-drives arbitration from the runtime, so an
@@ -1019,9 +1010,7 @@ class FloorController:
             return True  # already waiting on them; leave the original clock alone
         return reason is CueReason.INVITED_AGENT_SILENT
 
-    def _cue_overdue(
-        self, state: PanelState, now: float
-    ) -> tuple[PanelState, list[Command]]:
+    def _cue_overdue(self, state: PanelState, now: float) -> tuple[PanelState, list[Command]]:
         """Nobody Ricky named ever answered. Hand the beat to Ricky, once.
 
         Evaluated on `Tick` (100ms in this runtime) for the same reason
@@ -1206,8 +1195,7 @@ class FloorController:
 
         last = state.agent_turn_request_t
         due = (
-            last is None
-            or event.t - last >= self.config.agent_turn_speculation_interval_s
+            last is None or event.t - last >= self.config.agent_turn_speculation_interval_s
         ) and len(running.split()) >= self.config.speculation_min_words
         if not due:
             return state, []
@@ -1245,9 +1233,7 @@ class FloorController:
             return state, []
         return replace(state, last_audio_progress_t=event.t), []
 
-    def _stalled_speaker(
-        self, state: PanelState, now: float
-    ) -> tuple[PanelState, list[Command]]:
+    def _stalled_speaker(self, state: PanelState, now: float) -> tuple[PanelState, list[Command]]:
         """Take the floor off an agent that has stopped producing audio.
 
         The counterpart to `AgentAudioProgress`, and the only thing besides
@@ -1767,9 +1753,7 @@ class FloorController:
         state = replace(state, address_conflict=conflict)
         return state, [self._paint(state)]
 
-    def _named_scope(
-        self, state: PanelState, agents: Iterable[str]
-    ) -> tuple[str, ...] | None:
+    def _named_scope(self, state: PanelState, agents: Iterable[str]) -> tuple[str, ...] | None:
         """Normalise a detected set of addressees into an invitation's scope.
 
         Shared by both detection paths, so "Melia and Wayne" opens the same
@@ -1823,9 +1807,7 @@ class FloorController:
         ).not_awaiting()
         return state, [self._paint(state)]
 
-    def _invite_target(
-        self, state: PanelState, target: str | None, *, inviter: str
-    ) -> str | None:
+    def _invite_target(self, state: PanelState, target: str | None, *, inviter: str) -> str | None:
         """The colleague `target` names, or None if it names nobody usable.
 
         A model wrote this id, so it may be empty, the agent's own id, a muted
@@ -1991,9 +1973,7 @@ class FloorController:
             # put a cold generation on every handover.
             check_freshness = invitation.source is InvitationSource.ADDRESS
             if check_freshness:
-                candidates = {
-                    a: p for a, p in candidates.items() if not self._stale(p, invitation)
-                }
+                candidates = {a: p for a, p in candidates.items() if not self._stale(p, invitation)}
             if not candidates:
                 return None, CueReason.INVITED_AGENT_SILENT
 
@@ -2106,9 +2086,7 @@ class FloorController:
         )
         return [HandsRaised(agents=tuple((a, round(sc, 3)) for sc, a in scored))]
 
-    def _detect_invitation(
-        self, state: PanelState, text: str, *, t: float
-    ) -> Invitation | None:
+    def _detect_invitation(self, state: PanelState, text: str, *, t: float) -> Invitation | None:
         """Did Ricky actually open the floor, and to whom?
 
         A statement invites nobody, however interesting it is — that is the
@@ -2562,9 +2540,7 @@ class FloorController:
                 # cues Ricky. Visible because a rehearsal needs to tell "the
                 # panel is about to answer" from "the panel is not going to",
                 # which from the console used to look identical.
-                "awaiting": state.awaiting_agents[0]
-                if len(state.awaiting_agents) == 1
-                else None,
+                "awaiting": state.awaiting_agents[0] if len(state.awaiting_agents) == 1 else None,
                 "awaiting_agents": state.awaiting_agents,
                 "consecutive_agent_turns": state.consecutive_agent_turns,
                 "killed": state.killed,

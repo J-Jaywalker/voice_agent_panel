@@ -372,9 +372,7 @@ class BaseAddressClassifier(ABC):
         # Anything still running is for text that has since been revised.
         self._cancel_inflight()
         source: VerdictSource = "recomputed" if self._spec_attempted else "fresh"
-        return await self._classify_once(
-            text, context, key=key, source=source, store=False
-        )
+        return await self._classify_once(text, context, key=key, source=source, store=False)
 
     def reset(self) -> None:
         """Clear the cache and the speculation gates. Call on turn boundaries.

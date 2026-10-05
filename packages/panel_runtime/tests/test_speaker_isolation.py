@@ -267,9 +267,9 @@ def test_a_stranger_s_words_never_become_text_anywhere(cast: PanelCast, tmp_path
     assert any(isinstance(e, UnverifiedSpeechDetected) for e in display.events)
     unverified = [e for e in display.events if isinstance(e, UnverifiedSpeechDetected)]
     assert len(unverified) == 2, "one per segment, partial and final"
-    assert not any(
-        hasattr(e, "text") or hasattr(e, "speaker") for e in unverified
-    ), "there must be no field on this event a stranger's words could ride in"
+    assert not any(hasattr(e, "text") or hasattr(e, "speaker") for e in unverified), (
+        "there must be no field on this event a stranger's words could ride in"
+    )
 
 
 def test_an_unattributed_segment_is_dropped_without_being_blamed_on_anyone(
@@ -287,9 +287,7 @@ def test_an_unattributed_segment_is_dropped_without_being_blamed_on_anyone(
     runtime = _identified_runtime(cast, display=display, log_path=log_path)
 
     asyncio.run(
-        _feed_server_messages(
-            runtime, [_segment("diarisation attributed nothing", speaker=None)]
-        )
+        _feed_server_messages(runtime, [_segment("diarisation attributed nothing", speaker=None)])
     )
 
     assert _texts(display.events) == []
@@ -551,9 +549,7 @@ def test_a_backchannel_from_ricky_still_resumes_rather_than_stopping(cast: Panel
             runtime.emit(HumanSpeechStarted(t=2.0))
             for _ in range(20):
                 await asyncio.sleep(0)
-            await session._receive(
-                _FakeWebSocket([_segment("mm-hm", speaker=LABEL, final=False)])
-            )
+            await session._receive(_FakeWebSocket([_segment("mm-hm", speaker=LABEL, final=False)]))
             for _ in range(50):
                 await asyncio.sleep(0)
             runtime.emit(HumanSpeechEnded(t=2.2))

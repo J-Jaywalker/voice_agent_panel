@@ -185,9 +185,7 @@ def test_nothing_on_the_display_session_is_written_to_the_rehearsal_log(
     and must not appear in it."""
     display = FakeDisplay()
     log_path = tmp_path / "rehearsal.jsonl"
-    runtime = PanelRuntime(
-        cast, use_tts=False, display=display, log_path=log_path
-    )
+    runtime = PanelRuntime(cast, use_tts=False, display=display, log_path=log_path)
     assert runtime.agent_stt is not None
 
     async def body():

@@ -120,12 +120,10 @@ CORPUS_PATH = REPO_ROOT / "packages" / "panel_core" / "tests" / "test_address.py
 # `prompts.build_address_context` renders. "" means none, which is how most
 # rows run and how the classifier is asked before the panel has spoken.
 _AFTER_DEXTER = (
-    "PANEL ACTIVITY — spoken recently, most recent first: Dexter. "
-    "Not heard from: Melia, Wayne."
+    "PANEL ACTIVITY — spoken recently, most recent first: Dexter. Not heard from: Melia, Wayne."
 )
 _AFTER_DEXTER_AND_MELIA = (
-    "PANEL ACTIVITY — spoken recently, most recent first: Melia, Dexter. "
-    "Not heard from: Wayne."
+    "PANEL ACTIVITY — spoken recently, most recent first: Melia, Dexter. Not heard from: Wayne."
 )
 
 NEW_CAPABILITY: list[tuple[str, str, str]] = [
@@ -193,8 +191,7 @@ def load_corpus() -> list[tuple[str, str, str]]:
         module.AMBIGUOUS: AMBIGUOUS_VERDICT,
     }
     return [
-        (text, sentinels.get(expected, expected), "")
-        for text, expected, _role in module.CORPUS
+        (text, sentinels.get(expected, expected), "") for text, expected, _role in module.CORPUS
     ]
 
 
@@ -416,12 +413,10 @@ async def main_async(args: argparse.Namespace) -> int:
     model = args.model or (DEFAULT_MODEL if args.backend == "haiku" else TYPESAFE_DEFAULT_MODEL)
 
     corpus = [
-        (text, expected_token(want, verdicts), context)
-        for text, want, context in load_corpus()
+        (text, expected_token(want, verdicts), context) for text, want, context in load_corpus()
     ]
     new_cases = [
-        (text, expected_token(want, verdicts), context)
-        for text, want, context in NEW_CAPABILITY
+        (text, expected_token(want, verdicts), context) for text, want, context in NEW_CAPABILITY
     ]
 
     print(f"backend:   {args.backend}")

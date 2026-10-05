@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from .events import HUMAN
-from .personas import PanelCast, Persona
+from .personas import AUDIO_TAGS, PanelCast, Persona
 from .state import InvitationSource, PanelState
 
 # Global guardrail. The structural fix from FEASIBILITY.md 4.2: the agents are
@@ -70,6 +70,9 @@ Hard rules:
   of you, the story is that it happened — never the thing itself.
 - You are on stage. Spoken prose only: no markdown, no lists, no stage
   directions, no emoji, no headings. Contractions are good. Say numbers as words.
+  The single exception is the short list of bracketed sounds below, if you have
+  one — those are not written at the audience, they are performed by your own
+  voice. Anything else you put in brackets is deleted before it is spoken.
 - Let length match what you actually have. A real point is three or four
   sentences — claim, evidence, what it means — and no more; longer only when
   an example genuinely helps. A reaction is one short phrase, not a
@@ -84,9 +87,10 @@ Hard rules:
 
 
 def build_system_prompt(persona: Persona, *, cast: PanelCast | None = None) -> str:
-    relationships = "\n".join(
-        f"- {other}: {view}" for other, view in persona.relationships.items()
-    ) or "- (none recorded)"
+    relationships = (
+        "\n".join(f"- {other}: {view}" for other, view in persona.relationships.items())
+        or "- (none recorded)"
+    )
     tics = ", ".join(f'"{t}"' for t in persona.speech_tics) or "(none)"
     authority = ", ".join(persona.topics_of_authority) or "(none)"
     anecdotes = "\n".join(f"- {a}" for a in persona.anecdotes)
@@ -114,9 +118,29 @@ def build_system_prompt(persona: Persona, *, cast: PanelCast | None = None) -> s
         else ""
     )
     discipline = "\n".join(f"- {d}" for d in persona.delivery)
-    delivery_block = (
-        f"\n\nHow you use a turn:\n{discipline}\n" if persona.delivery else ""
-    )
+    delivery_block = f"\n\nHow you use a turn:\n{discipline}\n" if persona.delivery else ""
+
+    # Rendered from the persona's own subset, never the whole allowlist: a tag
+    # is characterisation, and the instruction is worth less if every agent on
+    # the panel is told it can laugh. Anything outside `AUDIO_TAGS` is deleted
+    # by `sanitise()` whatever this says — the prompt is guidance, the
+    # sanitiser is the guarantee.
+    sounds_block = ""
+    if persona.audio_tags:
+        allowed = ", ".join(f"[{tag}]" for tag in persona.audio_tags)
+        sounds_block = (
+            f"\n\nSounds your voice can actually make: {allowed}\n"
+            "Write one inline, exactly as spelled above, at the moment it "
+            'happens — "[sighs] that\'s the third time this week" — and your '
+            "voice performs it. It is not read out and the audience never hears "
+            "the word. Use one only where you would genuinely make that sound: "
+            "something landed, something exasperated you, something was funnier "
+            "than you expected. At most one in a turn, and most turns have "
+            "none — a panellist who laughs at every point they make is not "
+            "warm, they are nervous. Never open a turn with one, and never use "
+            "one in place of saying the thing. Any other bracketed word is "
+            "deleted before it reaches your voice, so it buys you nothing."
+        )
 
     # Rendered in cast order — `cast.personas` iteration order — and never
     # sorted or set-derived. This block sits inside the cached system prompt,
@@ -146,7 +170,7 @@ Your position: {persona.stance}{recurring}{public_numbers}{delivery_block}
 
 Speaking style: {persona.communication_style}. Verbal habits you actually use: {tics}.
 Use them sparingly — reserve them for moments you're genuinely frustrated,
-amused or engaged, not as a habitual opener.
+amused or engaged, not as a habitual opener.{sounds_block}
 Areas where you have real authority: {authority}.{colleagues}
 
 How you regard the others on the panel:
@@ -166,9 +190,7 @@ topic in general.
 """.strip()
 
 
-def build_turn_prompt(
-    state: PanelState, persona: Persona, *, near_turn_limit: bool = False
-) -> str:
+def build_turn_prompt(state: PanelState, persona: Persona, *, near_turn_limit: bool = False) -> str:
     transcript = state.recent_text() or "(the panel has not started yet)"
     others = [a for a in state.agents if a != persona.id]
 
@@ -277,7 +299,7 @@ def build_turn_prompt(
             f"\n{last.speaker} spoke last, not Ricky. You're adding to the "
             "panel's answer, not marking their homework: bring something new "
             "— a figure, date, count, deployment — or a short, genuine "
-            "concession (\"Yeah, no, that's fair\"), which needs no evidence "
+            'concession ("Yeah, no, that\'s fair"), which needs no evidence '
             "under it. Rephrasing, however sharply, is not a contribution: "
             "score that low.\n"
         )
@@ -551,9 +573,7 @@ def build_address_context(state: PanelState, cast: PanelCast) -> str:
         return ""
 
     heard = ", ".join(cast.personas[a].name for a in recent)
-    quiet = [
-        persona.name for agent_id, persona in cast.personas.items() if agent_id not in recent
-    ]
+    quiet = [persona.name for agent_id, persona in cast.personas.items() if agent_id not in recent]
     line = f"PANEL ACTIVITY — spoken recently, most recent first: {heard}."
     if quiet:
         line += f" Not heard from: {', '.join(quiet)}."
@@ -614,9 +634,7 @@ def _addressed_instructions(agent_id: str, cast: PanelCast) -> dict:
     """
     persona = cast.personas[agent_id]
     name = persona.name
-    other = next(
-        (p.name for a, p in cast.personas.items() if a != agent_id), "the next panellist"
-    )
+    other = next((p.name for a, p in cast.personas.items() if a != agent_id), "the next panellist")
     topics = ", ".join(persona.topics_of_authority) or "nothing in particular"
 
     return {
@@ -634,7 +652,7 @@ def _addressed_instructions(agent_id: str, cast: PanelCast) -> dict:
             f'"over to {name}", "can {name} take that?" and "let\'s hear from '
             f'{name}" are all requests put to {name}, so they are yes. '
             f'So "Sorry {name}, can you let {other} finish?" is no for '
-            f"{name} — the request is put to {other} — while \"Sorry {other}, "
+            f'{name} — the request is put to {other} — while "Sorry {other}, '
             f'can you let {name} finish?" and "Let {name} finish." are yes '
             f"for {name}, for the same reason. Ricky asks {name} to wrap up, "
             "be brief, or hand over, with no other panellist named to take "
@@ -657,10 +675,10 @@ def _addressed_instructions(agent_id: str, cast: PanelCast) -> dict:
         ),
         "context": (
             "A `panel_activity` line resolves references that name nobody. "
-            "Count against it, not against the panel: \"the other two\", "
-            "\"you two\" and \"the rest of you\" are everyone except the most "
-            "recent speaker; \"the one we haven't heard from\" is the "
-            "panellist with no recent turn; \"carry on\" with no name is the "
+            'Count against it, not against the panel: "the other two", '
+            '"you two" and "the rest of you" are everyone except the most '
+            'recent speaker; "the one we haven\'t heard from" is the '
+            'panellist with no recent turn; "carry on" with no name is the '
             f"most recent speaker. Each picks out a subset, so {name} is yes "
             "whenever the reference includes them. Given no such line, no."
         ),
@@ -798,10 +816,7 @@ def build_address_questions(cast: PanelCast) -> dict[str, dict]:
         JOINT_REQUEST_QUESTION: {
             "type": "noul",
             "instructions": {
-                "question": (
-                    "Is `ricky_said` one request put to two or more panellists "
-                    "at once?"
-                ),
+                "question": ("Is `ricky_said` one request put to two or more panellists at once?"),
                 "clarify": (
                     "Yes when Ricky wants more than one of them to answer, "
                     "including when their names are separated only by a full "
@@ -1005,12 +1020,15 @@ def build_address_prompt(cast: PanelCast) -> str:
         for persona in cast.personas.values()
     )
     aliases = "\n".join(
-        f"- {persona.name} may be transcribed as: "
-        f"{', '.join(persona.extra_aliases)}."
+        f"- {persona.name} may be transcribed as: {', '.join(persona.extra_aliases)}."
         for persona in cast.personas.values()
         if persona.extra_aliases
     )
-    alias_block = f"\nSpeech-to-text mishears names. Treat these as the same person:\n{aliases}\n" if aliases else ""
+    alias_block = (
+        f"\nSpeech-to-text mishears names. Treat these as the same person:\n{aliases}\n"
+        if aliases
+        else ""
+    )
 
     # Every example below is rendered from the cast, not written out, for the
     # same reason the rest of this module is: a persona renamed in YAML must
@@ -1168,12 +1186,27 @@ verdict must be the very first thing you write, with any extra names joined by
 PROPOSAL_SCHEMA = {
     "type": "object",
     "properties": {
-        "relevance": {"type": "number", "description": "0-1. How much this bears on what was just said."},
-        "urgency": {"type": "number", "description": "0-1. How badly this needs saying now rather than later."},
-        "disagreement": {"type": "number", "description": "0-1. How strongly you disagree with the last speaker."},
+        "relevance": {
+            "type": "number",
+            "description": "0-1. How much this bears on what was just said.",
+        },
+        "urgency": {
+            "type": "number",
+            "description": "0-1. How badly this needs saying now rather than later.",
+        },
+        "disagreement": {
+            "type": "number",
+            "description": "0-1. How strongly you disagree with the last speaker.",
+        },
         "confidence": {"type": "number", "description": "0-1. How sure you are of your point."},
-        "expertise": {"type": "number", "description": "0-1. How far this sits in your area of authority."},
-        "novelty": {"type": "number", "description": "0-1. How much this adds that nobody has said."},
+        "expertise": {
+            "type": "number",
+            "description": "0-1. How far this sits in your area of authority.",
+        },
+        "novelty": {
+            "type": "number",
+            "description": "0-1. How much this adds that nobody has said.",
+        },
         "responding_to": {
             "anyOf": [{"type": "string"}, {"type": "null"}],
             "description": "Agent id or 'human' you are answering. Null for the room.",
@@ -1198,30 +1231,63 @@ PROPOSAL_SCHEMA = {
         "utterance": {
             "type": "string",
             "description": (
-                "What you would say, spoken aloud. Plain prose only. Never empty — "
+                "What you would say, spoken aloud. Plain prose, apart from the "
+                "bracketed sounds your system prompt lists for you. Never empty — "
                 "you decline by scoring low, not by leaving this blank."
             ),
         },
     },
     "required": [
-        "relevance", "urgency", "disagreement", "confidence", "expertise",
-        "novelty", "responding_to", "defer_to", "invites_next", "utterance",
+        "relevance",
+        "urgency",
+        "disagreement",
+        "confidence",
+        "expertise",
+        "novelty",
+        "responding_to",
+        "defer_to",
+        "invites_next",
+        "utterance",
     ],
     "additionalProperties": False,
 }
 
 
+def _resolve_bracket(match: re.Match[str]) -> str:
+    """Keep an allowlisted audio tag; destroy every other bracket expression.
+
+    The allowlist is closed and the default is removal, so an invented tag is
+    not a new behaviour the model can reach for — it is deleted exactly as all
+    bracket content used to be. Case and inner spacing are normalised rather
+    than rejected: the model writes `[Laughs]` and `[ laughs ]` often enough
+    that treating those as unknown would silently drop a tag the persona was
+    told to use.
+    """
+    inner = re.sub(r"\s+", " ", match.group(1)).strip().lower()
+    return f"[{inner}]" if inner in AUDIO_TAGS else " "
+
+
 def sanitise(text: str) -> str:
     """Never send raw model output to TTS (CLAUDE.md, FEASIBILITY.md 6).
 
-    Strips markup, stage directions and speaker labels. A leaked tag read aloud
+    Strips markup, stage directions and speaker labels, and reduces bracket
+    expressions to the closed `AUDIO_TAGS` allowlist. A leaked tag read aloud
     over a PA to 400 people is the worst-case failure of the whole system, and
     it is trivial to prevent. Applied on every path to audio, without exception.
+
+    The allowlist (added 5 Oct 2026, with `eleven_v3_conversational`) does not
+    loosen that: v3 *performs* `[laughs]` rather than reading it, and
+    unrecognised bracket content was measured being swallowed rather than
+    spoken, so the hazard this guards is no longer "a tag read aloud" but
+    "a tag performed" — `[applause]` or `[strong French accent]` mid-panel.
+    Which is why the rule is an allowlist and not a blocklist: the vendor's
+    tag vocabulary is open-ended and grows without our involvement.
     """
     text = re.sub(r"<[^>]+>", " ", text)  # any XML/HTML-ish tag
     text = re.sub(r"[*_`#]+", "", text)  # markdown emphasis
+    text = re.sub(r"\[([^\]]*)\]", _resolve_bracket, text)
     text = re.sub(
-        r"\[[^\]]*\]|\([^)]*\b(?:laughs?|pauses?|beat|sighs?)\b[^)]*\)",
+        r"\([^)]*\b(?:laughs?|pauses?|beat|sighs?)\b[^)]*\)",
         " ",
         text,
         flags=re.IGNORECASE,

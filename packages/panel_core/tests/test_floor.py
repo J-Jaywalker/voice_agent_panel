@@ -426,7 +426,9 @@ def test_a_fresh_duck_does_not_inherit_the_previous_duck_s_verdict(fc, state):
     assert [c for c in cmds if isinstance(c, DuckSpeech)]
     assert state.duck_confirmed is True
     state, cmds = fc.reduce(state, Tick(t=4.0 + fc.config.backchannel_max_duration_s + 0.01))
-    assert [c for c in cmds if isinstance(c, StopSpeech)], "the second duck promotes on its own merits"
+    assert [c for c in cmds if isinstance(c, StopSpeech)], (
+        "the second duck promotes on its own merits"
+    )
 
 
 def test_unverified_speech_with_nobody_on_the_pa_changes_nothing(fc, state):
@@ -515,9 +517,7 @@ def test_a_named_invitation_never_opens_to_the_rest_of_the_panel(fc, state):
         "never addressed even on the stronger-scoring proposal, and not "
         "Wayne, who already answered"
     )
-    assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [
-        CueReason.INVITATION_SPENT
-    ]
+    assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [CueReason.INVITATION_SPENT]
     assert state.invitation is None
 
 
@@ -1055,15 +1055,18 @@ def test_partials_trigger_debounced_proposal_requests(fc, state):
     # Too soon — debounced.
     state, cmds = fc.reduce(
         state,
-        TranscriptUpdated(t=10.1, speaker=HUMAN, text="So what do you think about",
-                          is_final=False),
+        TranscriptUpdated(t=10.1, speaker=HUMAN, text="So what do you think about", is_final=False),
     )
     assert not [c for c in cmds if isinstance(c, RequestProposals)]
 
     state, cmds = fc.reduce(
         state,
-        TranscriptUpdated(t=10.0 + fc.config.speculation_interval_s + 0.01, speaker=HUMAN,
-                          text="So what do you think about oversight", is_final=False),
+        TranscriptUpdated(
+            t=10.0 + fc.config.speculation_interval_s + 0.01,
+            speaker=HUMAN,
+            text="So what do you think about oversight",
+            is_final=False,
+        ),
     )
     assert [c for c in cmds if isinstance(c, RequestProposals)]
 
@@ -1086,8 +1089,9 @@ def test_a_partial_too_short_to_answer_is_not_worth_asking_about(fc, state):
     # reset by the fragment, so this asks immediately rather than 0.8s later.
     state, cmds = fc.reduce(
         state,
-        TranscriptUpdated(t=10.2, speaker=HUMAN, text="So, Wayne, uh, where are we",
-                          is_final=False),
+        TranscriptUpdated(
+            t=10.2, speaker=HUMAN, text="So, Wayne, uh, where are we", is_final=False
+        ),
     )
     assert [c for c in cmds if isinstance(c, RequestProposals)]
 
@@ -1197,8 +1201,9 @@ def test_every_proposal_request_stamps_its_input_time_and_takes_a_label(fc, stat
 
     state = record(
         state,
-        TranscriptUpdated(t=10.0, speaker=HUMAN, text="So where are we on adoption",
-                          is_final=False),
+        TranscriptUpdated(
+            t=10.0, speaker=HUMAN, text="So where are we on adoption", is_final=False
+        ),
     )
     state = record(state, invite(11.0))
     # Arbitration found nothing, so the completed turn is asked again.
@@ -1210,13 +1215,9 @@ def test_every_proposal_request_stamps_its_input_time_and_takes_a_label(fc, stat
     state = record(state, TurnYielded(t=12.2))
     state, _ = fc.reduce(state, AgentSpeechStarted(t=12.3, agent="dex"))
     # A granted turn ending, with the open invitation still worth another one.
-    state = record(
-        state, AgentSpeechEnded(t=18.0, agent="dex", completed=True, utterance="Trust.")
-    )
+    state = record(state, AgentSpeechEnded(t=18.0, agent="dex", completed=True, utterance="Trust."))
     # ...and the operator backstop, forcing an agent with nothing queued.
-    state = record(
-        state, OperatorCommand(t=20.0, action=OperatorAction.FORCE_AGENT, agent="melia")
-    )
+    state = record(state, OperatorCommand(t=20.0, action=OperatorAction.FORCE_AGENT, agent="melia"))
 
     assert [reason for reason, _, _ in seen] == [
         "speculation",
@@ -1240,9 +1241,7 @@ def test_final_transcript_always_requests_proposals(fc, state):
     happens on the turn straight after an agent finishes — was getting no
     candidates at all, so the panel fell silent.
     """
-    state, _ = fc.reduce(
-        state, TranscriptUpdated(t=10.0, speaker=HUMAN, text="So", is_final=False)
-    )
+    state, _ = fc.reduce(state, TranscriptUpdated(t=10.0, speaker=HUMAN, text="So", is_final=False))
     state, cmds = fc.reduce(
         state, TranscriptUpdated(t=10.05, speaker=HUMAN, text="So what?", is_final=True)
     )
@@ -1329,9 +1328,7 @@ def test_an_invitation_nobody_ever_acts_on_still_expires(fc, state):
     assert state.invitation is not None
 
     state, cmds = fc.reduce(state, Tick(t=fc.config.invitation_ttl_s + 1.0))
-    assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [
-        CueReason.INVITATION_EXPIRED
-    ]
+    assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [CueReason.INVITATION_EXPIRED]
     assert state.invitation is None
 
 
@@ -1522,8 +1519,12 @@ def test_reduce_is_deterministic(fc, cast):
         AgentProposal(t=0.6, agent="dex", utterance="Historically...", signals=strong()),
         TurnYielded(t=1.0),
         AgentSpeechStarted(t=1.1, agent="wayne"),
-        AgentProposal(t=6.0, agent="dex", utterance="Disagree.",
-                      signals=strong(disagreement=0.96, urgency=0.95)),
+        AgentProposal(
+            t=6.0,
+            agent="dex",
+            utterance="Disagree.",
+            signals=strong(disagreement=0.96, urgency=0.95),
+        ),
     ]
     a = run(fc, PanelState.for_agents(cast.ids()), *events)[1]
     b = run(fc, PanelState.for_agents(cast.ids()), *events)[1]
@@ -1825,9 +1826,7 @@ def test_the_moderator_is_cued_once_per_invitation_not_once_per_proposal(fc, sta
         TurnYielded(t=22.31),
         Tick(t=24.0),
     )
-    assert not [c for c in cmds if isinstance(c, CueModerator)], (
-        "Ricky needs telling once"
-    )
+    assert not [c for c in cmds if isinstance(c, CueModerator)], "Ricky needs telling once"
 
 
 def test_an_open_invitation_with_nothing_cues_at_once(fc, state):
@@ -1897,13 +1896,9 @@ def test_a_slower_older_generation_does_not_overwrite_a_newer_answer(fc, state):
         state,
         invite(20.0, "So Wayne, where are we on the adoption curve?"),
         # The answer to the real question lands first.
-        AgentProposal(
-            t=20.3, input_t=19.6, agent="wayne", utterance="", signals=strong(), epoch=2
-        ),
+        AgentProposal(t=20.3, input_t=19.6, agent="wayne", utterance="", signals=strong(), epoch=2),
         # The answer to "Thanks, everybody. Um, so," straggles in behind it.
-        AgentProposal(
-            t=20.4, input_t=18.0, agent="wayne", utterance="", signals=strong(), epoch=1
-        ),
+        AgentProposal(t=20.4, input_t=18.0, agent="wayne", utterance="", signals=strong(), epoch=1),
     )
     assert state.proposals["wayne"].epoch == 2, "the older generation overwrote the newer one"
 
@@ -1923,9 +1918,7 @@ def test_an_earlier_generation_is_still_usable_when_it_is_all_there_is(fc, state
     state, _ = run(
         fc,
         state,
-        AgentProposal(
-            t=18.5, input_t=18.5, agent="wayne", utterance="", signals=strong(), epoch=1
-        ),
+        AgentProposal(t=18.5, input_t=18.5, agent="wayne", utterance="", signals=strong(), epoch=1),
         invite(20.0, "So Wayne, where are we on the adoption curve?"),
     )
     _, cmds = fc.reduce(state, TurnYielded(t=20.01))
@@ -2187,19 +2180,19 @@ def test_mid_turn_rounds_are_debounced_on_their_own_dial(fc, state):
     state = _mid_turn(fc, state)
     interval = fc.config.agent_turn_speculation_interval_s
     state, first = fc.reduce(
-        state, AgentUtteranceProgress(t=1.1 + interval, agent="melia", text="One two three four five.")
+        state,
+        AgentUtteranceProgress(t=1.1 + interval, agent="melia", text="One two three four five."),
     )
     state, second = fc.reduce(
-        state, AgentUtteranceProgress(t=1.2 + interval, agent="melia", text="Six seven eight nine ten.")
+        state,
+        AgentUtteranceProgress(t=1.2 + interval, agent="melia", text="Six seven eight nine ten."),
     )
     state, third = fc.reduce(
         state,
         # +0.5 rather than exactly 2x: (1.1+5.0)-(1.1+2.5) is 2.4999999999999996
         # in binary floating point, and a debounce test that turns on the last
         # bit of a float is testing the wrong thing.
-        AgentUtteranceProgress(
-            t=1.6 + 2 * interval, agent="melia", text="Eleven twelve thirteen."
-        ),
+        AgentUtteranceProgress(t=1.6 + 2 * interval, agent="melia", text="Eleven twelve thirteen."),
     )
     assert [isinstance(c, RequestProposals) for c in first] == [True]
     assert second == []
@@ -2326,10 +2319,22 @@ def test_a_proposal_older_than_the_granted_line_does_not_survive_the_boundary(fc
         fc,
         state,
         invite(0.0),
-        AgentProposal(t=0.5, agent="dex", utterance="Written against the preamble.",
-                      signals=weak(), epoch=1, input_t=-1.5),
-        AgentProposal(t=0.6, agent="melia", utterance="Written against the question.",
-                      signals=strong(), epoch=1, input_t=0.0),
+        AgentProposal(
+            t=0.5,
+            agent="dex",
+            utterance="Written against the preamble.",
+            signals=weak(),
+            epoch=1,
+            input_t=-1.5,
+        ),
+        AgentProposal(
+            t=0.6,
+            agent="melia",
+            utterance="Written against the question.",
+            signals=strong(),
+            epoch=1,
+            input_t=0.0,
+        ),
         TurnYielded(t=1.0),
     )
     # `_grant` only emits `StartSpeech`; `floor_holder` is not set until the
@@ -2426,10 +2431,22 @@ def test_a_sibling_of_the_granted_line_survives_the_boundary(fc, state):
         fc,
         state,
         invite(0.0),
-        AgentProposal(t=2.0, agent="dex", utterance="Mine is the fleet audit.",
-                      signals=strong(), epoch=1, input_t=0.0),
-        AgentProposal(t=2.1, agent="melia", utterance="Mine is the cladding.",
-                      signals=strong(relevance=0.8), epoch=1, input_t=0.0),
+        AgentProposal(
+            t=2.0,
+            agent="dex",
+            utterance="Mine is the fleet audit.",
+            signals=strong(),
+            epoch=1,
+            input_t=0.0,
+        ),
+        AgentProposal(
+            t=2.1,
+            agent="melia",
+            utterance="Mine is the cladding.",
+            signals=strong(relevance=0.8),
+            epoch=1,
+            input_t=0.0,
+        ),
         TurnYielded(t=2.2),
     )
     granted = next(c for c in cmds if isinstance(c, StartSpeech))
@@ -2458,10 +2475,22 @@ def test_a_mid_turn_proposal_still_beats_its_own_sibling(fc, state):
         fc,
         state,
         invite(0.0),
-        AgentProposal(t=2.0, agent="dex", utterance="Mine is the fleet audit.",
-                      signals=strong(), epoch=1, input_t=0.0),
-        AgentProposal(t=2.1, agent="melia", utterance="Written before the turn.",
-                      signals=strong(relevance=0.8), epoch=1, input_t=0.0),
+        AgentProposal(
+            t=2.0,
+            agent="dex",
+            utterance="Mine is the fleet audit.",
+            signals=strong(),
+            epoch=1,
+            input_t=0.0,
+        ),
+        AgentProposal(
+            t=2.1,
+            agent="melia",
+            utterance="Written before the turn.",
+            signals=strong(relevance=0.8),
+            epoch=1,
+            input_t=0.0,
+        ),
         TurnYielded(t=2.2),
         AgentSpeechStarted(t=2.9, agent="dex"),
     )
@@ -2477,9 +2506,14 @@ def test_a_mid_turn_proposal_still_beats_its_own_sibling(fc, state):
     written_against = state.last_proposal_request_t
     state, _ = fc.reduce(
         state,
-        AgentProposal(t=5.4, agent="melia", utterance="Written against the turn.",
-                      signals=strong(relevance=0.8), epoch=state.speculation_epoch,
-                      input_t=written_against),
+        AgentProposal(
+            t=5.4,
+            agent="melia",
+            utterance="Written against the turn.",
+            signals=strong(relevance=0.8),
+            epoch=state.speculation_epoch,
+            input_t=written_against,
+        ),
     )
 
     state, cmds = fc.reduce(
@@ -2666,9 +2700,7 @@ def test_a_stalled_speaker_clears_the_pending_invite(agent_fc, state):
     assert state.pending_invite is None
 
 
-@pytest.mark.parametrize(
-    "text", ["Where does that leave us?", "Wayne, what do you make of that?"]
-)
+@pytest.mark.parametrize("text", ["Where does that leave us?", "Wayne, what do you make of that?"])
 def test_ricky_supersedes_a_standing_peer_invitation(agent_fc, state, text):
     """Lowest precedence of all: an open floor from Ricky displaces it too."""
     state, _ = _turn_with_invite(agent_fc, state, invites="melia")
@@ -2686,9 +2718,7 @@ def test_ricky_supersedes_a_standing_peer_invitation(agent_fc, state, text):
 
 def test_at_the_turn_cap_the_invite_is_dropped_and_ricky_gets_the_floor(agent_fc, state):
     """The `AGENT_TURN_LIMIT` hand-back must not be left holding an invite."""
-    state = replace(
-        state, consecutive_agent_turns=agent_fc.config.max_consecutive_agent_turns - 1
-    )
+    state = replace(state, consecutive_agent_turns=agent_fc.config.max_consecutive_agent_turns - 1)
     state, _ = _turn_with_invite(agent_fc, state)
     assert state.consecutive_agent_turns == agent_fc.config.max_consecutive_agent_turns
     state, _ = agent_fc.reduce(state, _mid_turn_line("wayne", t=5.0))
@@ -2696,9 +2726,7 @@ def test_at_the_turn_cap_the_invite_is_dropped_and_ricky_gets_the_floor(agent_fc
     state, cmds = agent_fc.reduce(
         state, AgentSpeechEnded(t=31.0, agent="dex", completed=True, utterance="Said.")
     )
-    assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [
-        CueReason.AGENT_TURN_LIMIT
-    ]
+    assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [CueReason.AGENT_TURN_LIMIT]
     assert not [c for c in cmds if isinstance(c, StartSpeech)]
     assert state.invitation is None
     assert state.pending_invite is None
@@ -2780,9 +2808,7 @@ def test_a_log_without_the_new_fields_replays_identically(fc, state):
     assert Signals(relevance=0.9).invites_next is None
     assert PanelState.for_agents(("dex",)).pending_invite is None
 
-    old = Signals(
-        relevance=0.9, urgency=0.5, disagreement=0.3, confidence=0.9, expertise=0.6
-    )
+    old = Signals(relevance=0.9, urgency=0.5, disagreement=0.3, confidence=0.9, expertise=0.6)
     new = replace(old, invites_next=None)
     events = lambda signals: (
         invite(0.0),

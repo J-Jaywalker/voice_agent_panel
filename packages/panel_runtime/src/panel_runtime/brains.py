@@ -360,9 +360,7 @@ class StreamingClaudeBrain:
             nonlocal index
             for sentence in chunker.push(fresh):
                 index += 1
-                event = SentenceReady(
-                    agent=persona.id, text=sentence, index=index, elapsed_ms=ms()
-                )
+                event = SentenceReady(agent=persona.id, text=sentence, index=index, elapsed_ms=ms())
                 if on_event:
                     on_event(event)
                 yield event
@@ -381,9 +379,7 @@ class StreamingClaudeBrain:
             messages=[
                 {
                     "role": "user",
-                    "content": build_turn_prompt(
-                        state, persona, near_turn_limit=near_turn_limit
-                    ),
+                    "content": build_turn_prompt(state, persona, near_turn_limit=near_turn_limit),
                 }
             ],
         ) as response:

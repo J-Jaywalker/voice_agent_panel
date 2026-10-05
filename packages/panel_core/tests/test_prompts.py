@@ -23,10 +23,11 @@ they exist to guarantee.
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from panel_core.events import HUMAN
-from panel_core.personas import Persona
+from panel_core.personas import ACCENT_TAGS, AUDIO_TAGS, PanelCast, Persona
 from panel_core.prompts import (
     GUARDRAILS,
     build_system_prompt,
@@ -35,6 +36,8 @@ from panel_core.prompts import (
     stable_prefix,
 )
 from panel_core.state import PanelState, Utterance
+
+PERSONA_DIR = Path(__file__).resolve().parents[3] / "personas"
 
 # --------------------------------------------------------------------------
 # Approved knowledge — anecdotes rendered into the system prompt
@@ -249,9 +252,7 @@ def test_your_own_last_turn_and_rickys_are_not_exchanges() -> None:
         ),
     ],
 )
-def test_stable_prefix_withholds_exactly_the_unresolved_construct(
-    raw: str, expected: str
-) -> None:
+def test_stable_prefix_withholds_exactly_the_unresolved_construct(raw: str, expected: str) -> None:
     assert stable_prefix(raw) == expected
 
 
@@ -266,9 +267,7 @@ def test_stable_prefix_withholds_exactly_the_unresolved_construct(
         ("Right, but", False),  # comma disqualifies within a handful of chars
     ],
 )
-def test_leading_label_withheld_only_while_genuinely_ambiguous(
-    raw: str, ambiguous: bool
-) -> None:
+def test_leading_label_withheld_only_while_genuinely_ambiguous(raw: str, ambiguous: bool) -> None:
     """`^\\s*[A-Z][\\w .-]{0,24}:\\s*` is anchored at the very start of the
     text and only confirmed by its trailing colon, so every character of a
     candidate label is provisional until the colon arrives or something the
@@ -356,3 +355,113 @@ def test_the_speaker_is_never_told_it_is_following_itself() -> None:
         agent_partial="Something I am part-way through saying.",
     )
     assert "is speaking right now" not in build_turn_prompt(state, _persona())
+
+
+# --------------------------------------------------------------------------
+# Audio tags — the closed allowlist `sanitise()` enforces
+# --------------------------------------------------------------------------
+#
+# Added 5 Oct 2026 with `eleven_v3_conversational`, which *performs* a
+# bracketed tag rather than reading it aloud. That makes brackets no longer
+# inert, and the risk inverts: the hazard is not a stray word over the PA (an
+# unrecognised tag was measured being swallowed, not spoken) but a tag the
+# model acts on — `[applause]`, `[gunshot]`, `[strong French accent]` are all
+# real, documented and functional. The vendor's vocabulary is free text and
+# grows without us, so the rule has to be an allowlist, and these tests are
+# what make "closed" true.
+
+
+def test_an_allowlisted_tag_survives_sanitise() -> None:
+    assert sanitise("[laughs] that is the whole argument") == (
+        "[laughs] that is the whole argument"
+    )
+
+
+def test_tag_case_and_inner_spacing_are_normalised_not_rejected() -> None:
+    """The model writes `[Laughs]` often enough that strictness would silently
+    drop a tag the persona was told to use."""
+    assert sanitise("[Laughs] ok") == "[laughs] ok"
+    assert sanitise("[  CLEARS   THROAT ] ok") == "[clears throat] ok"
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        "[applause]",
+        "[gunshot]",
+        "[explosion]",
+        "[sings]",
+        "[strong French accent]",
+        "[whispers]",
+        "[laughs harder]",
+        "[hesitates]",
+        # The realistic shape of an invented one — plausible, not silly.
+        "[leaning forward]",
+        "[gestures at Melia]",
+    ],
+)
+def test_every_tag_outside_the_allowlist_is_destroyed(tag: str) -> None:
+    """Including documented, working tags we chose not to allow — the point of
+    a closed list is that the vendor adding one does not add it to the show."""
+    assert sanitise(f"{tag} that is the whole argument") == ("that is the whole argument")
+
+
+def test_an_unclosed_allowlisted_tag_is_still_withheld_while_streaming() -> None:
+    """`[laugh` could still become `[laughs]` (kept) or `[laughing]` (stripped),
+    so its shape is unknowable until it closes — exactly as before the
+    allowlist existed. The allowlist must not tempt anyone into releasing it
+    early."""
+    assert stable_prefix("that landed [laugh") == "that landed "
+    assert stable_prefix("that landed [laughs]") == "that landed [laughs]"
+
+
+def test_personas_audio_tags_must_be_allowlisted() -> None:
+    """A typo would be stripped at runtime and silently do nothing, so the
+    cast data is where it has to fail loudly."""
+    with pytest.raises(ValueError, match="allowlist"):
+        _persona(audio_tags=["guffaws"])
+
+
+def test_audio_tags_render_into_the_system_prompt() -> None:
+    persona = _persona(audio_tags=["sighs", "dryly"])
+    prompt = build_system_prompt(persona)
+    assert "[sighs], [dryly]" in prompt
+    assert "performs it" in prompt
+
+
+def test_a_persona_with_no_audio_tags_is_never_told_the_mechanism_exists() -> None:
+    """Tags are characterisation. An agent not cast to laugh should not learn
+    that laughing is available."""
+    prompt = build_system_prompt(_persona())
+    assert "Sounds your voice can actually make" not in prompt
+
+
+def test_the_real_cast_only_uses_allowlisted_tags() -> None:
+    """`PanelCast.from_dir` validates, so this is really asserting the shipped
+    YAML parses — but it is the one test that fails if someone adds a tag to a
+    persona without adding it to `AUDIO_TAGS`."""
+    cast = PanelCast.from_dir(PERSONA_DIR)
+    for persona in cast.personas.values():
+        assert set(persona.audio_tags) <= AUDIO_TAGS
+
+
+def test_personas_accent_must_be_allowlisted() -> None:
+    """Same failure shape as `audio_tags`: a typo here is silently never applied."""
+    with pytest.raises(ValueError, match="ACCENT_TAGS"):
+        _persona(accent="scouse accent")
+
+
+def test_accent_never_reaches_the_system_prompt() -> None:
+    """Unlike `audio_tags`, an accent is not a performance cue the model is
+    told about — `panel_runtime.tts` applies it directly. Rendering it here
+    too would give the model a second, uncontrolled way to write it inline."""
+    prompt = build_system_prompt(_persona(accent="northern english accent"))
+    assert "accent" not in prompt.lower()
+
+
+def test_the_real_cast_only_uses_allowlisted_accents() -> None:
+    """The `audio_tags` equivalent, for `accent`."""
+    cast = PanelCast.from_dir(PERSONA_DIR)
+    for persona in cast.personas.values():
+        if persona.accent is not None:
+            assert persona.accent in ACCENT_TAGS

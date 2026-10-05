@@ -225,7 +225,7 @@ def test_an_open_verdict_invites_the_panel(llm, state):
 
 
 def test_a_joined_verdict_invites_exactly_those_agents(llm, state):
-    """"I'd like to hear from the other two" is a real invitation to two people.
+    """ "I'd like to hear from the other two" is a real invitation to two people.
 
     The sentence names nobody and is only resolvable against who just spoke,
     which is why the classifier is given `prompts.build_address_context` and
@@ -366,9 +366,7 @@ def test_a_resolved_conflict_does_not_haunt_later_turns(llm, state):
     state, _ = run(llm, state, said("Which of you owns that?"), verdict(AMBIGUOUS_VERDICT))
     assert state.address_conflict
 
-    state, _ = run(
-        llm, state, said("Melia, take it.", t=1.0), verdict("MELIA", "melia", t=1.1)
-    )
+    state, _ = run(llm, state, said("Melia, take it.", t=1.0), verdict("MELIA", "melia", t=1.1))
     assert state.address_conflict == (), "a clean address resolves the tie"
     assert state.invitation.agent == "melia"
 
@@ -382,9 +380,7 @@ def test_a_resolved_conflict_does_not_haunt_later_turns(llm, state):
         llm, state, said("That is roughly where we are.", t=4.0), verdict(NO_VERDICT, t=4.1)
     )
     _, commands = llm.reduce(state, TurnYielded(t=5.0))
-    assert [c.reason for c in commands if isinstance(c, CueModerator)] == [
-        CueReason.NO_INVITATION
-    ]
+    assert [c.reason for c in commands if isinstance(c, CueModerator)] == [CueReason.NO_INVITATION]
 
 
 def test_an_invited_agent_actually_gets_the_floor(llm, state):
@@ -456,7 +452,7 @@ def test_an_intro_verdict_starts_the_round_exactly_once(llm, state):
 
 
 def test_the_regex_intro_latch_does_not_fire_under_the_flag(llm, state):
-    """"Introductions" in the text must not start a round on its own.
+    """ "Introductions" in the text must not start a round on its own.
 
     Both detectors being able to start the one-shot round is the specific
     hazard that put the intro check behind the flag: the regex fires on "intro"

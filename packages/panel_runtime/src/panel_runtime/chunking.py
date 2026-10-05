@@ -30,9 +30,32 @@ import re
 # Abbreviations whose full stop is not a sentence end.
 _ABBREVIATIONS = frozenset(
     {
-        "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st",
-        "e.g", "i.e", "etc", "vs", "approx", "no",
-        "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+        "mr",
+        "mrs",
+        "ms",
+        "dr",
+        "prof",
+        "sr",
+        "jr",
+        "st",
+        "e.g",
+        "i.e",
+        "etc",
+        "vs",
+        "approx",
+        "no",
+        "jan",
+        "feb",
+        "mar",
+        "apr",
+        "jun",
+        "jul",
+        "aug",
+        "sep",
+        "sept",
+        "oct",
+        "nov",
+        "dec",
     }
 )
 

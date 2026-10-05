@@ -103,9 +103,13 @@ class StubBrain:
         await asyncio.sleep(0)
         yield SignalsReady(agent=persona.id, signals=Signals(relevance=0.8), elapsed_ms=1.0)
         await asyncio.sleep(0)
-        yield SentenceReady(agent=persona.id, text=f"Hi, I'm {persona.name}.", index=0, elapsed_ms=2.0)
+        yield SentenceReady(
+            agent=persona.id, text=f"Hi, I'm {persona.name}.", index=0, elapsed_ms=2.0
+        )
         await asyncio.sleep(0)
-        yield ProposalComplete(agent=persona.id, utterance=f"Hi, I'm {persona.name}.", elapsed_ms=3.0)
+        yield ProposalComplete(
+            agent=persona.id, utterance=f"Hi, I'm {persona.name}.", elapsed_ms=3.0
+        )
 
 
 @pytest.fixture
@@ -248,9 +252,7 @@ def test_fixed_utterance_beats_a_speculative_candidate(runtime: PanelRuntime):
         runtime._proposal_tasks[key] = stale_task
         runtime._proposal_turn[key] = runtime.state.turn_id
 
-        runtime._start_speaking(
-            StartSpeech(agent=agent, utterance=fixed, turn_id=0, epoch=epoch)
-        )
+        runtime._start_speaking(StartSpeech(agent=agent, utterance=fixed, turn_id=0, epoch=epoch))
         await runtime._speaking_task
         # No `_drain_events` here on purpose: the reducer is not under test,
         # and this turn was never arbitrated. The emitted events are read
@@ -331,8 +333,7 @@ def _run_stream(monkeypatch, body: str, *, chunk_size: int = 7):
 
     async def body_coro():
         return [
-            event
-            async for event in brain.stream(cast["dex"], PanelState.for_agents(cast.ids()))
+            event async for event in brain.stream(cast["dex"], PanelState.for_agents(cast.ids()))
         ]
 
     return asyncio.run(body_coro())
@@ -686,7 +687,7 @@ def test_partials_speculate_and_finals_classify(monkeypatch):
 
 
 def test_the_classifier_is_told_who_has_been_speaking(monkeypatch):
-    """"The other two" is only resolvable against who just spoke.
+    """ "The other two" is only resolvable against who just spoke.
 
     The runtime is the only thing that can supply that — `panel_core` renders
     the line but has no socket, and the classifier has no state. If this stops
@@ -908,9 +909,7 @@ def test_a_slow_generation_does_not_block_a_fresh_one_for_the_same_agent(runtime
             assert brain.started.count(slow) == 1, "the slow generation should still be running"
 
             runtime.emit(
-                _partial(
-                    "So where are we actually on the adoption curve these days", t=second_t
-                )
+                _partial("So where are we actually on the adoption curve these days", t=second_t)
             )
             # A bounded settle rather than a condition wait: a regression
             # should fail on the assertions below, with the real numbers in the

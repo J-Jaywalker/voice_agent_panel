@@ -101,7 +101,11 @@ class Invitation:
         grants, which do not participate in this bookkeeping at all.
         """
         remaining = max(0, self.turns_remaining - 1)
-        spoken = self.spoken if agent_id is None or agent_id in self.spoken else self.spoken + (agent_id,)
+        spoken = (
+            self.spoken
+            if agent_id is None or agent_id in self.spoken
+            else self.spoken + (agent_id,)
+        )
         if t is None:
             return replace(self, turns_remaining=remaining, spoken=spoken)
         return replace(self, turns_remaining=remaining, last_active_t=t, spoken=spoken)

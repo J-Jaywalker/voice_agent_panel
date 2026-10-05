@@ -86,9 +86,7 @@ class _FakeClient:
             def stream(self, **kwargs):
                 outer.calls.append(kwargs)
                 index = min(len(outer.calls) - 1, len(outer._responses) - 1)
-                return _FakeStream(
-                    outer._responses[index], outer._stall, outer._stall_from
-                )
+                return _FakeStream(outer._responses[index], outer._stall, outer._stall_from)
 
         self.messages = _Messages()
 
@@ -175,7 +173,7 @@ def test_the_verdict_resolves_before_the_reason(cast):
 
 
 def test_a_verdict_naming_two_panellists_resolves_to_both(cast):
-    """"MELIA+WAYNE" is one verdict naming two people, and resolves to both.
+    """ "MELIA+WAYNE" is one verdict naming two people, and resolves to both.
 
     The reason is stalled behind the whole set, so a decoder that stopped at
     the first complete name would come back with Melia alone — which would
@@ -190,9 +188,7 @@ def test_a_verdict_naming_two_panellists_resolves_to_both(cast):
 
     async def body():
         try:
-            return await asyncio.wait_for(
-                classifier.classify("Melia and Wayne, between you?"), 1.0
-            )
+            return await asyncio.wait_for(classifier.classify("Melia and Wayne, between you?"), 1.0)
         finally:
             await classifier.close()
 
@@ -261,7 +257,7 @@ def test_the_context_rides_in_the_user_turn_not_the_system_prompt(cast):
 
 
 def test_a_verdict_is_never_reused_across_a_different_exchange(cast):
-    """"The other two" means a different two once somebody else has spoken.
+    """ "The other two" means a different two once somebody else has spoken.
 
     Same words, same turn-level cache, different answer — so the cache key
     carries the context as well as the utterance. Keyed on the words alone,

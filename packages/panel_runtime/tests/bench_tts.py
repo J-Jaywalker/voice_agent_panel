@@ -18,6 +18,15 @@ SLA instead of our own code, which is not acceptable on a live stage.
 
 Needs ELEVENLABS_API_KEY. Re-run on the venue rig: TTFB includes a network leg,
 and the venue's uplink is not this one.
+
+The **first** line is reported separately from the median because on
+`eleven_v3_conversational` it is the one that can be slow for a reason the
+median hides: a per-voice warm-up inside the model, measured at ~300-350ms
+against a ~119ms median on the first utterance in a voice that had not been
+used on its socket yet. `prewarm()` now spends that in the pre-show, so a warm
+run should show `first` sitting with the rest. If it does not, the warm-up is
+not working and an agent's opening line is paying for it on stage. `--cold`
+skips prewarm entirely and is what that failure looks like.
 """
 
 from __future__ import annotations
@@ -89,7 +98,10 @@ async def main() -> None:
     if not args.cold:
         t0 = time.monotonic()
         await engine.prewarm([args.voice])
-        print(f"pre-show handshake: {1000 * (time.monotonic() - t0):.0f}ms (paid once)\n")
+        print(
+            f"pre-show prewarm: {1000 * (time.monotonic() - t0):.0f}ms (paid once) "
+            "— handshake plus one discarded warm-up utterance per voice\n"
+        )
 
     ttfbs: list[float] = []
     print(f"{'line':<56} {'ttfb':>9}")
@@ -103,6 +115,7 @@ async def main() -> None:
             print(f"{line[:54]:<56} {ttfb:>8.0f}ms")
 
     print("-" * 68)
+    print(f"{'first (the warm-up tell — see module docstring)':<56} {ttfbs[0]:>8.0f}ms")
     print(f"{'median':<56} {statistics.median(ttfbs):>8.0f}ms")
     print(f"{'worst':<56} {max(ttfbs):>8.0f}ms")
     print("\nWorst case is the number that matters — the audience hears the bad turn.\n")

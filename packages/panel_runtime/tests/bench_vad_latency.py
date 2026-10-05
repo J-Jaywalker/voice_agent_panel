@@ -37,7 +37,9 @@ def load_fixture(path: Path) -> tuple[np.ndarray, int]:
     return pcm, onset
 
 
-async def measure(path: Path, *, block: int = 256) -> tuple[dict[float, float | None], float | None]:
+async def measure(
+    path: Path, *, block: int = 256
+) -> tuple[dict[float, float | None], float | None]:
     pcm, onset = load_fixture(path)
     lead = np.zeros(int(SR * LEAD_SILENCE_S), dtype=np.int16)
     audio = np.concatenate([lead, pcm])

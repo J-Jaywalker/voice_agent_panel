@@ -32,16 +32,30 @@ voice_id: DbwWo4rVEd5NrejHYUnm  # Jessica — dry, precise, Irish.
 # ~20% quieter (amplitude, not dB) next to Dexter's boosted trim — see
 # panel_runtime.mixer.Mixer's unity_db and dexter.yaml's output_gain_db.
 output_gain_db: -2.24
+# No `accent` (tried `strong irish accent` at stability 0.0 Creative, 5 Oct
+# 2026 — v3 rendered this voice as American regardless; director's call to
+# drop it rather than keep fighting a voice that resists the tag). If this is
+# revisited, recasting `voice_id` to a voice already labelled Irish is the
+# more likely fix than more tag or stability tuning — see `panel_runtime.tts`
+# module docstring.
 # Controlled, not flat. Stability well above the engine default (0.5) because
 # she never loses the line — the steadiness is where the terseness reads
 # from, not the pace. Speed stays a touch over 1.0: brisk, not slow — the
 # weight comes from stopping early, not from drawing anything out. Tune on
 # the target rig (CLAUDE.md § Deployment).
 voice_settings:
-  speed: 1.07
+  speed: 1.12
   stability: 0.62
 # The force is in the plainness, never in volume — she says the thing and
 # stops rather than landing a long dry observation.
+# Dry and flat, so the sound is the exhale rather than the laugh — [dryly]
+# colours the line that follows it, which is where her force actually sits.
+# No [laughs]: she doesn't, and a laugh would read as a different person.
+audio_tags:
+  - sighs
+  - exhales
+  - dryly
+
 communication_style: >-
   short, flat, declarative; says the thing and stops, and lets the silence
   after it do the work

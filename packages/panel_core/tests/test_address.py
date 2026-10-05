@@ -283,8 +283,9 @@ def test_the_original_failure_end_to_end(fc, state):
             utterance="Melia's the one to follow here.",
             signals=strong(defer_to="melia"),
         ),
-        AgentProposal(t=0.6, agent="melia", utterance="The rollout data says otherwise.",
-                      signals=weak()),
+        AgentProposal(
+            t=0.6, agent="melia", utterance="The rollout data says otherwise.", signals=weak()
+        ),
     )
     assert state.invitation is not None
     assert state.invitation.agent == "melia"
@@ -334,7 +335,7 @@ def test_a_fresh_address_always_supersedes(fc, state):
 
 
 def test_two_agents_in_the_same_role_are_both_invited(fc, state):
-    """"Melia, Dexter, thoughts?" is a question put to two people.
+    """ "Melia, Dexter, thoughts?" is a question put to two people.
 
     Both of them answer and the third stays out. The old behaviour — tie,
     closed floor, operator decides — refused a question Ricky had asked
@@ -465,9 +466,7 @@ def test_an_invitation_nobody_acts_on_expires(fc, state):
 
     state, cmds = fc.reduce(state, Tick(t=fc.config.invitation_ttl_s + 0.1))
     assert state.invitation is None
-    assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [
-        CueReason.INVITATION_EXPIRED
-    ]
+    assert [c.reason for c in cmds if isinstance(c, CueModerator)] == [CueReason.INVITATION_EXPIRED]
 
 
 def test_a_live_exchange_does_not_age_out_mid_answer(fc, state):
@@ -540,9 +539,7 @@ def test_a_handoff_to_an_agent_with_nothing_queued_is_ignored(fc, state):
         fc,
         state,
         said("Dexter, what is your read on the rollout?"),
-        AgentProposal(
-            t=0.5, agent="dex", utterance="Ask Wayne.", signals=strong(defer_to="wayne")
-        ),
+        AgentProposal(t=0.5, agent="dex", utterance="Ask Wayne.", signals=strong(defer_to="wayne")),
     )
     _, cmds = fc.reduce(state, TurnYielded(t=1.0))
     assert [c.agent for c in cmds if isinstance(c, StartSpeech)] == ["dex"]

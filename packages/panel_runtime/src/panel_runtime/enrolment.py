@@ -296,9 +296,7 @@ class _EnrolmentSession:
                         # either route delivering `SpeakersResult` is a result,
                         # and a duplicate is harmless.
                         await ws.send(json.dumps({"message": "GetSpeakers", "final": True}))
-                    await ws.send(
-                        json.dumps({"message": "EndOfStream", "last_seq_no": seq_no})
-                    )
+                    await ws.send(json.dumps({"message": "EndOfStream", "last_seq_no": seq_no}))
                 try:
                     await asyncio.wait_for(receiver, timeout=self._result_timeout_s)
                 except TimeoutError:
@@ -689,9 +687,7 @@ def _segment_seconds(segment: dict[str, Any]) -> float:
     return max(0.0, end - start)
 
 
-def _dominant_label(
-    result: dict[str, Any], tally: dict[str, _LabelTally]
-) -> str | None:
+def _dominant_label(result: dict[str, Any], tally: dict[str, _LabelTally]) -> str | None:
     """Which diarised label was the enrolling speaker?
 
     Explicitly *not* "assume `S1`". Label numbering reflects the order the
@@ -723,7 +719,8 @@ def _dominant_label(
     labels = [
         str(entry["label"])
         for entry in (result.get("speakers") or ())
-        if isinstance(entry, dict) and entry.get("label")
+        if isinstance(entry, dict)
+        and entry.get("label")
         # `UU` is the server's "unattributed", not a person.
         and str(entry["label"]).upper() != "UU"
     ]
