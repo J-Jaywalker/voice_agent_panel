@@ -61,6 +61,8 @@ import contextlib
 import json
 import queue
 import re
+import sys
+import threading
 import time
 from collections.abc import Iterable
 from dataclasses import asdict, is_dataclass
@@ -87,6 +89,8 @@ from panel_core import (
     HandsRaised,
     HumanSpeechEnded,
     HumanSpeechStarted,
+    OperatorAction,
+    OperatorCommand,
     PanelCast,
     PanelState,
     RequestProposals,
@@ -412,6 +416,14 @@ class PanelRuntime:
         # meters (`Mixer.take_levels`) and for the same reason: the audio
         # blocks and the wall's frames are on different clocks.
         self._mic_level = 0.0
+        # Emergency mute, toggled by the `m` key on the console — see
+        # `_watch_mute_key`. Read once per audio block by `_callback`, which
+        # simply stops feeding the mic to VAD/STT while it is set; nothing
+        # downstream needs to know a mute happened. Deliberately invisible on
+        # the video wall: `_mic_level` is left unwritten while muted (same
+        # branch), so the wall's meter just reads silence, same as if Ricky
+        # had stopped talking.
+        self._muted = False
 
         self.events: asyncio.Queue = asyncio.Queue()
         self._mic: queue.Queue = queue.Queue()
@@ -513,7 +525,7 @@ class PanelRuntime:
         enrolling = self._enrolling
         if enrolling is not None:
             enrolling.feed(pcm.tobytes())
-        else:
+        elif not self._muted:
             # Mic audio goes to VAD and to the STT that feeds the floor. Agent
             # audio goes to neither, ever.
             self._mic.put_nowait(mono.copy())
@@ -526,8 +538,11 @@ class PanelRuntime:
             # over an agent, which is exactly when the floor most needs to
             # hear him.
             self.stt.feed("ricky", pcm.tobytes())
+        # Muted: the block is simply dropped here. VAD and STT never see it,
+        # so there is nothing for them to react to and nothing for the wall's
+        # mic meter to show — see `self._muted`.
 
-        if self._display is not None:
+        if self._display is not None and not self._muted:
             self._mic_level = max(self._mic_level, float(np.sqrt(np.mean(np.square(mono)))))
 
         # `render` also drives `Mixer.on_played`, which with `--display` hands
@@ -536,6 +551,52 @@ class PanelRuntime:
         # That is not the path above: nothing off it is emitted, so no agent's
         # voice can arrive at the reducer through a microphone-shaped hole.
         outdata[:, 0] = self.mixer.render(frames)
+
+    def _watch_console_keys(self) -> None:
+        """Console-only `m`/`j` key watcher.
+
+        Runs on its own thread, blocked in `read(1)` between presses — cheap,
+        and keeps the audio callback above untouched by anything stdin-shaped.
+        `m` toggles `self._muted`, which `_callback` is the only other reader
+        of. `j` is the emergency interrupt: it posts an `OperatorCommand`
+        (`HAND_TO_MODERATOR`) onto the same event queue a real barge-in would
+        land on, via `call_soon_threadsafe` since this thread is not the event
+        loop's — `panel_core` already stops whoever is speaking and hands the
+        floor to Ricky for that action, so there is no new floor logic here,
+        only the keypress. Neither key's *press* reaches the wall, the log or
+        any event by itself; only `j`'s resulting `StopSpeech`/state change
+        does, exactly as a spoken interrupt's would. Silently does nothing if
+        stdin is not a real terminal (e.g. piped input, a test harness).
+        """
+        try:
+            import termios
+            import tty
+        except ImportError:
+            return
+        try:
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+        except (OSError, ValueError, termios.error):
+            return
+        try:
+            tty.setcbreak(fd)
+            while self._running:
+                ch = sys.stdin.read(1).lower()
+                if ch == "m":
+                    self._muted = not self._muted
+                    if self._muted:
+                        self._print("[bold red]MIC MUTED[/] (press m to unmute)")
+                    else:
+                        self._print("[bold green]mic live[/]")
+                elif ch == "j":
+                    self._print("[bold red]EMERGENCY INTERRUPT[/] (j) — floor to Ricky")
+                    if self._loop is not None:
+                        self._loop.call_soon_threadsafe(
+                            self.emit,
+                            OperatorCommand(t=time.monotonic(), action=OperatorAction.HAND_TO_MODERATOR),
+                        )
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
     # ------------------------------------------------------------- event path
 
@@ -1849,6 +1910,8 @@ class PanelRuntime:
                 if self.agent_stt is not None:
                     tasks.append(asyncio.create_task(self._run_agent_stt(), name="agent-stt"))
 
+                threading.Thread(target=self._watch_console_keys, daemon=True).start()
+
                 gated = "" if speaker is None else f" [dim]mic gated to {speaker.label}.[/]"
                 console.print(
                     f"[bold]Panel live.[/] "
@@ -1858,6 +1921,8 @@ class PanelRuntime:
                     "nobody. Ctrl-C to stop.[/]\n"
                     "[dim]Left columns: seconds since start, +gap since the line "
                     "above.[/]\n"
+                    "[dim]Press m to mute the mic (emergency), m again to unmute. "
+                    "Press j for an emergency interrupt (stops the floor, hands it to Ricky).[/]\n"
                 )
 
                 await asyncio.gather(*tasks)
