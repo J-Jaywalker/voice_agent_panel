@@ -20,11 +20,18 @@ dependencies = [
     "anthropic>=1.2",
     "rich>=13.7",
     "typesafe-sdk[http2]>=0.7",
+    # Acoustic echo cancellation (`aec.py`). A compiled SWIG extension against
+    # the native `libspeexdsp` — see `aec.py`'s module docstring for the
+    # `brew install`/env-var build steps needed on a fresh machine.
+    "speexdsp>=0.1.1",
 ]
 
 [project.scripts]
 panel = "panel_runtime.panel:main"
 barge-in = "panel_runtime.live_bargein:main"
+aec-test = "panel_runtime.aec_test:main"
+feedback-test = "panel_runtime.feedback_test:main"
+generate-feedback-assets = "panel_runtime.generate_feedback_assets:main"
 
 [build-system]
 requires = ["hatchling"]

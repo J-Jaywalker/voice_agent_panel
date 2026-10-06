@@ -9,7 +9,7 @@
 
 .DEFAULT_GOAL := help
 
-.PHONY: help panel panel-unlocked enrol display sim test test-core lint
+.PHONY: help panel panel-unlocked enrol display sim test test-core lint aec-test feedback-test feedback-test-unlocked
 
 help:
 	@echo "voice_agent_panel"
@@ -19,6 +19,9 @@ help:
 	@echo "  make enrol           re-capture Ricky's voice enrolment"
 	@echo "  make display         video wall alone, synthetic panel, no mic or keys"
 	@echo "  make sim             text mode, offline stub brains"
+	@echo "  make aec-test        measure this rig's speaker->mic echo path, no headphones"
+	@echo "  make feedback-test   loop agent voices + speak into the mic, watch for false transcripts/interrupts"
+	@echo "  make feedback-test-unlocked  the same, mic ungated (no speaker enrolment)"
 	@echo "  make test            everything (~2min)"
 	@echo "  make test-core       floor logic only (~4s) — the tight loop"
 	@echo "  make lint            ruff"
@@ -36,6 +39,15 @@ enrol:
 
 display:
 	uv run panel-display --demo
+
+aec-test:
+	uv run aec-test
+
+feedback-test:
+	uv run feedback-test
+
+feedback-test-unlocked:
+	uv run feedback-test --no-speaker-lock
 
 sim:
 	uv run panel-sim

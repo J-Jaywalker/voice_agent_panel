@@ -101,3 +101,35 @@ class BargeInConfig:
     # which are measured on the venue rig, not here.
     internal_budget_ms: float = 75.0
     hard_limit_ms: float = 150.0
+
+
+@dataclass(frozen=True, slots=True)
+class AECConfig:
+    """Acoustic echo cancellation — this Mac's own speaker output reaching its
+    own mic, not a telephony echo path.
+
+    Diarisation already keeps that bleed from ever being attributed to Ricky
+    (`stt.py`), but it cannot stop the barge-in *reflex*: `_run_vad` fires on
+    raw Silero VAD, before any identity check, by design (CLAUDE.md — "VAD
+    owns stopping"). Speaker bleed can still duck or stop an agent that was
+    never actually interrupted. AEC is a defense against that, upstream of
+    both VAD and diarisation, and diarisation stays in place for whatever it
+    does not fully cancel.
+
+    Off by default: the venue's PA/mic setup is not expected to need this.
+    This exists as diligence, not as the primary mitigation — wearing
+    headphones, or a venue mic pointed away from the speakers, remains the
+    real fix.
+    """
+
+    enabled: bool = False
+    # Acoustic + buffering delay between a sample leaving `Mixer.render` and
+    # its echo arriving back at the mic. Venue- and device-specific; measured
+    # by `uv run aec-test`, not guessed. 0 is only ever correct on a machine
+    # with no echo path at all.
+    delay_ms: float = 0.0
+    # Adaptive filter tail. Must cover `delay_ms` plus the room's own
+    # reflections, or the canceller has nothing to converge against. 300ms
+    # covers a laptop's own speaker-to-mic path with room to spare; revisit
+    # only if `aec-test`'s measured ERLE says otherwise for a given room.
+    filter_length_ms: float = 300.0

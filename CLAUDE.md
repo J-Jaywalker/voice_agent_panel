@@ -92,6 +92,8 @@ Speaker enrolment is machine- and model-bound, so it is deployment config too: `
 
 `additional_vocab` on `/v2/agent` is now **confirmed** — the agent-specific API reference documents the `content`/`sounds_like` schema `vocab_from_cast` already builds. `_VocabRejected`'s retry-with-the-key-dropped stays regardless: a documented key is not a deployed one.
 
+Acoustic echo cancellation (`panel_runtime/aec.py`, `--aec`) depends on the native `libspeexdsp` library, not just a `uv sync`: `brew install swig speexdsp`, then build the Python extension against it with `CFLAGS`/`LDFLAGS` pointed at `$(brew --prefix speexdsp)` (see `aec.py`'s module docstring for the exact command) — a fresh machine without that native lib fails the build, not the run. `AECConfig.delay_ms` is venue-specific and measured, never guessed: run `uv run aec-test` (no headphones, real demo volume) on the actual rig before trusting `--aec`, same standing as the other latency figures on this page.
+
 ## Working style
 
 - Verify package versions/API shapes/integration claims against source before writing them down.

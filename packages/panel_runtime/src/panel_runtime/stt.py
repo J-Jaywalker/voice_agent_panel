@@ -135,7 +135,11 @@ class STTConfig:
     diarization: str = "none"
     speaker_diarization_config: dict[str, Any] | None = None
     # How readily the engine splits audio into distinct speakers, 0-1, server
-    speaker_sensitivity: float = 0.5
+    speaker_sensitivity: float = 0.6
+    # Bias re-attribution toward whoever was just talking rather than
+    # splitting off a new speaker — the audience/PA bleed this mic exists
+    # alongside is the exact case this guards against.
+    prefer_current_speaker: bool = True
     # Known speakers to identify in this session, each
     # `{"label": ..., "speaker_identifiers": [...]}` as returned by a previous
     # session's `SpeakersResult`. A matched segment comes back carrying
@@ -191,6 +195,7 @@ class STTConfig:
         if self.diarization != "none":
             speaker_config: dict[str, Any] = dict(self.speaker_diarization_config or {})
             speaker_config["speaker_sensitivity"] = self.speaker_sensitivity
+            speaker_config["prefer_current_speaker"] = self.prefer_current_speaker
             if self.get_speakers:
                 speaker_config["get_speakers"] = True
             if self.speakers:

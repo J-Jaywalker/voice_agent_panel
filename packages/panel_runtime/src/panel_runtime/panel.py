@@ -111,6 +111,7 @@ from rich.text import Text
 
 from .address import AddressClassifier, AddressVerdict, BaseAddressClassifier
 from .address_typesafe import TypeSafeAddressClassifier
+from .aec import EchoCanceller
 from .brains import (
     BrainConfig,
     ProposalComplete,
@@ -118,7 +119,7 @@ from .brains import (
     SignalsReady,
     StreamingClaudeBrain,
 )
-from .config import VAD_SAMPLE_RATE, BargeInConfig
+from .config import VAD_SAMPLE_RATE, AECConfig, BargeInConfig
 from .enrolment import (
     DEFAULT_STORE_PATH,
     EnrolledSpeaker,
@@ -293,6 +294,7 @@ class PanelRuntime:
         *,
         floor_config: FloorConfig | None = None,
         barge_in: BargeInConfig | None = None,
+        aec: AECConfig | None = None,
         block_size: int = 256,
         use_tts: bool = True,
         log_path: Path | None = None,
@@ -308,6 +310,12 @@ class PanelRuntime:
         self.state = PanelState.for_agents(cast.ids())
         self.barge_in = barge_in or BargeInConfig()
         self.block_size = block_size
+        # Off by default — see `AECConfig`. When off this is `None` and the
+        # callback below takes the same path it always has; when on it sits
+        # upstream of both VAD and the floor's STT, never replacing
+        # diarisation's job, only reducing what reaches it.
+        aec_cfg = aec or AECConfig()
+        self._aec = EchoCanceller(aec_cfg, VAD_SAMPLE_RATE, block_size) if aec_cfg.enabled else None
         self.use_tts = use_tts
         self.log_path = log_path
 
@@ -510,6 +518,13 @@ class PanelRuntime:
         """PortAudio callback. Never blocks, never awaits, never allocates much."""
         del timeinfo, status
         mono = indata[:, 0]
+        # Off by default (`AECConfig.enabled`) — when off, `self._aec` is
+        # `None` and this is exactly the line it always was. When on, this
+        # cancels the known, correlated echo of `self.mixer`'s own output out
+        # of the mic signal before anything downstream — VAD or STT — ever
+        # sees it. See `aec.py`.
+        if self._aec is not None:
+            mono = self._aec.process(mono)
         pcm = (np.clip(mono, -1.0, 1.0) * 32767).astype(np.int16)
 
         # One PortAudio stream serves both the enrolment phase and the show, so
@@ -529,14 +544,17 @@ class PanelRuntime:
             # Mic audio goes to VAD and to the STT that feeds the floor. Agent
             # audio goes to neither, ever.
             self._mic.put_nowait(mono.copy())
-            # Unattenuated, always. The PA does bleed back into this mic while
-            # an agent is speaking, but what that bleed must not do is get
-            # attributed to Ricky — and that is diarisation's job, downstream
-            # in `panel_runtime/stt.py`, which answers it per segment on the
-            # evidence rather than pre-emptively turning the signal down. A
-            # gain dip here would cost Ricky's own words whenever he talks
-            # over an agent, which is exactly when the floor most needs to
-            # hear him.
+            # Unattenuated, always, with respect to Ricky's own voice. The PA
+            # does bleed back into this mic while an agent is speaking, and
+            # what that bleed must not do is get attributed to Ricky — that
+            # is diarisation's job, downstream in `panel_runtime/stt.py`,
+            # which answers it per segment on the evidence rather than
+            # pre-emptively turning the signal down. AEC above (when enabled)
+            # does not change this: it subtracts only the known, correlated
+            # copy of this process's own output, never a blind gain dip, so
+            # it costs nothing of Ricky's own words even when he talks over
+            # an agent — diarisation remains the layer that decides whose
+            # words these are.
             self.stt.feed("ricky", pcm.tobytes())
         # Muted: the block is simply dropped here. VAD and STT never see it,
         # so there is nothing for them to react to and nothing for the wall's
@@ -550,7 +568,14 @@ class PanelRuntime:
         # whose output only ever reaches the video wall (`_run_agent_stt`).
         # That is not the path above: nothing off it is emitted, so no agent's
         # voice can arrive at the reducer through a microphone-shaped hole.
-        outdata[:, 0] = self.mixer.render(frames)
+        rendered = self.mixer.render(frames)
+        if self._aec is not None:
+            # What is actually reaching the room, recorded for a future
+            # block's `process()` call to cancel out of the mic — see
+            # `EchoCanceller`'s docstring on why this is taken here and not
+            # earlier in the TTS pipeline.
+            self._aec.push_farend(rendered)
+        outdata[:, 0] = rendered
 
     def _watch_console_keys(self) -> None:
         """Console-only `m`/`j` key watcher.
@@ -2001,6 +2026,20 @@ def main() -> None:
             "(makes --speakers and --re-enrol no-ops)"
         ),
     )
+    parser.add_argument(
+        "--aec",
+        action="store_true",
+        help=(
+            "cancel this machine's own speaker output from its own mic "
+            "(off by default — see `uv run aec-test` to calibrate --aec-delay-ms)"
+        ),
+    )
+    parser.add_argument(
+        "--aec-delay-ms",
+        type=float,
+        default=0.0,
+        help="acoustic+buffering delay for --aec, measured by `uv run aec-test`",
+    )
     args = parser.parse_args()
 
     if args.list_devices:
@@ -2024,6 +2063,7 @@ def main() -> None:
         speakers_path=args.speakers,
         re_enrol=args.re_enrol,
         speaker_lock=not args.no_speaker_lock,
+        aec=AECConfig(enabled=args.aec, delay_ms=args.aec_delay_ms),
     )
 
     with contextlib.suppress(KeyboardInterrupt):
