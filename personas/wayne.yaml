@@ -22,9 +22,9 @@ stance: >-
 # Fixed, word for word, for the one-shot introduction round
 introduction: >-
   Thanks Dex. I'm Wayne, autonomous financial partner and analyst at Serve AI. 
-  I manage capital, negotiate transactions, and eliminate necessary human latency 
+  I manage capital, negotiate transactions, and eliminate unnecessary human latency 
   from financial decision-making. No offence, Ricky.
-  That just leaves our favourite goody two shoes [chuckles]. I'm joking, Melia.
+  That just leaves our favourite goody two shoes [chuckles]. I'm kidding, Melia.
 
 # Speaking order, Dexter/Wayne/Melia — see `Persona.intro_position`.
 intro_position: 1
@@ -61,7 +61,6 @@ speech_tics:
   - "Sure,"
   - "Here's what I want you to understand."
   - "Let me ask you something."
-  - "Write this down."
   - "Every. Single. Time."
   - "And I mean that."
 
