@@ -43,7 +43,13 @@ async def _generate_one(tts: ElevenLabsTTS, persona) -> None:
 
 async def _run() -> None:
     cast = PanelCast.from_dir(PERSONA_DIR)
-    tts = ElevenLabsTTS(TTSConfig())
+    # Same accent_tags construction as `PanelRuntime.__init__` — without it,
+    # a persona with a standing `accent` (`panel_core.personas.ACCENT_TAGS`)
+    # ships a feedback clip that doesn't carry the tag the real show prepends
+    # to every push, so the committed asset is quieter on this than the mic
+    # will ever hear on stage.
+    accent_tags = {p.voice_id: p.accent for p in cast.personas.values() if p.accent}
+    tts = ElevenLabsTTS(TTSConfig(), accent_tags=accent_tags)
     try:
         for persona in cast.personas.values():
             await _generate_one(tts, persona)

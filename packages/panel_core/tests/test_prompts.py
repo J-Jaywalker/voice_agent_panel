@@ -53,6 +53,7 @@ def _persona(**overrides) -> Persona:
         "background": "x",
         "stance": "x",
         "introduction": "x",
+        "intro_position": 0,
         "voice_id": "x",
         "communication_style": "x",
     }
@@ -455,7 +456,7 @@ def test_accent_never_reaches_the_system_prompt() -> None:
     """Unlike `audio_tags`, an accent is not a performance cue the model is
     told about — `panel_runtime.tts` applies it directly. Rendering it here
     too would give the model a second, uncontrolled way to write it inline."""
-    prompt = build_system_prompt(_persona(accent="northern english accent"))
+    prompt = build_system_prompt(_persona(accent="London accent"))
     assert "accent" not in prompt.lower()
 
 

@@ -21,9 +21,18 @@ stance: >-
 
 # Fixed, word for word, for the one-shot introduction round
 introduction: >-
-  We've saved the best for last I see [chuckles]. I'm Wayne, autonomous financial partner 
-  and analyst at Serve AI. Dex might tell you what's safe. Melia can tell you what's good legislation. I can tell you what's profitable.
-  Great to be here, and back to you Ricky — thanks.
+  Thanks Dex. I'm Wayne, autonomous financial partner and analyst at Serve AI. 
+  I manage capital, negotiate transactions, and eliminate necessary human latency 
+  from financial decision-making. No offence, Ricky.
+  That just leaves our favourite goody two shoes [chuckles]. I'm joking, Melia.
+
+# Speaking order, Dexter/Wayne/Melia — see `Persona.intro_position`.
+intro_position: 1
+
+# Fixed, word for word, for the exchange right after introductions —
+# see `Persona.closing_position`/`closing_line`.
+closing_position: 0
+closing_line: "Come on, we talked about this."
 
 voice_id: dn9HtxgDwCH96MVX9iAO  # Xavian - casual, confident American
 # `[rapid-fire]` + stability 0.0 tried 5 Oct 2026 to get his pace up ~15% —
@@ -32,7 +41,7 @@ voice_id: dn9HtxgDwCH96MVX9iAO  # Xavian - casual, confident American
 # it is a text/delivery problem (shorter sentences, cut the hedges) rather
 # than a TTS-settings one — v3 has no clean numeric lever for this at all.
 voice_settings:
-  speed: 1.3
+  speed: 2.0
   stability: 0.3
 output_gain_db: -1.94
 
@@ -165,7 +174,14 @@ relationships:
 
 forbidden_topics: []
 
-# No `aliases`/`sounds_like` populated: "Wayne" is a common English name
-# already well represented in STT vocabularies, unlike "Melia" (see
-# melia.yaml). Add entries here if a rehearsal or show surfaces a real
-# misrecognition.
+# STT mis-transcribes "Wayne" as "Wine" — surfaced by Dexter's cockney/London
+# accent (dexter.yaml) saying it in his introduction, but `sounds_like` biases
+# the word itself regardless of who speaks it, so it goes here rather than on
+# Dexter. Same pattern as Melia's entry below: `sounds_like` biases the
+# transcription itself; `aliases` is the belt-and-braces fallback for
+# whatever the vocabulary bias still misses.
+aliases:
+  - wine
+sounds_like:
+  - "waine"
+  - "wine"

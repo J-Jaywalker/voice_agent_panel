@@ -1600,15 +1600,32 @@ def test_introduction_trigger_does_not_false_positive(fc, state, text):
     assert state.intro_queue is None
 
 
+def _intro_order(fc: FloorController) -> list[str]:
+    """`Persona.intro_position` order — Dexter, Wayne, Melia — independent of
+    `fc.cast.ids()` (alphabetical, shared with the video wall's lane order)."""
+    return sorted(fc.cast.ids(), key=lambda a: fc.cast[a].intro_position)
+
+
+def _closing_order(fc: FloorController) -> list[str]:
+    """`Persona.closing_position` order — Wayne, Melia, Dexter."""
+    return sorted(
+        (a for a in fc.cast.ids() if fc.cast[a].closing_position is not None),
+        key=lambda a: fc.cast[a].closing_position,
+    )
+
+
 def _run_introduction_round(
     fc: FloorController, state: PanelState, *, start_t: float = 0.0
 ) -> tuple[PanelState, list[tuple[str, str]]]:
-    """Drive a whole introduction round the way the runtime now does: no
+    """Drive the whole fixed opening the way the runtime now does: no
     `AgentProposal`, ever. The floor grants each fixed line itself the moment
     the phrase is detected and again every time one agent finishes, so the
     only events a caller needs to supply are the ones confirming that audio
-    actually started and stopped. Returns the final state and the
-    ``(agent, utterance)`` pairs in the order they were granted.
+    actually started and stopped. Runs straight through the introduction
+    round *and* the fixed exchange that follows it (`_start_closing`) — they
+    are one continuous one-shot sequence now, not two. Returns the final
+    state and the ``(agent, utterance)`` pairs in the order they were
+    granted.
     """
     state, cmds = fc.reduce(state, _introduce(start_t))
     order: list[tuple[str, str]] = []
@@ -1637,7 +1654,7 @@ def test_introduction_phrase_immediately_grants_the_first_agent(fc, state):
     state, cmds = fc.reduce(state, _introduce(0.0))
     starts = [c for c in cmds if isinstance(c, StartSpeech)]
     assert len(starts) == 1
-    first = next(iter(fc.cast.ids()))
+    first = _intro_order(fc)[0]
     assert starts[0].agent == first
     assert starts[0].utterance == fc.cast[first].introduction
     assert not [c for c in cmds if isinstance(c, RequestProposals)], (
@@ -1646,22 +1663,43 @@ def test_introduction_phrase_immediately_grants_the_first_agent(fc, state):
 
 
 def test_every_agent_gets_exactly_one_introduction_turn(fc, state):
-    """All three must speak, with no repeats, and the round latches shut."""
+    """All three must speak in the introduction round proper, with no
+    repeats there, before the fixed exchange that follows it starts; the
+    whole sequence latches shut only once both have run."""
     state, order = _run_introduction_round(fc, state)
-    spoken = [agent for agent, _ in order]
+    intro_spoken = [agent for agent, _ in order[: len(fc.cast.ids())]]
 
-    assert set(spoken) == set(fc.cast.ids())
-    assert len(spoken) == len(set(spoken)), "no repeats"
+    assert set(intro_spoken) == set(fc.cast.ids())
+    assert len(intro_spoken) == len(set(intro_spoken)), "no repeats in the introductions"
     assert state.invitation is None
     assert state.intro_done is True
 
 
-def test_introduction_round_speaks_each_persona_fixed_text_in_cast_order(fc, state):
-    """Order is the cast's own order, not a score — and every word spoken is
-    `Persona.introduction`, verbatim, never anything a model produced."""
+def test_introduction_round_speaks_each_persona_fixed_text_in_intro_order(fc, state):
+    """Order is `Persona.intro_position` (Dexter, Wayne, Melia), not a score
+    and not the cast's own (alphabetical) order — and every word spoken in
+    this phase is `Persona.introduction`, verbatim, never anything a model
+    produced."""
     state, order = _run_introduction_round(fc, state)
-    assert [agent for agent, _ in order] == list(fc.cast.ids())
-    assert dict(order) == {a: fc.cast[a].introduction for a in fc.cast.ids()}
+    intro_order = _intro_order(fc)
+    intro_turns = order[: len(intro_order)]
+    assert [agent for agent, _ in intro_turns] == intro_order
+    assert dict(intro_turns) == {a: fc.cast[a].introduction for a in intro_order}
+
+
+def test_closing_exchange_runs_immediately_after_introductions(fc, state):
+    """The fixed "We discussed this." / "Repeatedly." / "[sighs] here we go
+    again." exchange is scripted the same way as the introductions and runs
+    straight on from them, in `Persona.closing_position` order, with no
+    `AgentProposal` involved."""
+    state, order = _run_introduction_round(fc, state)
+    closing_order = _closing_order(fc)
+    closing_turns = order[len(_intro_order(fc)) :]
+    assert [agent for agent, _ in closing_turns] == closing_order
+    assert dict(closing_turns) == {a: fc.cast[a].closing_line for a in closing_order}
+    assert state.intro_done is True
+    assert state.closing_queue is None
+    assert state.invitation is None
 
 
 def test_introductions_cannot_be_retriggered_once_complete(fc, state):

@@ -48,6 +48,7 @@ def test_aliases_is_the_name_the_id_and_whatever_the_yaml_declares() -> None:
         background="x",
         stance="x",
         introduction="x",
+        intro_position=0,
         voice_id="x",
         communication_style="x",
         aliases=["amelia"],
@@ -77,6 +78,7 @@ def test_extra_aliases_defaults_to_empty() -> None:
         background="x",
         stance="x",
         introduction="x",
+        intro_position=0,
         voice_id="x",
         communication_style="x",
     )

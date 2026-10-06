@@ -163,18 +163,20 @@ def test_melia_and_wayne_still_land_on_the_old_flattened_preset() -> None:
     did not reach the wire. Dexter has since been re-authored straight to 0.0
     (`personas/dexter.yaml`) for his accent tag's sake — Natural measurably
     suppresses tag responsiveness next to Creative. The same was tried for
-    Melia's accent and Wayne's pace and both were reverted 5 Oct 2026 (see
-    `personas/melia.yaml`, `personas/wayne.yaml`), so they are the two
-    personas this still describes.
+    Melia's accent and Wayne's pace and both were reverted 5 Oct 2026; Melia's
+    accent was re-added 6 Oct 2026 with stability dropped again (see
+    `personas/melia.yaml`), so Wayne is now the only persona this still
+    describes — Melia's raw 0.62 still lands on 0.5 here, it just isn't what
+    the cast authors any more.
     """
     assert _preset_stability(0.62) == 0.5
     assert _preset_stability(0.35) == 0.5
 
 
 def test_the_real_casts_stability_matches_what_each_persona_needs() -> None:
-    """Dexter alone is authored for his accent tag's responsiveness (0.0,
-    Creative); Melia and Wayne carry no standing tag and are back to their
-    originally-authored values."""
+    """Dexter and Melia are both authored for their accent tag's
+    responsiveness (0.0, Creative); Wayne carries no standing tag and is
+    back to his originally-authored value."""
     from pathlib import Path
 
     from panel_core import PanelCast
@@ -182,7 +184,7 @@ def test_the_real_casts_stability_matches_what_each_persona_needs() -> None:
     cast = PanelCast.from_dir(Path(__file__).resolve().parents[3] / "personas")
     assert cast["dex"].voice_settings["stability"] == 0.0
     assert cast["wayne"].voice_settings["stability"] == 0.3
-    assert cast["melia"].voice_settings["stability"] == 0.62
+    assert cast["melia"].voice_settings["stability"] == 0.0
 
 
 def test_voice_settings_carries_stability_and_nothing_else() -> None:
@@ -402,7 +404,7 @@ def test_accent_is_reapplied_on_the_next_turn(server: _FakeEndpoint) -> None:
     the bookkeeping is per `context_id`, not a one-time latch on the voice."""
 
     async def body() -> list[str]:
-        engine = ElevenLabsTTS(accent_tags={VOICE: "northern english accent"})
+        engine = ElevenLabsTTS(accent_tags={VOICE: "London accent"})
         first = await engine.synthesise("First turn.", voice_id=VOICE)
         async for _chunk in first.chunks():
             pass
@@ -413,8 +415,8 @@ def test_accent_is_reapplied_on_the_next_turn(server: _FakeEndpoint) -> None:
         return [m["inputs"][0]["text"] for m in server.sent if m.get("inputs")]
 
     texts = asyncio.run(body())
-    assert texts[0].startswith("[northern english accent] First turn")
-    assert texts[1].startswith("[northern english accent] Second turn")
+    assert texts[0].startswith("[London accent] First turn")
+    assert texts[1].startswith("[London accent] Second turn")
 
 
 def test_a_voice_with_no_accent_tag_is_unaffected(server: _FakeEndpoint) -> None:

@@ -41,7 +41,8 @@ AUDIO_TAGS: frozenset[str] = frozenset(
         "exhales",
         "dryly",
         "clears throat",
-        "northern english accent",
+        "London accent",
+        "irish accent",
     }
 )
 
@@ -55,9 +56,13 @@ AUDIO_TAGS: frozenset[str] = frozenset(
 # `stability` separately collapsed onto the same 0.5 preset (`_preset_stability`,
 # same module) — between the two, Dexter's Northern accent read as flattened
 # towards the model's generic defaults. (Melia's `strong irish accent` was
-# tried the same way and dropped 5 Oct 2026 — the tag did not move this
-# particular voice; see `personas/melia.yaml`. A `pace` field and `[rapid-fire]`
-# tag were tried the same way for Wayne the same day, to compensate for v3
+# tried the same way at stability 0.0 Creative and dropped 5 Oct 2026 — the
+# tag did not move this particular voice. Re-added 6 Oct 2026 as plain
+# "irish accent", same stability; untested on the real voice since the
+# phrasing change — if it still doesn't move, recasting `voice_id` to a voice
+# already labelled Irish is the more likely fix than more tag or stability
+# tuning, see `personas/melia.yaml`. A `pace` field and `[rapid-fire]` tag
+# were tried the same way for Wayne the same day, to compensate for v3
 # dropping `speed` entirely — measured as working, ~15% shorter audio for the
 # same text, but it read as shouting rather than brisk and was reverted; see
 # `personas/wayne.yaml`.)
@@ -74,7 +79,7 @@ AUDIO_TAGS: frozenset[str] = frozenset(
 # fixed rather than generated: the failure mode of leaving it to the model is
 # a turn where it quietly does not show up, and there is no way to notice
 # that without listening to the whole show.
-ACCENT_TAGS: frozenset[str] = frozenset({"northern english accent"})
+ACCENT_TAGS: frozenset[str] = frozenset({"London accent", "irish accent"})
 
 
 class Persona(BaseModel):
@@ -140,6 +145,29 @@ class Persona(BaseModel):
     introduction: str = Field(
         min_length=1,
         description="Fixed, verbatim text for the introduction round. Never sent to a model.",
+    )
+
+    # This agent's position in the introduction round — deliberately its own
+    # number, not `PanelCast`'s own (alphabetical-by-filename) order. That
+    # directory order is shared with the video wall's lane order
+    # (`panel_display.wall.WallState.for_cast`), and reordering the intro
+    # script must not drag the wall's lanes along with it. Lower speaks
+    # first. See `FloorController._start_introductions`.
+    intro_position: int = Field(description="0-based speaking position in the introduction round.")
+
+    # --- fixed closing exchange ---
+    # A second one-shot fixed round, scripted the same way as `introduction`
+    # above and run immediately after it (`FloorController._start_closing`):
+    # "We discussed this." / "Repeatedly." / "[sighs] here we go again." —
+    # its own beat, not a continuation of who-spoke-when, so it gets its own
+    # order rather than reusing `intro_position`. `closing_position=None`
+    # means this persona has no line in the exchange and is skipped.
+    closing_position: int | None = Field(
+        default=None, description="0-based position in the fixed post-introduction exchange."
+    )
+    closing_line: str = Field(
+        default="",
+        description="Fixed, verbatim text for the post-introduction exchange. Never sent to a model.",
     )
 
     # --- voice ---
@@ -284,6 +312,29 @@ class Persona(BaseModel):
         return list(aliases)
 
 
+def _validate_fixed_round_ordering(personas: dict[str, Persona]) -> None:
+    """Catch a mis-authored cast loudly rather than at the one moment on
+    stage the two fixed rounds run.
+
+    `intro_position` and `closing_position` are hand-maintained per persona
+    file rather than derived, so nothing stops two files claiming the same
+    slot or a `closing_line` going unscripted — both would otherwise surface
+    only as `_start_introductions`/`_start_closing` silently collapsing two
+    agents onto one position, or an agent granted an empty line.
+    """
+    intro_positions = [p.intro_position for p in personas.values()]
+    if len(set(intro_positions)) != len(intro_positions):
+        raise ValueError(f"duplicate intro_position across cast: {sorted(intro_positions)}")
+    closing_positions = [p.closing_position for p in personas.values() if p.closing_position is not None]
+    if len(set(closing_positions)) != len(closing_positions):
+        raise ValueError(f"duplicate closing_position across cast: {sorted(closing_positions)}")
+    for persona in personas.values():
+        if (persona.closing_position is None) != (not persona.closing_line):
+            raise ValueError(
+                f"{persona.id}: closing_position and closing_line must be set together"
+            )
+
+
 class PanelCast(BaseModel):
     personas: dict[str, Persona]
 
@@ -302,6 +353,7 @@ class PanelCast(BaseModel):
             personas[persona.id] = persona
         if not personas:
             raise ValueError(f"no persona YAML files found in {directory}")
+        _validate_fixed_round_ordering(personas)
         return cls(personas=personas)
 
     def ids(self) -> tuple[str, ...]:

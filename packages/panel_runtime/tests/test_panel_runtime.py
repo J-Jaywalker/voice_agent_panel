@@ -183,9 +183,12 @@ def test_introduction_round_completes_with_no_further_human_input(runtime: Panel
 
     assert runtime.state.intro_done
     assert runtime.state.intro_queue is None
+    assert runtime.state.closing_queue is None
     spoken = [u.speaker for u in runtime.state.transcript if u.speaker != HUMAN]
     assert set(spoken) == set(runtime.cast.ids())
-    assert len(spoken) == len(runtime.cast.ids()), "each agent must speak exactly once"
+    # Each agent speaks once in the introduction round proper, then once more
+    # in the fixed exchange that follows it (`FloorController._start_closing`).
+    assert len(spoken) == 2 * len(runtime.cast.ids())
 
 
 def test_introduction_round_never_grants_two_agents_at_once(runtime: PanelRuntime):

@@ -585,8 +585,10 @@ class FloorController:
             address_conflict=(),
             # An incomplete introduction round is abandoned, not spent — it
             # has not "been done", so the safety latch does not engage and
-            # the phrase can be said again to restart it cleanly.
+            # the phrase can be said again to restart it cleanly. Same for
+            # the fixed exchange that follows it.
             intro_queue=None,
+            closing_queue=None,
         )
         commands.append(self._paint(state))
         return state, commands
@@ -684,7 +686,12 @@ class FloorController:
         # fires on "intro" anywhere in the sentence, which is exactly the
         # over-trigger the classifier is there to replace.
         if event.speaker == HUMAN and event.is_final and not self.config.llm_address_detection:
-            if not state.intro_done and state.intro_queue is None and _INTRODUCTION_RE.search(text):
+            if (
+                not state.intro_done
+                and state.intro_queue is None
+                and state.closing_queue is None
+                and _INTRODUCTION_RE.search(text)
+            ):
                 state, intro_cmds = self._start_introductions(state, t=event.t)
                 commands.extend(intro_cmds)
             else:
@@ -699,13 +706,15 @@ class FloorController:
         # ask, or a turn that lands inside the debounce window gets no
         # candidates at all and the panel falls silent.
         #
-        # None of this applies while an introduction round is live. Every
-        # line in that round is `Persona.introduction` — fixed at authoring
-        # time, never generated — so a speculative candidate would be work
-        # nobody ever reads: exactly the model round trip (4-6s per agent)
-        # that produced a silent agent on stage and that fixed text exists to
-        # remove. See `_start_introductions` and `_grant_introduction`.
-        if state.intro_queue is None:
+        # None of this applies while the introduction round or the fixed
+        # exchange that follows it is live. Every line in either is fixed at
+        # authoring time — `Persona.introduction` or `Persona.closing_line`,
+        # never generated — so a speculative candidate would be work nobody
+        # ever reads: exactly the model round trip (4-6s per agent) that
+        # produced a silent agent on stage and that fixed text exists to
+        # remove. See `_start_introductions`, `_start_closing` and
+        # `_grant_introduction`/`_grant_closing`.
+        if state.intro_queue is None and state.closing_queue is None:
             due = (
                 event.t - state.last_proposal_request_t >= self.config.speculation_interval_s
                 # Finals land on pauses, not on complete thoughts, so a turn's
@@ -833,7 +842,11 @@ class FloorController:
             # The same one-shot latch the regex path checks, and it belongs
             # here rather than in the runtime: `intro_done` never resets, and
             # only the reducer knows whether a round is already live.
-            if state.intro_done or state.intro_queue is not None:
+            if (
+                state.intro_done
+                or state.intro_queue is not None
+                or state.closing_queue is not None
+            ):
                 return state, []
             return self._start_introductions(state, t=event.t)
 
@@ -1187,7 +1200,7 @@ class FloorController:
         running = f"{state.agent_partial} {text}".strip() if state.agent_partial else text
         state = replace(state, agent_partial=running)
 
-        if state.intro_queue is not None:
+        if state.intro_queue is not None or state.closing_queue is not None:
             # Fixed text, never generated, and the round grants the next line
             # itself — a speculative candidate here is work nobody reads. The
             # same carve-out as the human path.
@@ -1316,6 +1329,7 @@ class FloorController:
             # one-shot latch stays open and the phrase can restart it cleanly.
             # Same reasoning as `_commit_human_interrupt`.
             intro_queue=None,
+            closing_queue=None,
         )
         state = state.not_awaiting()
         return state, [
@@ -1444,16 +1458,24 @@ class FloorController:
         if state.intro_queue is not None and event.agent in state.intro_queue:
             # Pop the agent who just finished and hand the round straight to
             # `_advance_introductions`, which either grants the next fixed
-            # line directly or, if nobody is left, latches the round shut.
-            # There is no `RequestProposals` here any more: the old version
-            # of this branch asked the model for the *next* agent's line on
-            # every turn, which is the 4-6s round trip fixed text exists to
-            # remove, and it is also the reason the round used to be able to
-            # stall — nothing else was left to re-drive arbitration once a
-            # proposal never arrived.
+            # line directly or, if nobody is left, starts the fixed exchange
+            # that follows (`_start_closing`). There is no `RequestProposals`
+            # here any more: the old version of this branch asked the model
+            # for the *next* agent's line on every turn, which is the 4-6s
+            # round trip fixed text exists to remove, and it is also the
+            # reason the round used to be able to stall — nothing else was
+            # left to re-drive arbitration once a proposal never arrived.
             remaining = tuple(a for a in state.intro_queue if a != event.agent)
             state = replace(state, intro_queue=remaining)
             state, advance_cmds = self._advance_introductions(state, now=event.t)
+            commands.extend(advance_cmds)
+            return state, commands
+
+        if state.closing_queue is not None and event.agent in state.closing_queue:
+            # Same mechanism, one step later: see `_advance_closing`.
+            remaining = tuple(a for a in state.closing_queue if a != event.agent)
+            state = replace(state, closing_queue=remaining)
+            state, advance_cmds = self._advance_closing(state, now=event.t)
             commands.extend(advance_cmds)
             return state, commands
 
@@ -1578,6 +1600,7 @@ class FloorController:
                     pending_invite=None,
                     address_conflict=(),
                     intro_queue=None,  # abandoned, not spent — safe to retry later
+                    closing_queue=None,
                 )
                 return state, commands + [self._paint(state)]
 
@@ -1622,6 +1645,7 @@ class FloorController:
                     pending_invite=None,
                     address_conflict=(),
                     intro_queue=None,  # abandoned, not spent — safe to retry later
+                    closing_queue=None,
                 )
                 return state, cmds + [self._paint(state)]
 
@@ -1648,7 +1672,13 @@ class FloorController:
                 return state, [self._paint(state)]
 
             case OperatorAction.CLOSE_FLOOR:
-                state = replace(state, invitation=None, intro_queue=None, address_conflict=())
+                state = replace(
+                    state,
+                    invitation=None,
+                    intro_queue=None,
+                    closing_queue=None,
+                    address_conflict=(),
+                )
                 return state, [self._paint(state)]
 
             case OperatorAction.ADVANCE_BEAT:
@@ -1839,9 +1869,10 @@ class FloorController:
         """
         if not self.config.agent_invitations:
             return state, []
-        if state.intro_queue is not None:
-            # The introduction round paces itself off fixed text and owns the
-            # floor until it is done. Nothing may cut across it.
+        if state.intro_queue is not None or state.closing_queue is not None:
+            # The introduction round, and the fixed exchange that follows it,
+            # pace themselves off fixed text and own the floor until done.
+            # Nothing may cut across either.
             return state, []
         if state.consecutive_agent_turns >= self.config.max_consecutive_agent_turns:
             return state, []
@@ -2299,21 +2330,22 @@ class FloorController:
         time, never generated — so there are no candidate proposals for
         scoring to choose between, and this guarantees every agent a turn
         directly rather than by scoring the strongest case each time: order
-        is `tuple(state.agents.keys())`, which is the cast's own order
-        (`PanelCast.from_dir`'s alphabetical directory listing, carried
-        through unchanged by `PanelState.for_agents`), fixed and identical on
-        every run — alphabetical happens to give Dexter, Melia, Wayne, which
-        is also the order each `Persona.introduction` is written to assume
-        ("I'll go first" / "I suppose I can go next" / "We've saved the best for
-        last"). A fixed opening that ran in a different order each rehearsal
-        would only be half of what "fixed" was for, and here it would also
-        make the text lie about who just spoke.
+        is `Persona.intro_position`, authored to give Dexter, Wayne, Melia —
+        deliberately not `tuple(state.agents.keys())` (`PanelCast.from_dir`'s
+        alphabetical directory order), which is shared with the video wall's
+        lane order and must not move just because the intro script does. The
+        order is also what each `Persona.introduction` is written to assume
+        ("I'll go first" / "Thanks Dex" / ...). A fixed opening that ran in a
+        different order each rehearsal would only be half of what "fixed" was
+        for, and here it would also make the text lie about who just spoke.
 
         Callers must already have checked `intro_done`: this is the one-shot
         round, and there is no event that resets `intro_done` once it
         latches.
         """
-        agents = tuple(state.agents.keys())
+        agents = tuple(
+            sorted(state.agents.keys(), key=lambda a: self.cast[a].intro_position)
+        )
         state = replace(
             state,
             invitation=Invitation(
@@ -2332,7 +2364,8 @@ class FloorController:
     def _advance_introductions(
         self, state: PanelState, *, now: float
     ) -> tuple[PanelState, list[Command]]:
-        """Grant the next fixed introduction turn, or close the round out.
+        """Grant the next fixed introduction turn, or start the fixed
+        exchange that follows the round.
 
         This *is* the introduction round's entire arbitration. There is
         nothing to score because there is nothing to generate — every line is
@@ -2354,13 +2387,13 @@ class FloorController:
                 # standing rather than quietly marked done. `expires_at`
                 # exempts this source from the TTL for exactly this reason.
                 return state, [CueModerator(reason=CueReason.NO_PROPOSALS), self._paint(state)]
-            # Everyone has introduced themselves. Latch it shut — permanently,
-            # by design — and hand back to the moderator.
-            state = replace(state, intro_queue=None, intro_done=True, invitation=None)
-            return state, [
-                CueModerator(reason=CueReason.INTRODUCTIONS_COMPLETE),
-                self._paint(state),
-            ]
+            # Everyone has introduced themselves. `intro_done` does not latch
+            # yet — the fixed exchange that follows the round
+            # ("We discussed this." / "Repeatedly." / "[sighs] here we go
+            # again.") is scripted the same way and runs immediately rather
+            # than waiting on Ricky to ask for it. See `_start_closing`.
+            state = replace(state, intro_queue=None)
+            return self._start_closing(state, t=now)
         return self._grant_introduction(state, winner, now=now)
 
     def _next_introduction(self, state: PanelState) -> str | None:
@@ -2424,6 +2457,104 @@ class FloorController:
                 utterance=sanitise(persona.introduction),
                 turn_id=state.turn_id,
                 lead_in_s=_INTRO_OPENING_PAUSE_S if first else _INTRO_BEAT_PAUSE_S,
+            )
+        ]
+
+    def _start_closing(
+        self, state: PanelState, *, t: float
+    ) -> tuple[PanelState, list[Command]]:
+        """Start the fixed exchange that runs immediately after the
+        introduction round — "We discussed this." / "Repeatedly." / "[sighs]
+        here we go again."
+
+        Same mechanism as `_start_introductions`: every line is
+        `Persona.closing_line`, fixed at authoring time, never generated, so
+        there is nothing to score. Ordered by `Persona.closing_position`
+        rather than `intro_position` — this is its own beat, not a
+        continuation of who-spoke-when-in-the-introductions. A persona with
+        `closing_position=None` has no line and is skipped, not granted
+        silence.
+
+        `state.invitation` is left exactly as the introduction round set it:
+        still `InvitationSource.INTRODUCTION`, still being spent one grant at
+        a time by `_grant_closing` below. The two rounds are one continuous
+        "the floor does not go back to Ricky yet" unit, not two invitations
+        back to back.
+        """
+        ordered = tuple(
+            sorted(
+                (a for a in state.agents if self.cast[a].closing_position is not None),
+                key=lambda a: self.cast[a].closing_position,
+            )
+        )
+        state = replace(state, closing_queue=ordered)
+        return self._advance_closing(state, now=t)
+
+    def _advance_closing(
+        self, state: PanelState, *, now: float
+    ) -> tuple[PanelState, list[Command]]:
+        """Grant the next fixed closing line, or latch the whole opening
+        sequence shut.
+
+        Mirrors `_advance_introductions` one beat later: this is what finally
+        sets `intro_done`, because the one-shot round it guards is
+        "introductions, then the fixed exchange that follows them" as one
+        unit, not two independently retriggerable ones.
+        """
+        winner = self._next_closing(state)
+        if winner is None:
+            if state.closing_queue:
+                # Same stall as `_advance_introductions`: every agent still
+                # owed a line is muted, so the round waits rather than
+                # finishing itself silently.
+                return state, [CueModerator(reason=CueReason.NO_PROPOSALS), self._paint(state)]
+            # The whole opening sequence is done. Latch it shut —
+            # permanently, by design — and hand back to the moderator.
+            state = replace(state, closing_queue=None, intro_done=True, invitation=None)
+            return state, [
+                CueModerator(reason=CueReason.INTRODUCTIONS_COMPLETE),
+                self._paint(state),
+            ]
+        return self._grant_closing(state, winner, now=now)
+
+    def _next_closing(self, state: PanelState) -> str | None:
+        """The next agent still owed a closing line, skipping anyone muted.
+
+        Same reasoning as `_next_introduction`: a mute is an absolute veto
+        everywhere else in this file, and fixed text with no proposal to drop
+        must not become the one path that quietly overrides it.
+        """
+        for agent_id in state.closing_queue or ():
+            if not state.agents[agent_id].muted:
+                return agent_id
+        return None
+
+    def _grant_closing(
+        self, state: PanelState, agent_id: str, *, now: float
+    ) -> tuple[PanelState, list[Command]]:
+        """Grant one line in the fixed exchange that follows introductions.
+
+        Same shape as `_grant_introduction` — no `Proposal` behind it, fixed
+        text straight from `Persona.closing_line`, through `sanitise()` like
+        everything else that reaches TTS. Never the first line of the whole
+        sequence, so there is no `_INTRO_OPENING_PAUSE_S` case here.
+        """
+        persona = self.cast[agent_id]
+        state = replace(
+            state,
+            turn_id=state.turn_id + 1,
+            consecutive_agent_turns=state.consecutive_agent_turns + 1,
+            invitation=state.invitation.spent(t=now) if state.invitation else None,
+            address_conflict=(),
+            turn_input_t=None,
+            pending_invite=None,
+        )
+        return state, [
+            StartSpeech(
+                agent=agent_id,
+                utterance=sanitise(persona.closing_line),
+                turn_id=state.turn_id,
+                lead_in_s=_INTRO_BEAT_PAUSE_S,
             )
         ]
 
@@ -2545,6 +2676,7 @@ class FloorController:
                 "consecutive_agent_turns": state.consecutive_agent_turns,
                 "killed": state.killed,
                 "intro_remaining": state.intro_queue,
+                "closing_remaining": state.closing_queue,
                 "intro_done": state.intro_done,
             },
         )

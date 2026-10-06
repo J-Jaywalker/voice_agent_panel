@@ -18,34 +18,30 @@ stance: >-
 
 # Fixed, word for word, for the one-shot introduction round — never sent to
 # a model, never generated live (see FloorController._grant_introduction).
-# Speaking order is fixed at cast (directory) order — Dexter, Melia, Wayne —
-# and this line leans on going second ("I suppose I can go next"). Reordering
-# the cast or renaming a persona file changes who speaks second without
-# touching this text, so any reorder must be carried into this string and
-# dexter.yaml/wayne.yaml by hand.
+# Speaking order is `Persona.intro_position`, not cast (directory) order —
+# Dexter, Wayne, Melia. This line doesn't lean on the position the way
+# Dexter's and Wayne's do, so a reorder here needs no change to the text.
 introduction: >-
-  Sure, thanks Dex. I suppose I can go next — I'm Melia, chief AI ethics and human
-  continuity officer at the Kestrel Foundation, where I audit deployments before we sign
-  off on them as safe. Thanks for having me.
+  Melia, chief AI ethics and human continuity officer at the Kestrel Foundation.
+  [dryly] My job is making sure systems like Wayne remember that competence and permission
+  are different things.
+
+# Speaking order, Dexter/Wayne/Melia — see `Persona.intro_position`.
+intro_position: 2
+
+# Fixed, word for word, for the exchange right after introductions —
+# see `Persona.closing_position`/`closing_line`.
+closing_position: 1
+closing_line: "Yes. Repeatedly."
 
 voice_id: DbwWo4rVEd5NrejHYUnm  # Jessica — dry, precise, Irish.
 # ~20% quieter (amplitude, not dB) next to Dexter's boosted trim — see
 # panel_runtime.mixer.Mixer's unity_db and dexter.yaml's output_gain_db.
 output_gain_db: -2.24
-# No `accent` (tried `strong irish accent` at stability 0.0 Creative, 5 Oct
-# 2026 — v3 rendered this voice as American regardless; director's call to
-# drop it rather than keep fighting a voice that resists the tag). If this is
-# revisited, recasting `voice_id` to a voice already labelled Irish is the
-# more likely fix than more tag or stability tuning — see `panel_runtime.tts`
-# module docstring.
-# Controlled, not flat. Stability well above the engine default (0.5) because
-# she never loses the line — the steadiness is where the terseness reads
-# from, not the pace. Speed stays a touch over 1.0: brisk, not slow — the
-# weight comes from stopping early, not from drawing anything out. Tune on
-# the target rig (CLAUDE.md § Deployment).
+accent: irish accent
 voice_settings:
-  speed: 1.12
-  stability: 0.62
+  speed: 1.4
+  stability: 0.5
 # The force is in the plainness, never in volume — she says the thing and
 # stops rather than landing a long dry observation.
 # Dry and flat, so the sound is the exhale rather than the laugh — [dryly]

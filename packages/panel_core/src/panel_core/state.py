@@ -407,6 +407,14 @@ class PanelState:
     intro_queue: tuple[str, ...] | None = None
     intro_done: bool = False
 
+    # Agents still owed a line in the fixed exchange that follows the
+    # introduction round ("We discussed this." / "Repeatedly." / "[sighs]
+    # here we go again."), or None if that round is not live. Same one-shot
+    # machinery as `intro_queue` — see `FloorController._start_closing` — kept
+    # as its own field because it only starts once `intro_queue` has fully
+    # drained, and `intro_done` does not latch until this has too.
+    closing_queue: tuple[str, ...] | None = None
+
     # ---------------------------------------------------------------- helpers
 
     @classmethod

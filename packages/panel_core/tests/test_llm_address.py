@@ -441,9 +441,17 @@ def test_an_intro_verdict_starts_the_round_exactly_once(llm, state):
     assert mid.intro_queue == state.intro_queue
 
     state, granted = _complete_round(llm, state, commands)
-    assert granted == list(state.agents), "every agent introduces itself, once"
+    intro_order = sorted(state.agents, key=lambda a: llm.cast[a].intro_position)
+    closing_order = sorted(
+        (a for a in state.agents if llm.cast[a].closing_position is not None),
+        key=lambda a: llm.cast[a].closing_position,
+    )
+    assert granted == intro_order + closing_order, (
+        "every agent introduces itself once, then the fixed exchange that follows runs"
+    )
     assert state.intro_done
     assert state.intro_queue is None
+    assert state.closing_queue is None
 
     # ...and the latch never reopens.
     after, after_cmds = llm.reduce(state, verdict(INTRO_VERDICT, t=99.0))

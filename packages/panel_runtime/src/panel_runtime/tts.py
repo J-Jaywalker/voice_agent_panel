@@ -61,7 +61,8 @@ violation with a 1008 close of the socket:
 
 **Accent is injected here, not written by the model** (migrated 5 Oct 2026,
 alongside the move to v3). `_VoiceChannel.push` prepends a persona's standing
-`[northern english accent]` tag to *every* push, not just a context's first:
+accent tag — e.g. `[London accent]`, `[irish accent]` — to *every*
+push, not just a context's first:
 this endpoint buffers and flushes roughly every 40 characters/8 words
 (above), each flush is its own generation, and a tag asserted only at the
 top of a turn was observed to drift back towards the voice's default within
@@ -145,8 +146,11 @@ def _preset_stability(value: float) -> float:
     pace (a `[rapid-fire]` tag, to compensate for v3 dropping `speed`
     entirely) and both were reverted 5 Oct 2026 — Melia's tag did not move
     the voice, and Wayne's measurably worked but read as shouting rather than
-    brisk. Both are back to their originally-authored values and are the two
-    personas this function's flattening still applies to.
+    brisk. Wayne is back to his originally-authored value and is the one
+    persona this function's flattening still applies to; Melia's accent was
+    re-added 6 Oct 2026 with stability dropped to 0.0 again — see
+    `personas/melia.yaml` for the trade-off and the fallback if it still
+    doesn't render.
     """
     return min(_V3_STABILITY_PRESETS, key=lambda preset: abs(preset - value))
 
