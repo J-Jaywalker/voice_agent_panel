@@ -2,7 +2,7 @@
 
 **Source:** [Boost Camp Oslo — AI Voice Panel Scoping](https://speechmatics.atlassian.net/wiki/spaces/~712020b3713ebb71814ed991afdd6d43fc1ac6/pages/6163628075/Boost+Camp+Oslo+-+AI+Voice+Panel+Scoping)
 **Revised:** 7 Sept 2026 · **Event:** 21 Oct 2026
-**Status:** `panel_core`, `panel_sim`, `panel_runtime` (STT, TTS, VAD, mixer, chunking, live `panel` pipeline) built and tested. Operator console and video wall not started.
+**Status:** `panel_core`, `panel_sim`, `panel_runtime` (STT, TTS, mixer, chunking, live `panel` pipeline) built and tested. Operator console and video wall not started.
 **Decisions:** `docs/adr/`.
 
 ---
@@ -29,23 +29,25 @@ Failure chain: agent TTS → PA → venue mic → Speechmatics → orchestrator 
 
 - **Agent speech never enters STT** — enforced structurally (`panel_runtime.stt`, `panel_runtime.panel`, CLAUDE.md invariant). Done.
 - **Pre-PA mic split** — venue fact, not code. Open, §9.
-- **PA bleed into Ricky's mic** — expect it. Close mic + calibrated VAD gate is the mitigation. `uv run barge-in` on open speakers demonstrates the failure live.
+- **PA bleed into Ricky's mic** — expect it. Close mic, AEC (`--aec`) and diarisation are the mitigations; the endpointing reflex itself is identity-blind and cannot be one. `uv run barge-in` on open speakers demonstrates the failure live.
 
-### 3.2 Barge-in — VAD, not transcription
+### 3.2 Barge-in — endpointing, not transcription
 
-Silero VAD for barge-in detection, Agent STT `EndOfTurn` for finalization to LLM.
+Agent STT `SpeechStarted` for barge-in detection, `EndOfTurn` for finalization to LLM. Still not a transcript — endpointing and transcription are different messages on the same socket, and the reflex never waits for words.
+
+Local Silero VAD did this until 6 Oct 2026. **Removed**, with `livekit-agents`/`livekit-plugins-silero` (ADR 0001 addendum). Two consequences, both accepted: a dropped socket now costs interruption as well as transcription, and onset-to-duck is **unmeasured** on this endpoint — Silero's 66.8ms does not transfer. `uv run barge-in` measures it; run on the venue rig, §9.
 
 ### 3.3 LiveKit as library — ADR 0001
 
 | Layer | Owner |
 |---|---|
-| VAD (Silero) | LiveKit, plugin only |
+| Endpointing (barge-in) | Agent STT `SpeechStarted`, same socket as the transcript |
 | Audio I/O, mixer | `sounddevice`/PortAudio, direct |
 | TTS + cancellation | ElevenLabs `multi-stream-input`, hand-rolled over raw `websockets` |
 | STT, one connection per mic | Agent STT (Speechmatics preview API), raw `websockets` |
 | Floor, human interrupts, turn caps | `panel_core` |
 
-No `AgentSession`, no cloud SFU, no `speechmatics-voice`. TTS ended up hand-rolled for the same reason STT did: cancellation latency must be our code's property, not a plugin's.
+No `AgentSession`, no cloud SFU, no `speechmatics-voice`, and since 6 Oct 2026 no LiveKit at all — the VAD plugin was the last of it. TTS ended up hand-rolled for the same reason STT did: cancellation latency must be our code's property, not a plugin's.
 
 STT client has moved again since the ADR: Agent STT has no multi-channel mode — each mic is its own connection.
 

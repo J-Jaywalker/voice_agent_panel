@@ -1,7 +1,7 @@
 [project]
 name = "panel-runtime"
 version = "0.1.0"
-description = "I/O adapters: STT, VAD, TTS, audio mixer. Everything panel_core refuses to do."
+description = "I/O adapters: STT, TTS, audio mixer. Everything panel_core refuses to do."
 requires-python = ">=3.12"
 dependencies = [
     "panel-core",
@@ -13,10 +13,6 @@ dependencies = [
     # Raw WS for TTS (cancellation semantics are the point, so we own them) and
     # for Speechmatics Agent STT, which has no SDK during preview.
     "websockets>=13.0",
-    # LiveKit as a library (VAD, TTS plugins) — not as a framework. ADR 0001.
-    # panel_core does not depend on panel_runtime, so core work never pays for this.
-    "livekit-agents>=1.7.1",
-    "livekit-plugins-silero>=1.7.1",
     "anthropic>=1.2",
     "rich>=13.7",
     "typesafe-sdk[http2]>=0.7",

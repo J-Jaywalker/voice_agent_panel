@@ -107,8 +107,9 @@ def test_aec_disabled_leaves_the_callback_unchanged(runtime: PanelRuntime, monke
     outdata = np.zeros((BLOCK, 1), dtype=np.float32)
     runtime._callback(indata, outdata, BLOCK, None, None)
     expected = (np.clip(indata[:, 0], -1.0, 1.0) * 32767).astype(np.int16).tobytes()
+    # One consumer, not two: the VAD queue this used to also assert on is gone
+    # with the local VAD (6 Oct 2026). STT is now the only sink in the callback.
     assert fed == [expected]
-    assert runtime._mic.get_nowait().tobytes() == indata[:, 0].copy().tobytes()
 
 
 def test_aec_enabled_cleans_the_fed_signal(monkeypatch):

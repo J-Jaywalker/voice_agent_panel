@@ -11,10 +11,10 @@ this writes replayable through modified floor logic afterwards.
 
 Shape of it:
 
-    mic ──┬─> Silero VAD ──> HumanSpeechStarted/Ended ─┐
-          │                                            ├─> FloorController ──> commands
-          └─> Agent STT ─────────> TranscriptUpdated ───┤        (pure)              │
-                                  TurnYielded ─────────┘                            │
+    mic ──> Agent STT ──┬──> HumanSpeechStarted/Ended ──┐
+                        │                               ├─> FloorController ─> commands
+                        ├──> TranscriptUpdated ─────────┤        (pure)             │
+                        └──> TurnYielded ───────────────┘                           │
                                                                                     v
         speakers <── Mixer <── TTS <── StartSpeech ·  DuckSpeech · StopSpeech · ResumeSpeech
                        │               ^
@@ -38,16 +38,19 @@ exactly one sink — `panel_display` — by `_run_agent_stt`, which never calls
 rehearsal log. It changes what the audience *reads*, never what the panel
 *knows*. Without `--display` it is not constructed and no socket is opened.
 
-**VAD owns stopping, STT owns understanding.** The barge-in reflex fires off
-Silero, never off a transcript. Transcripts only ever *refine* a decision the
-VAD already made.
+**Endpointing owns stopping, transcripts own understanding.** The barge-in
+reflex fires off Speechmatics' `SpeechStarted`, never off a transcript —
+`stt.py` turns it into `HumanSpeechStarted` without waiting for words.
+Transcripts only ever *refine* that decision. The local Silero VAD this used to
+run on is gone (6 Oct 2026, ADR 0001 addendum): one fewer dependency, and the
+reflex now shares the STT socket's fate, which is the accepted cost.
 
 One phase runs before any of that exists: **speaker enrolment**. `run()` opens
 the PortAudio stream, then awaits `_enrol()` to completion before creating a
 single floor task, so the show's first event cannot be a stranger's. Until
 enrolment finishes, `_callback` routes mic blocks to the enrolment session
-instead of to the VAD and the floor's transcription; afterwards it routes them
-back and never looks again. See `enrolment.py` for the two-session capture and
+instead of to the floor's transcription; afterwards it routes them back and
+never looks again. See `enrolment.py` for the two-session capture and
 verification, and `stt.py` for what the identifiers then buy per segment.
 `--no-speaker-lock` skips the phase outright and runs the mic ungated, which is
 the same mode a *failed* enrolment already falls back to.
@@ -59,7 +62,6 @@ import argparse
 import asyncio
 import contextlib
 import json
-import queue
 import re
 import sys
 import threading
@@ -71,9 +73,6 @@ from pathlib import Path
 
 import numpy as np
 import sounddevice as sd
-from livekit import rtc
-from livekit.agents import vad as lkvad
-from livekit.plugins import silero
 from panel_core import (
     HUMAN,
     AddressDetected,
@@ -87,8 +86,6 @@ from panel_core import (
     FloorConfig,
     FloorController,
     HandsRaised,
-    HumanSpeechEnded,
-    HumanSpeechStarted,
     OperatorAction,
     OperatorCommand,
     PanelCast,
@@ -119,7 +116,7 @@ from .brains import (
     SignalsReady,
     StreamingClaudeBrain,
 )
-from .config import VAD_SAMPLE_RATE, AECConfig, BargeInConfig
+from .config import PIPELINE_SAMPLE_RATE, AECConfig, BargeInConfig
 from .enrolment import (
     DEFAULT_STORE_PATH,
     EnrolledSpeaker,
@@ -315,7 +312,7 @@ class PanelRuntime:
         # upstream of both VAD and the floor's STT, never replacing
         # diarisation's job, only reducing what reaches it.
         aec_cfg = aec or AECConfig()
-        self._aec = EchoCanceller(aec_cfg, VAD_SAMPLE_RATE, block_size) if aec_cfg.enabled else None
+        self._aec = EchoCanceller(aec_cfg, PIPELINE_SAMPLE_RATE, block_size) if aec_cfg.enabled else None
         self.use_tts = use_tts
         self.log_path = log_path
 
@@ -374,7 +371,7 @@ class PanelRuntime:
         unity_db = {p.id: p.output_gain_db for p in cast.personas.values() if p.output_gain_db}
         self.mixer = Mixer(
             cast.ids(),
-            VAD_SAMPLE_RATE,
+            PIPELINE_SAMPLE_RATE,
             unity_db=unity_db,
             # The tap is taken at `Mixer.render`, not where chunks arrive from
             # ElevenLabs, and that is the entire point of this change. TTS
@@ -434,7 +431,6 @@ class PanelRuntime:
         self._muted = False
 
         self.events: asyncio.Queue = asyncio.Queue()
-        self._mic: queue.Queue = queue.Queue()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._speaking_task: asyncio.Task | None = None
         self._speaking_turn = None
@@ -533,17 +529,17 @@ class PanelRuntime:
         # function in the file, and the two consumers are mutually exclusive in
         # time rather than concurrent, so there is nothing to fan out to.
         #
-        # During enrolment the VAD queue and the floor's transcription are not
-        # merely idle, they do not exist yet — no task is draining `self._mic`
-        # (it is unbounded) and `self.stt` has not been started. Feeding them
-        # here would grow a queue nobody reads.
+        # During enrolment the floor's transcription is not merely idle, it does
+        # not exist yet — `self.stt` has not been started. Feeding it here would
+        # grow a queue nobody reads.
         enrolling = self._enrolling
         if enrolling is not None:
             enrolling.feed(pcm.tobytes())
         elif not self._muted:
-            # Mic audio goes to VAD and to the STT that feeds the floor. Agent
-            # audio goes to neither, ever.
-            self._mic.put_nowait(mono.copy())
+            # Mic audio goes to the STT that feeds the floor — both the words
+            # and, via `SpeechStarted`, the barge-in reflex. Agent audio never
+            # goes here.
+            #
             # Unattenuated, always, with respect to Ricky's own voice. The PA
             # does bleed back into this mic while an agent is speaking, and
             # what that bleed must not do is get attributed to Ricky — that
@@ -1385,42 +1381,6 @@ class PanelRuntime:
 
     # -------------------------------------------------------------------- pumps
 
-    async def _run_vad(self) -> None:
-        """The barge-in reflex. Never waits on a transcript."""
-        detector = silero.VAD.load(
-            sample_rate=VAD_SAMPLE_RATE,
-            min_speech_duration=self.barge_in.min_speech_duration,
-            min_silence_duration=self.barge_in.min_silence_duration,
-            activation_threshold=self.barge_in.activation_threshold,
-        )
-        stream = detector.stream()
-        speaking = False
-
-        async def pump() -> None:
-            while self._running:
-                try:
-                    chunk = self._mic.get_nowait()
-                except queue.Empty:
-                    await asyncio.sleep(0.002)
-                    continue
-                pcm = (np.clip(chunk, -1, 1) * 32767).astype(np.int16)
-                stream.push_frame(rtc.AudioFrame(pcm.tobytes(), VAD_SAMPLE_RATE, 1, len(pcm)))
-
-        pump_task = asyncio.create_task(pump(), name="vad-pump")
-        try:
-            async for ev in stream:
-                if ev.type == lkvad.VADEventType.INFERENCE_DONE:
-                    # Fire ahead of Silero's own debounce: this is the fast path,
-                    # and duck-first makes a false positive cheap.
-                    if not speaking and ev.probability >= self.barge_in.duck_probability:
-                        speaking = True
-                        self.emit(HumanSpeechStarted(t=time.monotonic()))
-                elif ev.type == lkvad.VADEventType.END_OF_SPEECH:
-                    speaking = False
-                    self.emit(HumanSpeechEnded(t=time.monotonic()))
-        finally:
-            pump_task.cancel()
-
     def _ricky_renderable(self, partial: str = "") -> Text:
         line = Text.from_markup(self._stamp())
         line.append("   ")
@@ -1489,15 +1449,17 @@ class PanelRuntime:
         speech rather than an assumed words-per-second. So this hands
         `TranscriptUpdated` to `panel_display` and to nothing else.
 
-        `TurnYielded` is dropped, not forwarded and not logged. It is
-        Speechmatics' `EndOfTurn` on an agent's own voice — the agent stopping
-        talking, which the floor already knows from `AgentSpeechEnded` with the
-        verbatim text attached, and which arrives here later and less reliably.
-        Treating it as a floor signal would let an agent end its own turn by
-        pausing, and would race a real `EndOfTurn` from Ricky's mic.
-        `SpeechStarted`/`SpeechEnded` are already inert one layer down in
-        `_AgentSTTSession` (barge-in belongs to the local VAD), so there is
-        nothing left that could reach the reducer even by accident.
+        The filter is an **allowlist**, and that is load-bearing. It admits
+        `TranscriptUpdated` and drops everything else unread, rather than
+        naming the events it refuses. Nothing arriving here is inert at its
+        source: `TurnYielded` is `EndOfTurn` on an agent's own voice (which the
+        floor already knows from `AgentSpeechEnded`, verbatim, sooner), and
+        since 6 Oct 2026 `HumanSpeechStarted`/`HumanSpeechEnded` arrive here
+        too — `_AgentSTTSession` emits them generically on every session it
+        runs, including these three. Forwarded, they would let an agent
+        barge in on itself. They do not reach the reducer because this loop
+        never asked for them, and a new event type added to `PanelSTT` is
+        dropped here by default rather than leaking until someone notices.
         """
         stt = self.agent_stt
         if stt is None:
@@ -1729,7 +1691,7 @@ class PanelRuntime:
         """Establish whose voice is the moderator's, before the show starts.
 
         A structural gate rather than a flag: this is awaited to completion
-        before `_run_vad`, `_run_stt`, `_drain_events` or `_run_ticks` exist,
+        before `_run_stt`, `_drain_events` or `_run_ticks` exist,
         so there is no window in which a floor task could act on an
         unidentified voice. The mic is already open — one PortAudio stream
         serves both phases — and `_callback` routes to the enrolment while
@@ -1894,7 +1856,7 @@ class PanelRuntime:
         # configuration a second time. `_callback` decides which consumer each
         # block belongs to.
         stream = sd.Stream(
-            samplerate=VAD_SAMPLE_RATE,
+            samplerate=PIPELINE_SAMPLE_RATE,
             blocksize=self.block_size,
             dtype="float32",
             channels=1,
@@ -1926,7 +1888,6 @@ class PanelRuntime:
 
                 tasks = [
                     asyncio.create_task(self._drain_events(), name="events"),
-                    asyncio.create_task(self._run_vad(), name="vad"),
                     asyncio.create_task(self._run_stt(), name="stt"),
                     asyncio.create_task(self._run_ticks(), name="ticks"),
                 ]

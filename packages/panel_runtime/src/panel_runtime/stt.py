@@ -31,12 +31,23 @@ is the only one that may open arbitration — so an audience question is neither
 transcribed nor answered. See `_emit_transcript`, `_receive`'s `EndOfTurn`
 arm, and `packages/panel_runtime/tests/test_speaker_isolation.py`.
 
-**End of turn.** `EndOfTurn` from the server becomes `TurnYielded`. This is the
-*understanding* path and it is deliberately not in the barge-in path: VAD owns
-stopping, STT owns understanding (CLAUDE.md). Nothing here is allowed to be on
-the critical path for interrupting an agent — which is why the endpoint's own
-`SpeechStarted`/`SpeechEnded` messages are logged and dropped rather than
-turned into `HumanSpeechStarted`/`HumanSpeechEnded`.
+**End of turn.** `EndOfTurn` becomes `TurnYielded` — the *understanding* path.
+
+**Endpointing.** `SpeechStarted`/`SpeechEnded` become
+`HumanSpeechStarted`/`HumanSpeechEnded` — the barge-in reflex. Since 6 Oct 2026;
+before that the reflex ran on a local Silero VAD and these were dropped. ADR
+0001 addendum of the same date. Three consequences, all accepted:
+
+* Latency is **unverified** on this preview endpoint. Silero's 66.8ms worst case
+  does not transfer. Measure on the rig (`uv run barge-in`);
+  `BargeInConfig.hard_limit_ms` is a target, not a result.
+* A dropped socket now costs interruption as well as transcription. No second
+  detector stands behind it.
+* Still identity-blind — these messages carry no speaker, same as the VAD. The
+  duck is confirmed downstream in `_transcript`.
+
+Emitted unconditionally on every session, like `TurnYielded`. Filtering is the
+caller's job (`PanelRuntime._run_agent_stt` admits `TranscriptUpdated` only).
 
 **Agent speech never reaches `panel_core` through this module.** Agent turns
 enter conversation state as text, because we generated them and already know
@@ -82,6 +93,8 @@ from typing import Any, Self
 import websockets
 from panel_core import (
     HUMAN,
+    HumanSpeechEnded,
+    HumanSpeechStarted,
     PanelCast,
     TranscriptUpdated,
     TurnYielded,
@@ -90,8 +103,8 @@ from panel_core import (
 
 log = logging.getLogger(__name__)
 
-# 16-bit signed LE at 16kHz — the same PCM the VAD and mixer use, so a mic block
-# is fed to both without conversion.
+# 16-bit signed LE at 16kHz — the same PCM the mixer uses, so a mic block is fed
+# to both without conversion.
 STT_SAMPLE_RATE = 16_000
 
 AGENT_STT_WS = "wss://preview.rt.speechmatics.com/v2/agent"
@@ -525,13 +538,12 @@ class _AgentSTTSession:
                     # Only bookkeeping, and only for the identity gate: a new
                     # turn's evidence starts empty. Not forwarded to the floor
                     # — the reducer has no start-of-turn event and does not
-                    # want one, because `HumanSpeechStarted` off the local VAD
-                    # already says this hundreds of milliseconds sooner.
+                    # want one; `SpeechStarted` already said this sooner.
                     self._turn_had_identified = False
                 case "EndOfTurn":
                     # End of turn — the floor may now be arbitrated. This is
                     # the *understanding* path; the barge-in reflex already
-                    # fired on VAD hundreds of milliseconds ago.
+                    # fired on `SpeechStarted`.
                     #
                     # Withheld entirely when this session identifies speakers
                     # and nothing in the turn was the enrolled moderator.
@@ -566,11 +578,12 @@ class _AgentSTTSession:
                             self._name,
                             len(message.get("speakers") or ()),
                         )
-                case "SpeechStarted" | "SpeechEnded":
-                    # Deliberately inert. Endpointing for barge-in belongs to
-                    # the local VAD; routing these into the floor would put a
-                    # network round-trip in the interrupt path (CLAUDE.md).
-                    pass
+                case "SpeechStarted":
+                    # The barge-in reflex. Speaker-agnostic by construction —
+                    # see the module docstring on what replaced the local VAD.
+                    self._events.put_nowait(HumanSpeechStarted(t=time.monotonic()))
+                case "SpeechEnded":
+                    self._events.put_nowait(HumanSpeechEnded(t=time.monotonic()))
                 case "Warning":
                     log.warning("stt[%s]: %s", self._name, message)
                 case "Error":
@@ -617,9 +630,9 @@ class _AgentSTTSession:
         carry no `speaker`, they take the third branch above: Ricky's live
         partial text stops reaching the console and the wall, his finals still
         land, and content-based barge-in falls back to finals only. His
-        *reflex* barge-in is unaffected either way, because that fires on the
-        local VAD and never on a transcript (CLAUDE.md). Degraded display, not
-        a broken interrupt — which is why this direction is the safe one to
+        *reflex* barge-in is unaffected either way: it fires on `SpeechStarted`,
+        a different message with no speaker field to lose. Degraded display,
+        not a broken interrupt — which is why this direction is the safe one to
         guess.
         """
         segment = message.get("segment") or {}

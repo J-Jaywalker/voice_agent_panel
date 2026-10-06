@@ -90,6 +90,9 @@ this codebase.** FEASIBILITY §3.3 already described it correctly; this ADR's
 decision line did not. Recorded so nobody reads "transport" here and assumes a
 room, a track or an SFU exists to build on.
 
+*(Superseded 6 Oct 2026 — see the last addendum. Both dependencies are removed;
+nothing in this repo imports `livekit`.)*
+
 Practical consequence: "should we adopt the framework after all?" is not a
 config change, it is a rewrite of the audio path.
 
@@ -114,6 +117,53 @@ stands.** There is also no latency argument for reversing it: the gains in
 ADR 0002 does not reopen this one either. The classifier is a model call in
 `panel_runtime` whose answer enters the reducer as an event; "own the mixer" and
 "no `AgentSession`" are untouched.
+
+## Addendum — 6 Oct 2026: LiveKit removed entirely; barge-in moves onto the STT socket
+
+The 4 Sept addendum traded a tuning surface for the vendor's own `EndOfTurn`.
+This is the same trade one layer down, and it finishes the job the 21 Sept
+addendum described: **LiveKit was a Silero wrapper, and Silero is gone.**
+`livekit-agents` and `livekit-plugins-silero` are no longer dependencies of
+anything in this repo.
+
+The barge-in reflex now fires on Agent STT's own `SpeechStarted`/`SpeechEnded`,
+which arrive on the socket that was already open. `panel_runtime/stt.py` turns
+them into `HumanSpeechStarted`/`HumanSpeechEnded`; `panel_core` is untouched —
+same events, same reducer, same tests. `panel.py`'s `_run_vad`, its mic queue
+and `BargeInConfig`'s four Silero tunables are deleted.
+
+Mechanic 1 of the original table is the one affected, and it survives: one
+detector → reducer (µs) → duck all streams. What changed is the detector, not
+who owns the mixer.
+
+**What this costs, stated plainly:**
+
+- **Resilience regresses.** A dropped or reconnecting STT socket used to cost
+  transcription only. It now also costs the ability to interrupt an agent, for
+  as long as it is down. `_AgentSTTSession` reconnects fast (0.25s initial,
+  4s cap) and there is no second detector behind it. Accepted: the socket being
+  down is already a visible failure, and a show with no transcription is not a
+  working show either.
+- **Latency is unverified.** Silero's 66.8ms worst-case onset-to-duck was
+  measured on committed fixtures; nothing equivalent is published for
+  `/v2/agent`, in either direction. No figure has been invented to replace it.
+  `BargeInConfig.hard_limit_ms` is now a target, not a decomposition, and
+  `uv run barge-in` was reworked to measure onset-to-`HumanSpeechStarted`
+  against a live session so the venue rig can answer it. **Until that is run
+  there, this ADR's "<150ms barge-in" confidence line is untested.**
+- **Identity is unchanged, not improved.** `SpeechStarted` carries no speaker;
+  diarisation operates on segments, a separate layer. The reflex is as
+  identity-blind as raw VAD was, so `aec.py`'s rationale and the
+  duck-confirmed-in-`_transcript` design stand word for word.
+
+What this buys: two dependencies and a transitive `onnxruntime` gone, no model
+load at startup, one fewer audio consumer in the PortAudio callback, and
+endpointing decided by the same engine that decides end-of-turn rather than by
+two detectors that can disagree.
+
+**Tier B is unaffected.** We still own the mixer, there is still no
+`AgentSession`, and nothing here is reversible by config — it is the same
+rewrite-the-audio-path cost the 21 Sept addendum named.
 
 ## References
 

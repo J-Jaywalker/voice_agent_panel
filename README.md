@@ -10,15 +10,34 @@ decisions live in [`docs/adr/`](docs/adr/).
 
 ```bash
 uv sync
-uv run pytest              # everything — 287 tests, ~3min
-uv run pytest packages/panel_core   # floor, addressing, personas, prompts — 226 tests, ~2s
-uv run panel-sim           # text-mode panel — no audio, no credentials
-uv run panel               # the live pipeline — mic in, agents out
-uv run barge-in            # interrupt reflex only — headphones required
+make help          # lists every target below
+make test-core     # floor logic only — the tight loop
+make test          # everything
+make sim           # text-mode panel — no audio, no credentials
+make display       # video wall alone, synthetic panel — no mic, no keys
+make panel         # the live pipeline: mic, agents, video wall, logged
 ```
 
-`uv run panel` needs `SPEECHMATICS_API_KEY`, `ANTHROPIC_API_KEY` and
-`ELEVENLABS_API_KEY`. Everything else runs with none.
+`make panel` needs `SPEECHMATICS_API_KEY`, `ANTHROPIC_API_KEY` and
+`ELEVENLABS_API_KEY`, plus `TYPESAFE_API_KEY` for the default addressing
+classifier (see [ADR 0002](docs/adr/0002-address-detection-by-classifier.md)).
+`make sim`, `make display`, `make test` and `make lint` need none.
+
+Every target is a thin wrapper over a `uv run ...` command — read the
+[`Makefile`](Makefile) for the exact line. Anything without a target (`barge-in`,
+the benches, unusual flag combinations) is typed out in full below.
+
+| Target | Runs |
+|---|---|
+| `make panel` | `uv run panel --display --log recordings/<timestamp>.jsonl` |
+| `make panel-unlocked` | the same plus `--no-speaker-lock` (no enrolment) |
+| `make enrol` | `uv run panel --re-enrol` |
+| `make display` | `uv run panel-display --demo` |
+| `make sim` | `uv run panel-sim` |
+| `make aec-test` | `uv run aec-test` |
+| `make feedback-test` / `make feedback-test-unlocked` | `uv run feedback-test` (`--no-speaker-lock`) |
+| `make test` / `make test-core` | `uv run pytest` (`packages/panel_core`) |
+| `make lint` | `uv run ruff check .` |
 
 ## What exists today
 
@@ -26,31 +45,58 @@ uv run barge-in            # interrupt reflex only — headphones required
 |---|---|
 | `packages/panel_core` | **Pure** floor logic. No I/O, no awaits, no clock reads. |
 | `packages/panel_sim` | Text-mode harness — tune personas and floor behaviour without audio. |
-| `packages/panel_runtime` | I/O adapters and the live runtime. STT, TTS, VAD, mixer. |
+| `packages/panel_runtime` | I/O adapters and the live runtime. STT, TTS, mixer, speaker enrolment, address classifiers. |
+| `packages/panel_display` | The 12m video wall, served on `http://localhost:8765`. No build step. |
 | `personas/` | The cast, as structured data. Source of truth for prompts. |
 
-Not built yet: operator console, video wall, mid-turn steering.
+Not built: operator console. Mid-turn steering was cut.
 
 ---
 
 # Running it
 
-Three ways in, deliberately split: the panel has to be believable *and*
-responsive, and those get tuned by different people against different feedback.
-Plus benches for the measurements that have to be repeatable.
+Deliberately split: the panel has to be believable *and* responsive, and those
+get tuned by different people against different feedback. Plus benches for the
+measurements that have to be repeatable.
 
-## 0. `panel` — the whole pipeline
+## 1. `panel` — the whole pipeline
+
+```bash
+make panel                       # the full show: wall + logging + speaker lock
+make panel-unlocked              # same, mic ungated — skips Ricky's enrolment
+make enrol                       # re-capture Ricky's voice, ignoring the stored one
+```
+
+Then open http://localhost:8765/ and fullscreen it (⌃⌘F, or Chrome with `--kiosk`).
+
+Without a target, the raw command and its flags:
 
 ```bash
 uv run panel                     # mic -> STT -> floor -> brains -> TTS -> speakers
 uv run panel --no-tts            # same floor behaviour, printed rather than spoken
+uv run panel --display           # + the video wall
+uv run panel --address-backend regex   # regex | haiku | typesafe (default)
+uv run panel --aec               # acoustic echo cancellation (see CLAUDE.md for setup)
 uv run panel --log recordings/rehearsal.jsonl
-uv run panel --list-devices
+uv run panel --list-devices      # then --input-device / --output-device
 ```
 
-> ⚠️ **Headphones, or a pre-PA mic split.** On open speakers the agents' own
-> audio reaches the mic. Agent audio never enters the STT path by construction,
-> but the VAD will still hear it and duck.
+`uv run panel --help` is the full list.
+
+Before the first run, Ricky's voice is enrolled (up to 30s of speech); the
+result is stored in `.panel/speakers.json`, which is gitignored, machine-bound
+and must be re-captured at the venue. Only enrolled-Ricky speech can duck or
+stop an agent.
+
+While it runs, two console keys: **`m`** toggles an emergency mic mute and
+**`j`** is an emergency interrupt that stops whoever is speaking and hands the
+floor to Ricky.
+
+> ⚠️ **Headphones, or a pre-PA mic split, or `--aec`.** On open speakers the
+> agents' own audio reaches the mic. Agent audio never enters the floor's STT
+> path by construction, and speaker enrolment stops the bleed becoming words,
+> but the endpointer on Ricky's socket still hears it. Run `make aec-test` and
+> `make feedback-test` on the real rig to check.
 
 **Ask the panel a question and it answers. Make a statement and it stays quiet**
 — that is the whole floor rule, and it is deliberately one a moderator can hold
@@ -66,13 +112,11 @@ The event log replays through modified floor logic afterwards, because
 ## 2. `panel-sim` — conversation and personas, no audio
 
 ```bash
-uv run panel-sim           # offline stub brains, no credentials needed
+make sim                   # offline stub brains, no credentials needed
 uv run panel-sim --live    # real model behind the personas
 uv run panel-sim --live --model claude-sonnet-5 --effort low
 uv run panel-sim --log recordings/run1.jsonl   # record for replay
-uv run panel --display --log recordings/$(date +%F-%H%M).jsonl # For the entire god damned thing
 ```
-Then open http://localhost:8765/ and fullscreen it (⌃⌘F, or Chrome with --kiosk).
 
 | Flag | Default | What it changes |
 |---|---|---|
@@ -130,11 +174,14 @@ uv run barge-in --block 256      # compare buffer sizes
 uv run barge-in --input-device 3 --output-device 4
 ```
 
+Needs `SPEECHMATICS_API_KEY` — the reflex is a real Agent STT session, not a
+local detector.
+
 > ⚠️ **Wear headphones.** On open speakers the agent's own audio reaches the mic
-> and the VAD fires on it — the feedback loop [FEASIBILITY.md §3.1](FEASIBILITY.md)
+> and the endpointer fires on it — the feedback loop [FEASIBILITY.md §3.1](FEASIBILITY.md)
 > warns about, and a live demonstration of why the venue needs a pre-PA mic split.
 
-macOS prompts for microphone permission on first run. If the VAD meter stays at
+macOS prompts for microphone permission on first run. If the mic meter stays at
 zero while you talk, permission was denied — grant it under
 *System Settings → Privacy & Security → Microphone* and rerun.
 
@@ -144,10 +191,20 @@ An "agent" talks continuously. Speak, and watch it react:
 |---|---|
 | "mm-hm" — a short burst | ducks to −15 dB, then **resumes**. Agent keeps the floor. |
 | "sorry, hold on a second" | ducks, then **stops** once past 600ms. |
-| laugh, or tap the desk | **no reaction.** Silero is speech-specific — this is the case against an energy gate. |
+| laugh, or tap the desk | **no reaction.** The endpointer is speech-specific — this is the case against an energy gate. |
 
-The display shows agent state, current gain, a live VAD probability meter, and
-measured **ADC→DAC latency** (last and worst) against the 150ms hard limit.
+The display shows agent state, current gain, a live mic level, and two measured
+latencies (last and worst):
+
+| Number | What it is |
+|---|---|
+| onset → SpeechStarted | voice onset at the ADC to `HumanSpeechStarted` arriving off the socket. **The number the 6 Oct 2026 change left unverified** — Silero's old 66.8ms does not transfer. |
+| onset → DAC | the whole budget, onset to ducked gain reaching an output buffer, against `BargeInConfig.hard_limit_ms` (a target, not a result). |
+
+Onset is marked by an RMS threshold (`--onset-rms`), not a detector — it is the
+stopwatch's reference mark, and timing the socket against another detector would
+measure the gap between two detectors. **Run this on the venue machine**: the
+network term is now the dominant unknown in the barge-in budget.
 
 This runs the real `panel_core.FloorController`, not a mock — so if the duck or
 resume feels wrong by ear, that is a genuine finding about the thresholds, not a
@@ -162,29 +219,17 @@ demo artefact. The numbers most in need of a human verdict:
 All live in `packages/panel_runtime/src/panel_runtime/config.py` and
 `FloorConfig`.
 
-**No STT in this harness**, so classification is duration-only — it cannot
-distinguish "mm-hm" from "no, that's wrong" at equal length. Use `uv run panel`
-for the content-based path.
+This harness has a real STT session, so content-based classification is live —
+"mm-hm" and "no, that's wrong" are distinguished by what they say, not just by
+how long they last.
 
-## 4. `bench_vad_latency` — repeatable VAD measurement
-
-```bash
-uv run python packages/panel_runtime/tests/bench_vad_latency.py
-```
-
-Offline, deterministic, no mic. Five committed speech fixtures covering
-different onset types (fricative, plosive, vowel, aspirate, nasal), swept across
-probability thresholds. Worst case is what the design must survive.
-
-**Run this on the venue machine** — the VAD term is the dominant cost in the
-barge-in budget and it must be re-measured on the deployment rig.
-
-## 5. Latency benches — TTS, models, and first audio
+## 4. Latency benches — TTS, models, first audio, addressing
 
 ```bash
 uv run python packages/panel_runtime/tests/bench_tts.py --voice <id>
 uv run python packages/panel_runtime/tests/bench_brains.py
 uv run python packages/panel_runtime/tests/bench_first_audio.py --voice <id>
+uv run python packages/panel_runtime/tests/bench_address.py   # rerun after touching the address prompt
 ```
 
 `bench_first_audio` is the one to trust: it measures request to *first audible
@@ -218,13 +263,16 @@ Enforced in `floor.py`, in strict order:
 3. **Strongest contextual case** — weighted signals, deterministic.
 4. **Everyone else** — including saying nothing, which is a legitimate outcome.
 
-Safety valves: per-persona turn-length caps, a consecutive-agent-turn limit that
-hands back to the moderator, and an operator kill switch.
+Safety valves: a consecutive-agent-turn limit that hands back to the moderator,
+and the `m` / `j` console keys on the live panel (`/kill` in `panel-sim`).
+Turn length is a prompt instruction, not an enforced ceiling.
 
 ## Moderator phrasings
 
-Who Ricky addressed is decided by **grammatical role, not position in the
-sentence**. Three roles, in strict precedence:
+Who Ricky addressed is decided by the TypeSafe classifier by default
+(`--address-backend`, [ADR 0002](docs/adr/0002-address-detection-by-classifier.md)),
+falling back to a regex that follows the same rules — **grammatical role, not
+position in the sentence**. Three roles, in strict precedence:
 
 | Role | Example | Addressee |
 |---|---|---|
@@ -241,10 +289,11 @@ Two non-outcomes matter as much as the outcomes:
 - **Courtesy tags invite nobody.** "Is that okay?", "does that work?", "right?"
   are question-shaped but aimed at the person being interrupted. A question mark
   alone no longer opens the floor.
-- **Two agents in the same role is ambiguous**, and ambiguity keeps the floor
-  closed and puts the tie in front of the operator. A missed invitation costs
-  one beat; a wrong one puts an agent on the PA over Ricky in front of 400
-  people.
+- **Two agents in the same role are both invited.** "Melia and Wayne, what do
+  you think?" opens the floor to those two and bars the third. Only the
+  classifier can still report *ambiguous* — it cannot tell who — and that keeps
+  the floor closed. A missed invitation costs one beat; a wrong one puts an
+  agent on the PA over Ricky in front of 400 people.
 
 The corpus is the spec.
 [`packages/panel_core/tests/test_address.py`](packages/panel_core/tests/test_address.py)

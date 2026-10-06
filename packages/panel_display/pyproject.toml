@@ -6,8 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "panel-core",
     # Static files and the WebSocket on one port, so the venue machine gets
-    # one URL. Already present via livekit-agents; pinned here because this
-    # package uses it directly and a transitive dependency is not a contract.
+    # one URL.
     "aiohttp>=3.9",
 ]
 

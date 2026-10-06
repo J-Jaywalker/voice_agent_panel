@@ -11,8 +11,9 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-# Silero accepts 8k or 16k only. 16k is the better operating point for speech.
-VAD_SAMPLE_RATE = 16_000
+# Mic capture, mixer and AEC all run here. 16k is what Agent STT wants, so a mic
+# block reaches the socket without a resample.
+PIPELINE_SAMPLE_RATE = 16_000
 
 # The Anthropic SDK's own default. Named here because we pass it explicitly.
 ANTHROPIC_DIRECT_URL = "https://api.anthropic.com"
@@ -69,37 +70,23 @@ class AudioConfig:
 
 @dataclass(frozen=True, slots=True)
 class BargeInConfig:
-    """Silero VAD tuning for the barge-in reflex.
+    """Latency budget for the barge-in reflex.
 
-    The duck-first architecture (ADR 0001) makes false positives cheap: a
-    spurious duck is a brief 15dB dip that resumes, not a stopped agent. That
-    lets us run the VAD hot — low thresholds, fast reflex — where a
-    stop-on-detect design would have to be conservative and therefore slow.
+    No tuning knobs any more. The reflex fires on Speechmatics' own
+    `SpeechStarted` (`stt.py`), which has no thresholds to set — the local
+    Silero VAD and its four tunables were removed 6 Oct 2026, ADR 0001
+    addendum.
     """
 
-    # Fast path: duck as soon as a single inference clears this probability.
-    # Fires on `inference_done`, ahead of Silero's own min_speech_duration gate.
-    #
-    # 0.5 is measured, not guessed (tests/bench_vad_latency.py). Worst-case
-    # onset-to-duck across five onset types: 0.3 -> 66.8ms, 0.5 -> 66.9ms,
-    # 0.7 -> 98.9ms. Dropping to 0.3 buys nothing and costs false ducks.
-    duck_probability: float = 0.5
-    # Confirmation path: Silero's debounced start_of_speech.
-    activation_threshold: float = 0.5
-    min_speech_duration: float = 0.05
-    min_silence_duration: float = 0.40
     # Budget for true speech onset -> ducked gain reaching an output buffer.
     #
-    # Measured decomposition (48kHz, block_size=256):
-    #   Silero detection   ~67ms worst case   <- dominates
-    #   resample 48k->16k   ~1-2ms
-    #   floor reducer       <1ms
-    #   output block         5.3ms
-    #   -------------------------------
-    #   internal total      ~75ms
-    # Leaves ~75ms of the 150ms hard limit for ADC/DAC and input buffering,
-    # which are measured on the venue rig, not here.
-    internal_budget_ms: float = 75.0
+    # A **target, not a measurement**. The old 150ms came with a measured
+    # decomposition dominated by Silero's ~67ms detection, and that figure died
+    # with Silero. What replaced it is a network round-trip to a preview
+    # endpoint whose endpointing latency is documented nowhere, so the real
+    # number is unknown until someone measures it on the venue rig:
+    # `uv run barge-in` reports onset-to-`HumanSpeechStarted` against a live
+    # session. Re-set this once that has been run there.
     hard_limit_ms: float = 150.0
 
 
@@ -109,12 +96,11 @@ class AECConfig:
     own mic, not a telephony echo path.
 
     Diarisation already keeps that bleed from ever being attributed to Ricky
-    (`stt.py`), but it cannot stop the barge-in *reflex*: `_run_vad` fires on
-    raw Silero VAD, before any identity check, by design (CLAUDE.md — "VAD
-    owns stopping"). Speaker bleed can still duck or stop an agent that was
-    never actually interrupted. AEC is a defense against that, upstream of
-    both VAD and diarisation, and diarisation stays in place for whatever it
-    does not fully cancel.
+    (`stt.py`), but it cannot stop the barge-in *reflex*: `SpeechStarted`
+    carries no speaker and fires before any identity check, by design. Speaker
+    bleed can still duck or stop an agent that was never actually interrupted.
+    AEC is a defense against that, upstream of both endpointing and
+    diarisation; diarisation stays in place for whatever it does not cancel.
 
     Off by default: the venue's PA/mic setup is not expected to need this.
     This exists as diligence, not as the primary mitigation — wearing

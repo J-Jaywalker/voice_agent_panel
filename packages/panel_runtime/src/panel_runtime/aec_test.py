@@ -42,11 +42,11 @@ from rich.console import Console
 from rich.table import Table
 
 from .aec import EchoCanceller
-from .config import VAD_SAMPLE_RATE, AECConfig
+from .config import PIPELINE_SAMPLE_RATE, AECConfig
 
 console = Console()
 
-SR = VAD_SAMPLE_RATE
+SR = PIPELINE_SAMPLE_RATE
 STIMULUS_AMPLITUDE = 0.3  # loud enough to measure over room noise, quiet enough not to clip
 WARMUP_S = 0.5  # dropped from the recording — output buffers still filling
 MAX_DELAY_S = 1.0  # search window for the correlation peak, per burst

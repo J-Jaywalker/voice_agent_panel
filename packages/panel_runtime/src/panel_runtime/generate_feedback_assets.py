@@ -17,7 +17,7 @@ from pathlib import Path
 
 from panel_core import PanelCast, sanitise
 
-from .config import VAD_SAMPLE_RATE
+from .config import PIPELINE_SAMPLE_RATE
 from .feedback_test import ASSETS_DIR
 from .tts import ElevenLabsTTS, TTSConfig
 
@@ -36,9 +36,9 @@ async def _generate_one(tts: ElevenLabsTTS, persona) -> None:
     with wave.open(str(path), "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
-        w.setframerate(VAD_SAMPLE_RATE)
+        w.setframerate(PIPELINE_SAMPLE_RATE)
         w.writeframes(bytes(chunks))
-    print(f"  {len(chunks) / 2 / VAD_SAMPLE_RATE:.1f}s -> {path}")
+    print(f"  {len(chunks) / 2 / PIPELINE_SAMPLE_RATE:.1f}s -> {path}")
 
 
 async def _run() -> None:

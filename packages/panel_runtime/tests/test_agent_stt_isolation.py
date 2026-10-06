@@ -10,6 +10,13 @@ whole safety property, and one careless `self.emit(event)` there would put a
 lossy, latent transcription of the panel's own voices into the reducer that
 already has the verbatim text. That is the feedback loop that ends the show.
 
+That loop is an **allowlist** — `TranscriptUpdated` in, everything else
+dropped — and since 6 Oct 2026 nothing arriving on these sessions is inert at
+its source. `_AgentSTTSession` emits `HumanSpeechStarted`/`HumanSpeechEnded` on
+every session it runs, the agents' three included, because it is deliberately
+generic over `speaker`. Forwarded, they would let an agent barge in on itself.
+They are dropped here only because this loop never asked for them.
+
 So this file guards that omission directly. It is the most important test in
 `panel_runtime`, and it is deliberately written against the reducer's own
 front door — `PanelRuntime.events`, `fc.reduce` and `state` — rather than
@@ -30,6 +37,8 @@ from pathlib import Path
 import pytest
 from panel_core import (
     HUMAN,
+    HumanSpeechEnded,
+    HumanSpeechStarted,
     PanelCast,
     Tick,
     TranscriptUpdated,
@@ -224,3 +233,57 @@ def test_the_human_path_still_reaches_the_reducer(cast: PanelCast):
 
     assert human in reduced
     assert human in display.events
+
+
+def test_an_agents_own_endpointing_never_reaches_the_reducer(cast: PanelCast):
+    """The 6 Oct 2026 guard. `SpeechStarted` on an agent's own display-only
+    session is that agent's voice; routed to the floor it is an agent
+    interrupting itself, and agents never interrupt agents at all."""
+    display = FakeDisplay()
+    runtime = _runtime(cast, display)
+    assert runtime.agent_stt is not None
+    reduced = _counting_reduce(runtime)
+    before = runtime.state
+
+    async def body():
+        runtime.agent_stt.events.put_nowait(HumanSpeechStarted(t=1.0))
+        runtime.agent_stt.events.put_nowait(HumanSpeechEnded(t=1.4))
+        await _pump(runtime, runtime._run_agent_stt, runtime._drain_events)
+
+    asyncio.run(body())
+
+    assert reduced == []
+    assert runtime.events.qsize() == 0
+    assert runtime.state is before
+    # Not forwarded to the wall either — the transcript band renders words.
+    assert display.events == []
+
+
+def test_the_agent_loop_admits_transcripts_only(cast: PanelCast):
+    """Why the test above holds, stated as a property rather than a list.
+
+    An allowlist, not a set of named refusals: an event type added to
+    `PanelSTT` tomorrow is dropped here by default. A refactor to
+    `if isinstance(event, (TranscriptUpdated, HumanSpeechStarted))` passes the
+    whole suite above except this.
+    """
+    display = FakeDisplay()
+    runtime = _runtime(cast, display)
+    assert runtime.agent_stt is not None
+
+    class Unknown:
+        t = 1.0
+
+    transcript = TranscriptUpdated(t=2.0, speaker="melia", text="Trust.", is_final=True)
+
+    async def body():
+        runtime.agent_stt.events.put_nowait(HumanSpeechStarted(t=1.0))
+        runtime.agent_stt.events.put_nowait(Unknown())
+        runtime.agent_stt.events.put_nowait(TurnYielded(t=1.5))
+        runtime.agent_stt.events.put_nowait(transcript)
+        await _pump(runtime, runtime._run_agent_stt, runtime._drain_events)
+
+    asyncio.run(body())
+
+    assert display.events == [transcript]
+    assert runtime.events.qsize() == 0

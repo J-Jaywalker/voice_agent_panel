@@ -13,16 +13,17 @@ They loop in cast order with a `--silence-s` gap after each — real speech and
 real silence, not noise, since the thing under test is whether *this signal*
 gets transcribed as words.
 
-Two detectors can turn a clip's bleed into a barge-in, and enrolment affects
-them differently:
+Two detectors can turn a clip's bleed into a barge-in. Both now arrive on the
+same `stt.events` queue (`_print_detections`), since the barge-in reflex moved
+onto the STT socket — but enrolment affects them differently:
 
-* **VAD** (`_print_vad`) is identity-blind by design — it owns stopping and
-  never checks who. Enrolment cannot prevent this one either way, so it
-  flags the same regardless of speaker lock.
-* **STT** (`_print_gated_stt`) only produces `Ricky:` for diarised, enrolled
-  segments. With speaker lock on, a `Ricky:` line during playback is a
-  diarisation failure; with `--no-speaker-lock` it's expected — every voice
-  counts as Ricky's, by design.
+* **Endpointing** (`SpeechStarted`) is identity-blind by design — it owns
+  stopping and never checks who. Enrolment cannot prevent this one either way,
+  so it flags the same regardless of speaker lock.
+* **Transcripts** only produce `Ricky:` for diarised, enrolled segments. With
+  speaker lock on, a `Ricky:` line during playback is a diarisation failure;
+  with `--no-speaker-lock` it's expected — every voice counts as Ricky's, by
+  design.
 
 Nothing non-actioned is printed — no raw transcript the floor would never
 read, no "dropped" line for a rejection that worked as intended. Only a
@@ -47,12 +48,12 @@ from panel_core import PanelCast
 from rich.console import Console
 
 from .aec import EchoCanceller
-from .config import VAD_SAMPLE_RATE, AECConfig
+from .config import PIPELINE_SAMPLE_RATE, AECConfig
 from .enrolment import DEFAULT_STORE_PATH, SpeakerEnrolment, SpeakerStore
 from .stt import PanelSTT, STTConfig
 
 console = Console()
-SR = VAD_SAMPLE_RATE
+SR = PIPELINE_SAMPLE_RATE
 # Committed, not `.cache/` (gitignored) — the point is no network needed.
 ASSETS_DIR = Path(__file__).parent / "assets" / "feedback"
 
@@ -140,47 +141,26 @@ async def _enrol(stt: PanelSTT, args, enrolling_box: list) -> str | None:
     return speaker.label
 
 
-async def _print_vad(mic: asyncio.Queue, playing_box: list) -> None:
-    from livekit import rtc
-    from livekit.agents import vad as lkvad
-    from livekit.plugins import silero
-
-    detector = silero.VAD.load(sample_rate=SR)
-    stream = detector.stream()
-    speaking = False
-
-    async def pump() -> None:
-        while True:
-            chunk = await mic.get()
-            pcm = (np.clip(chunk, -1, 1) * 32767).astype(np.int16)
-            stream.push_frame(rtc.AudioFrame(pcm.tobytes(), SR, 1, len(pcm)))
-
-    asyncio.create_task(pump(), name="feedback-test-vad-pump")
-    async for ev in stream:
-        if ev.type == lkvad.VADEventType.INFERENCE_DONE:
-            if speaking or ev.probability < 0.5:
-                continue
-            speaking = True
-            playing = playing_box[0]
-            if playing is not None:
-                _print(
-                    f"[bold red]TRANSCRIBED BARGE-IN[/] — {playing}'s audio tripped the VAD "
-                    "reflex (identity-blind — enrolment can't prevent this)"
-                )
-            else:
-                _print("[green]barge-in reflex: real human speech detected[/]")
-        elif ev.type == lkvad.VADEventType.END_OF_SPEECH:
-            speaking = False
-
-
-async def _print_gated_stt(stt: PanelSTT, playing_box: list, enrolled_label: str | None) -> None:
-    from panel_core import TranscriptUpdated
+async def _print_detections(stt: PanelSTT, playing_box: list, enrolled_label: str | None) -> None:
+    """One loop, both detectors — they share a socket now (see module docstring)."""
+    from panel_core import HumanSpeechStarted, TranscriptUpdated
 
     while True:
         event = await stt.events.get()
+        playing = playing_box[0]
+
+        if isinstance(event, HumanSpeechStarted):
+            if playing is not None:
+                _print(
+                    f"[bold red]TRANSCRIBED BARGE-IN[/] — {playing}'s audio tripped the "
+                    "endpointing reflex (identity-blind — enrolment can't prevent this)"
+                )
+            else:
+                _print("[green]barge-in reflex: real human speech detected[/]")
+            continue
+
         if not (isinstance(event, TranscriptUpdated) and event.is_final):
             continue
-        playing = playing_box[0]
         if playing is None:
             _print(f"[green]Ricky:[/] {event.text}")
         elif enrolled_label is not None:
@@ -210,8 +190,6 @@ async def _run(args) -> None:
         else None
     )
 
-    mic: asyncio.Queue = asyncio.Queue()
-    loop = asyncio.get_running_loop()
     pos = 0
     enrolling_box: list = [None]  # read by callback, set/cleared by `_enrol`
     playing_box: list = [None]  # read by the detectors, set by `_announce_cycle`
@@ -228,7 +206,6 @@ async def _run(args) -> None:
         if enrolling is not None:
             enrolling.feed(pcm.tobytes())
         else:
-            loop.call_soon_threadsafe(mic.put_nowait, mono.copy())
             stt.feed("ricky", pcm.tobytes())
 
         end = pos + frames
@@ -257,8 +234,7 @@ async def _run(args) -> None:
         console.print(f"[bold]listening.[/] [dim]{gated}. Speak now. Ctrl-C to stop.[/]\n")
         await stt.start()
         await asyncio.gather(
-            _print_vad(mic, playing_box),
-            _print_gated_stt(stt, playing_box, label),
+            _print_detections(stt, playing_box, label),
             _announce_cycle(schedule, playing_box),
         )
 

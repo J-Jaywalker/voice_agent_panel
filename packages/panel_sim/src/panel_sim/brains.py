@@ -93,7 +93,7 @@ class ClaudeBrain:
         # stage sends, which is the one guarantee this harness exists to make.
         # Duplicated rather than imported: `panel_sim` depends on `panel_core`
         # only, and reaching for `panel_runtime.config.anthropic_base_url()`
-        # would pull livekit and sounddevice into an offline text tool. Keep
+        # would pull sounddevice into an offline text tool. Keep
         # the two in step — there is no behaviour here to drift, only a name.
         self.client = anthropic.Anthropic(
             base_url=os.environ.get("PANEL_ANTHROPIC_BASE_URL", "https://api.anthropic.com")

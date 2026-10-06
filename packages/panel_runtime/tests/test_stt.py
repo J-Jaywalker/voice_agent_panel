@@ -1,5 +1,6 @@
-"""Tests for `panel_runtime.stt`: vocabulary derivation and the fail-safe
-retry when a preview-endpoint `StartRecognition` rejects `additional_vocab`.
+"""Tests for `panel_runtime.stt`: vocabulary derivation, the fail-safe retry
+when a preview-endpoint `StartRecognition` rejects `additional_vocab`, and the
+endpointing messages that now carry the barge-in reflex.
 
 No network is involved: `websockets.connect` is monkeypatched with a fake
 connection object, matching the plain-`asyncio.run()` style
@@ -15,7 +16,7 @@ from pathlib import Path
 from typing import Self
 
 import pytest
-from panel_core import PanelCast
+from panel_core import HumanSpeechEnded, HumanSpeechStarted, PanelCast
 from panel_runtime.stt import (
     SHOW_VOCAB,
     PushAudioSource,
@@ -199,3 +200,82 @@ def test_vocab_rejection_when_no_vocab_was_set_is_a_plain_failure(
         return False
 
     assert asyncio.run(body())
+
+
+# ------------------------------------------------------------- endpointing
+
+
+def test_speech_started_and_ended_become_floor_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The barge-in reflex, as of 6 Oct 2026. These messages were dropped while
+    the reflex ran on a local Silero VAD; now they *are* the reflex, so the
+    reducer learns about an interrupt without waiting for a word."""
+    ws = _FakeWebSocket(
+        [
+            {"message": "RecognitionStarted"},
+            {"message": "SpeechStarted"},
+            {"message": "SpeechEnded"},
+            {"message": "EndOfTranscript"},
+        ]
+    )
+    monkeypatch.setattr("panel_runtime.stt.websockets.connect", lambda *a, **k: ws)
+
+    async def body() -> list[object]:
+        loop = asyncio.get_running_loop()
+        source = PushAudioSource(loop)
+        source.close()
+        events: asyncio.Queue = asyncio.Queue()
+        session = _AgentSTTSession(
+            speaker="human",
+            source=source,
+            config=STTConfig(),
+            api_key="test-key",
+            events=events,
+            name="ricky",
+        )
+        session.stop()
+        await session._session()
+        return [events.get_nowait() for _ in range(events.qsize())]
+
+    emitted = asyncio.run(body())
+
+    assert [type(e) for e in emitted] == [HumanSpeechStarted, HumanSpeechEnded]
+    # Runtime clock, like every other event this module builds.
+    assert all(e.t > 0 for e in emitted)
+
+
+def test_endpointing_is_emitted_regardless_of_who_the_session_is_for(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`PanelSTT` is generic over `speaker` and stays that way: an agent's own
+    display-only session emits these too. Filtering is the caller's job —
+    `PanelRuntime._run_agent_stt` admits `TranscriptUpdated` and nothing else,
+    which `test_agent_stt_isolation.py` is what guards."""
+    ws = _FakeWebSocket(
+        [
+            {"message": "RecognitionStarted"},
+            {"message": "SpeechStarted"},
+            {"message": "EndOfTranscript"},
+        ]
+    )
+    monkeypatch.setattr("panel_runtime.stt.websockets.connect", lambda *a, **k: ws)
+
+    async def body() -> list[object]:
+        loop = asyncio.get_running_loop()
+        source = PushAudioSource(loop)
+        source.close()
+        events: asyncio.Queue = asyncio.Queue()
+        session = _AgentSTTSession(
+            speaker="wayne",
+            source=source,
+            config=STTConfig(),
+            api_key="test-key",
+            events=events,
+            name="wayne",
+        )
+        session.stop()
+        await session._session()
+        return [events.get_nowait() for _ in range(events.qsize())]
+
+    assert [type(e) for e in asyncio.run(body())] == [HumanSpeechStarted]

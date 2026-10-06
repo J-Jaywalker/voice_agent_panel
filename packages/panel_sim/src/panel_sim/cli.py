@@ -16,7 +16,7 @@ reproducible and a rehearsal replays identically.
 (`FloorConfig.llm_address_detection` is left at its default here, and there is
 no `--llm-address` flag). `panel_sim` depends on `panel_core` alone and must
 keep running offline with stub brains, so importing `panel_runtime.address`
-— and with it livekit and sounddevice — is not an option. Do not read a
+— and with it sounddevice — is not an option. Do not read a
 `panel-sim` run as a rehearsal of the classifier: it exercises everything
 downstream of the invitation and nothing about how the invitation was chosen.
 The event log a live run writes does carry its `AddressDetected` events, and
