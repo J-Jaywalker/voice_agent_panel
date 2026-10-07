@@ -41,6 +41,24 @@ character of the utterance — 0-409ms later, measured, and 0ms in half of runs
 because the opening quote arrives in the same chunk as `novelty`. That is the
 same rule the non-streaming `ClaudeBrain.propose` has always applied with
 `if not utterance: return None`; the streaming path simply lost it.
+
+The same gate also refuses an utterance that turns out to be an offer to wait
+— "Let him finish the sentence, Ricky." — via
+`panel_core.scoring.is_wait_narration`. Those are empty proposals in every
+sense but the literal one, and the score cannot catch them: `floor_priority`
+weights expertise and novelty whether or not the agent wants the floor.
+
+That one costs the first *word* rather than the first character, and it has to.
+A prefix is not a line: "L", "Let him", "Let him finish the sentenc" contain no
+finished hold phrase, so a predicate asked about them as though they were whole
+answers "not wait-narration" every time and the gate never closes at all — see
+`is_wait_narration`'s `complete` argument, and `test_scoring.py`'s prefix test
+for what that looked like. So the hand is held while everything written so far
+is still inside the hold lexicon, which delays a genuine turn by its first word
+and nothing more. A hold that survives the whole stream is *settled* after the
+loop rather than left standing, because "built entirely out of words the hold
+phrases use" also describes "Come on, Dexter" — a reaction GUARDRAILS exists to
+protect. Late there, never only for a line that is wait-narration in full.
 """
 
 from __future__ import annotations
@@ -63,6 +81,7 @@ from panel_core import (
     Signals,
     build_system_prompt,
     build_turn_prompt,
+    is_wait_narration,
     sanitise,
     stable_prefix,
 )
@@ -121,6 +140,17 @@ class BrainConfig:
     # Haiku rejects `effort` outright (400), so it is unconfigurable rather
     # than merely fast: `effort` is omitted whenever the model is a haiku,
     # which keeps the bake-off re-runnable from this same config.
+    #
+    # `effort` is also the *only* generation-shaping lever here. Sonnet 5
+    # rejects `temperature`, `top_p` and `top_k` with a 400 — sampling
+    # parameters are gone on current-generation Claude models — so output
+    # variety and "don't reach for prepared material that isn't relevant"
+    # cannot be dialled. Both are prompt properties instead: `Persona.beats`
+    # and the fall-back-to-your-ordinary-discipline line `build_system_prompt`
+    # renders with it. If rehearsal shows beats landing mechanically, raising
+    # `effort` is the dial to try — and it has to be re-measured against the
+    # 4-6s proposal generation below before it ships, same standing as every
+    # other latency figure here.
     model: str = "claude-sonnet-5"
     effort: str = "low"
     max_tokens: int = 1200
@@ -331,6 +361,14 @@ class StreamingClaudeBrain:
             raise RuntimeError("ANTHROPIC_API_KEY is not set")
         self.config = config or BrainConfig()
         self.cast = cast
+        # Cast ids and display names, so "go on, Wayne" reduces to a bare
+        # vocative for `is_wait_narration`. Personas are data; the predicate
+        # in `panel_core.scoring` does not know the cast.
+        self._vocatives = frozenset(
+            word.lower()
+            for persona in (cast.personas.values() if cast else ())
+            for word in (persona.id, persona.name)
+        )
         self.client = anthropic.AsyncAnthropic(base_url=anthropic_base_url())
 
     async def stream(
@@ -350,6 +388,46 @@ class StreamingClaudeBrain:
 
         def ms() -> float:
             return 1000.0 * (time.monotonic() - started)
+
+        def hand(*, complete: bool) -> SignalsReady | None:
+            """The proposal this agent has earned so far, or None to hold.
+
+            One place, because it is asked twice: once per chunk while the
+            utterance is still arriving, and once more after the stream ends
+            to settle a hold the prefix rule could not resolve. Two copies
+            would be two places for the gate to drift.
+            """
+            if signals_sent or not emitted_utterance:
+                # `emitted_utterance` is the gate, not merely a value we happen
+                # to have: an empty utterance, or one that sanitises away to
+                # nothing, means this agent has nothing to say and must not be
+                # offered the floor. Silence is a legitimate outcome; an agent
+                # granted the floor and then saying nothing never is.
+                return None
+            if is_wait_narration(emitted_utterance, names=self._vocatives, complete=complete):
+                # A line that is *only* an offer to wait ("Let him finish the
+                # sentence, Ricky.") is the same case wearing words: the agent
+                # has nothing to say and its own score will not refuse it,
+                # because `floor_priority` weights expertise and novelty
+                # whether or not it wants the floor. The prompt forbids these
+                # lines too (`build_turn_prompt`); this is the backstop for
+                # when it is not obeyed.
+                return None
+            found = {m.group(1): m.group(2) for m in _FIELD_DONE.finditer(buffer)}
+            if not all(f in found for f in SIGNAL_FIELDS):
+                return None
+            return SignalsReady(
+                agent=persona.id,
+                signals=Signals(
+                    **{f: float(found[f]) for f in SIGNAL_FIELDS},
+                    # The string fields sit between `novelty` and `utterance`
+                    # in the schema, so by the time the utterance has a first
+                    # character they have all arrived. Anything that has not is
+                    # left at its default rather than guessed at.
+                    **_string_fields(buffer),
+                ),
+                elapsed_ms=ms(),
+            )
 
         async def sentences(fresh: str):
             # Shared by the in-stream path below and the end-of-stream
@@ -422,32 +500,17 @@ class StreamingClaudeBrain:
                     if fresh:
                         emitted_utterance = full
 
-                if not signals_sent and emitted_utterance:
-                    # `emitted_utterance` is the gate, not merely a value we
-                    # happen to have: an empty utterance, or one that sanitises
-                    # away to nothing, means this agent has nothing to say and
-                    # must not be offered the floor. Silence is a legitimate
-                    # outcome; an agent granted the floor and then saying
-                    # nothing never is.
-                    found = {m.group(1): m.group(2) for m in _FIELD_DONE.finditer(buffer)}
-                    if all(f in found for f in SIGNAL_FIELDS):
-                        signals_sent = True
-                        event = SignalsReady(
-                            agent=persona.id,
-                            signals=Signals(
-                                **{f: float(found[f]) for f in SIGNAL_FIELDS},
-                                # The string fields sit between `novelty` and
-                                # `utterance` in the schema, so by the time the
-                                # utterance has a first character they have all
-                                # arrived. Anything that has not is left at its
-                                # default rather than guessed at.
-                                **_string_fields(buffer),
-                            ),
-                            elapsed_ms=ms(),
-                        )
-                        if on_event:
-                            on_event(event)
-                        yield event
+                # Asked on every chunk, against a prefix: the gate holds the
+                # hand down only while everything written so far is still hold
+                # phrases, and the instant real content follows it opens
+                # normally. A hold that survives the whole stream is settled
+                # after the loop, not left standing.
+                event = hand(complete=False)
+                if event is not None:
+                    signals_sent = True
+                    if on_event:
+                        on_event(event)
+                    yield event
 
                 if fresh:
                     async for event in sentences(fresh):
@@ -478,6 +541,22 @@ class StreamingClaudeBrain:
         if tail:
             index += 1
             event = SentenceReady(agent=persona.id, text=tail, index=index, elapsed_ms=ms())
+            if on_event:
+                on_event(event)
+            yield event
+
+        # Settle a hand the prefix rule held. A line that merely *began* inside
+        # the hold lexicon — "Go on then, what is the actual number?", or a
+        # thin "Yeah. Sure." — is held while it is ambiguous and released here,
+        # late, rather than never: the utterance is complete now, so the
+        # question is no longer "is there a turn in this yet?" but "was there
+        # one". Only a line that is wait-narration in full stays silent, and
+        # that one is as silent as an empty utterance, which is the point.
+        # Arriving after the `SentenceReady` events costs nothing — they are
+        # accumulated on the `Candidate` and only ever spoken on a grant.
+        event = hand(complete=True)
+        if event is not None:
+            signals_sent = True
             if on_event:
                 on_event(event)
             yield event

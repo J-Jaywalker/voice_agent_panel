@@ -1,9 +1,5 @@
 
-Tech setup
-
-We're sending every agent on a single line.
-
-Feedback shouldn't be an issue according to the 
+Feedback shouldn't be an issue according to the AV team
 
 It’s an ultra widescreen video, the size of it is 12x4.5 and the aspect ratio will need to be accounted for our demo.
 
@@ -16,5 +12,10 @@ For sound we take sound out from the midi jack out on computer - then we feed ba
 
 be on standby from around 9-10pm for setup, we at least test it once before we go to bed
 
-talk to maria about getting this set up. 
 
+- fix speaker lock properly
+ - try only using regular speaker diarization and locking onto speaker 1
+ - experiment using this with both prefer current speaker and 
+ - experiment by increasing the number of partials required to interrupt.
+
+Until introductions are done, agents should not be able to respond to open or directed questions to prevent a potential response during teh talking phase. 

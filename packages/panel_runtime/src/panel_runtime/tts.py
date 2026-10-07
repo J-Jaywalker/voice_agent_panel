@@ -61,7 +61,7 @@ violation with a 1008 close of the socket:
 
 **Accent is injected here, not written by the model** (migrated 5 Oct 2026,
 alongside the move to v3). `_VoiceChannel.push` prepends a persona's standing
-accent tag — e.g. `[London accent]`, `[irish accent]` — to *every*
+accent tag — e.g. `[Yorkshire accent]`, `[irish accent]` — to *every*
 push, not just a context's first:
 this endpoint buffers and flushes roughly every 40 characters/8 words
 (above), each flush is its own generation, and a tag asserted only at the

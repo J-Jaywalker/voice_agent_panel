@@ -41,6 +41,7 @@ AUDIO_TAGS: frozenset[str] = frozenset(
         "exhales",
         "dryly",
         "clears throat",
+        "Yorkshire accent",
         "London accent",
         "irish accent",
     }
@@ -79,7 +80,28 @@ AUDIO_TAGS: frozenset[str] = frozenset(
 # fixed rather than generated: the failure mode of leaving it to the model is
 # a turn where it quietly does not show up, and there is no way to notice
 # that without listening to the whole show.
-ACCENT_TAGS: frozenset[str] = frozenset({"London accent", "irish accent"})
+ACCENT_TAGS: frozenset[str] = frozenset({"Yorkshire accent", "London accent", "irish accent"})
+
+
+class Beat(BaseModel):
+    """One discussion topic this persona has prepared material for.
+
+    Ricky cues a beat by topic, not by exact wording — he is a live human and
+    he paraphrases — so the model has to recognise that the conversation has
+    arrived rather than pattern-match his sentence. The material is a target
+    to answer against in this persona's own voice, never a line to recite, and
+    the mechanism is never named out loud (`prompts.build_system_prompt`).
+    """
+
+    cue: str = Field(description="The topic that raises this beat, described not quoted.")
+    material: list[str] = Field(
+        default_factory=list,
+        description="Substance to answer from, in your own voice — a target, not a script.",
+    )
+    reacting_to: dict[str, str] = Field(
+        default_factory=dict,
+        description="Persona id -> how to handle that colleague's take on this same beat.",
+    )
 
 
 class Persona(BaseModel):
@@ -124,6 +146,14 @@ class Persona(BaseModel):
     # than holding one. Both are delivery faults, not stance or style faults,
     # so neither was fixable by editing `stance` or `communication_style`.
     delivery: list[str] = Field(default_factory=list)
+
+    # Prepared material scoped to a discussion beat, keyed by beat id ("q1",
+    # "q2", ...). Unlike `anecdotes`, which is standing material the persona
+    # reuses anywhere, a beat only applies once the conversation has reached
+    # its topic — and the prompt has to say so, because nothing else stops the
+    # model reaching for it in an unrelated turn (there is no sampling knob to
+    # lean on; see `panel_runtime.brains.BrainConfig`).
+    beats: dict[str, Beat] = Field(default_factory=dict)
 
     # --- fixed opening ---
     # Word-for-word, spoken every time, never generated. The introduction
@@ -200,6 +230,19 @@ class Persona(BaseModel):
     # i.e. unchanged.
     accent: str | None = Field(default=None)
     communication_style: str
+
+    @field_validator("anecdotes", "citable_figures", mode="before")
+    @classmethod
+    def _drop_blank_entries(cls, value: object) -> object:
+        """`- >` with nothing under it is YAML for one empty string, not an
+        empty list — and a one-entry list is truthy, so it renders the whole
+        "Public figures you are expected to use" block with a blank bullet
+        under it. Measured on 2026-10-07: Melia and Dexter both carried one,
+        and Melia invented a Brussels legislative deadline to fill it.
+        """
+        if isinstance(value, list):
+            return [entry for entry in value if not (isinstance(entry, str) and not entry.strip())]
+        return value
 
     @field_validator("audio_tags")
     @classmethod

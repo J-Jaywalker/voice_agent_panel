@@ -331,7 +331,7 @@ _SIGNALS = (
 def _run_stream(monkeypatch, body: str, *, chunk_size: int = 7):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     cast = PanelCast.from_dir(PERSONA_DIR)
-    brain = StreamingClaudeBrain(BrainConfig())
+    brain = StreamingClaudeBrain(BrainConfig(), cast=cast)
     brain.client = _fake_client(_chunked(body, size=chunk_size))
 
     async def body_coro():
@@ -382,6 +382,65 @@ def test_hand_raised_before_the_utterance_finishes(monkeypatch):
     assert kinds[0] == "SignalsReady", f"signals must lead, got {kinds}"
     assert kinds.count("SignalsReady") == 1
     assert "SentenceReady" in kinds, "the utterance must still stream in sentences"
+    assert kinds[-1] == "ProposalComplete"
+
+
+def test_no_hand_raised_for_a_wait_only_utterance(monkeypatch):
+    """A proposal whose only content is an offer to wait is an empty one.
+
+    The same failure as above wearing words: the model answers "will you be
+    speaking?" with "Let him finish the sentence, Ricky." rather than with
+    `""`, and the score cannot refuse it — `floor_priority` weights expertise
+    and novelty whether or not the agent wants the floor, so an honest decline
+    still clears `min_floor_priority`. Handled identically to the empty case:
+    no `SignalsReady`, so no `AgentProposal`, so the floor is never offered.
+    """
+    body = _SIGNALS + '"utterance": "Let him finish the sentence, Ricky."}'
+    events = _run_stream(monkeypatch, body)
+
+    assert not [e for e in events if isinstance(e, SignalsReady)], (
+        "an agent offering to wait raised its hand"
+    )
+
+
+def test_a_hold_phrase_does_not_suppress_the_turn_that_follows_it(monkeypatch):
+    """The gate holds the hand down, it does not cancel the proposal.
+
+    "Let him finish" is the whole utterance for exactly as long as it is the
+    whole utterance. The moment real content arrives behind it the line stops
+    being wait-narration and the hand goes up as normal — which is also why
+    the gate is re-tested on every chunk rather than decided once.
+    """
+    body = _SIGNALS + (
+        '"utterance": "Let him finish his story, but I have my own point. '
+        'We shipped eleven of these last year and two of them stuck."}'
+    )
+    events = _run_stream(monkeypatch, body)
+
+    kinds = [type(e).__name__ for e in events]
+    assert kinds.count("SignalsReady") == 1, f"the real turn was suppressed, got {kinds}"
+    assert "SentenceReady" in kinds
+    assert kinds.index("SignalsReady") < kinds.index("SentenceReady"), (
+        "a line that leaves the hold lexicon mid-stream must not pay the "
+        "settling round trip — its hand goes up before its first sentence"
+    )
+
+
+def test_a_line_that_never_leaves_the_hold_lexicon_is_settled_not_dropped(monkeypatch):
+    """A hold is provisional until the utterance is whole.
+
+    "Come on, Dexter" is built entirely from words the hold phrases use, so
+    there is no prefix of it that is recognisably a turn — it is held to the
+    last character. Dropping it there would silence one of the short reactions
+    `GUARDRAILS` exists to protect, so the hold is settled after the stream
+    instead: the hand goes up late rather than never. Late costs this line the
+    speculation it would have won; never costs the panel a reaction.
+    """
+    body = _SIGNALS + '"utterance": "Come on, Dexter."}'
+    events = _run_stream(monkeypatch, body)
+
+    kinds = [type(e).__name__ for e in events]
+    assert kinds.count("SignalsReady") == 1, f"a legitimate reaction was dropped, got {kinds}"
     assert kinds[-1] == "ProposalComplete"
 
 

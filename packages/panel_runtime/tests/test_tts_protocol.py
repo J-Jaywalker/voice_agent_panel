@@ -404,7 +404,7 @@ def test_accent_is_reapplied_on_the_next_turn(server: _FakeEndpoint) -> None:
     the bookkeeping is per `context_id`, not a one-time latch on the voice."""
 
     async def body() -> list[str]:
-        engine = ElevenLabsTTS(accent_tags={VOICE: "London accent"})
+        engine = ElevenLabsTTS(accent_tags={VOICE: "Yorkshire accent"})
         first = await engine.synthesise("First turn.", voice_id=VOICE)
         async for _chunk in first.chunks():
             pass
@@ -415,8 +415,8 @@ def test_accent_is_reapplied_on_the_next_turn(server: _FakeEndpoint) -> None:
         return [m["inputs"][0]["text"] for m in server.sent if m.get("inputs")]
 
     texts = asyncio.run(body())
-    assert texts[0].startswith("[London accent] First turn")
-    assert texts[1].startswith("[London accent] Second turn")
+    assert texts[0].startswith("[Yorkshire accent] First turn")
+    assert texts[1].startswith("[Yorkshire accent] Second turn")
 
 
 def test_a_voice_with_no_accent_tag_is_unaffected(server: _FakeEndpoint) -> None:

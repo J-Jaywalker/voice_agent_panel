@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from panel_core import PanelCast, Persona
+from panel_core import Beat, PanelCast, Persona
 
 PERSONA_DIR = Path(__file__).resolve().parents[3] / "personas"
 
@@ -86,6 +86,88 @@ def test_extra_aliases_defaults_to_empty() -> None:
     assert persona.sounds_like == []
 
 
+def test_beats_default_to_empty() -> None:
+    """A persona with no `beats:` in its YAML carries no prepared material —
+    the same shape as `anecdotes`, so an added persona is safe by default."""
+    persona = Persona(
+        id="dex",
+        name="Dexter",
+        job_title="x",
+        employer="x",
+        background="x",
+        stance="x",
+        introduction="x",
+        intro_position=0,
+        voice_id="x",
+        communication_style="x",
+    )
+    assert persona.beats == {}
+
+
+def test_a_beat_needs_only_a_cue() -> None:
+    """`material` and `reacting_to` are both optional, because a beat is
+    authored incrementally: the topic is known before the substance is
+    written, and a half-authored beat must parse rather than block the cast
+    from loading at all."""
+    beat = Beat(cue="what changed when agents started dealing with agents")
+    assert beat.material == []
+    assert beat.reacting_to == {}
+
+
+def test_the_real_cast_carries_beats_keyed_by_question(cast: PanelCast) -> None:
+    """Question one is an open question to the panel, so all three have to
+    have something prepared for it — an open floor with two agents holding
+    material and one holding none is a turn that goes to whoever is loudest."""
+    for persona in cast.personas.values():
+        assert "q1" in persona.beats, f"{persona.id} has no q1 beat"
+        assert persona.beats["q1"].material
+
+
+def test_dexters_q1_stands_up_without_a_colleague_having_spoken(cast: PanelCast) -> None:
+    """His q1 claim is a general one about agent-to-agent delegation —
+    identity proves who, not what they are authorised to do — so it has to
+    survive nobody having set it up. Written as "the delegation half is true
+    and you say so first" it produced a filler line on his first opportunity
+    (Wayne had not spoken yet) and then a turn framed entirely around Wayne's
+    anecdote once he had (rehearsal, 7 Oct 2026).
+
+    So the material names no colleague at all, and everything conditional on
+    one having spoken lives in `reacting_to`, which `build_system_prompt`
+    renders behind "if X has just spoken on this same topic".
+    """
+    beat = cast["dex"].beats["q1"]
+    colleagues = [n.lower() for a, p in cast.personas.items() if a != "dex" for n in (a, p.name)]
+    for text in (beat.cue, *beat.material):
+        named = [c for c in colleagues if c in text.lower()]
+        assert not named, f"q1 material depends on {named}: {text}"
+    assert "identity" in beat.material[0].lower(), "the standalone claim is not what he opens on"
+    assert "wayne" in beat.reacting_to
+
+
+def test_dexters_reaction_to_wayne_is_additive_not_corrective(cast: PanelCast) -> None:
+    """Beat q1's dominant register is three genuine opinions landing side by
+    side, not a chain of rebuttals — Dexter's own mid-thought self-correction
+    ("actually", "no, no") is a separate, established part of his character
+    (`communication_style`, `delivery`) and is untouched here. What this pins
+    is narrower: his stated *relationship to Wayne's point* has to read as
+    "in addition to", never as "but, actually, that's wrong"."""
+    reaction = cast["dex"].beats["q1"].reacting_to["wayne"].lower()
+    assert "rebuttal" in reaction, "additive-not-rebuttal framing got lost"
+    assert any(kw in reaction for kw in ("on top of", "alongside", "in addition"))
+
+
+def test_melias_wayne_friction_in_q1_stays_sharp(cast: PanelCast) -> None:
+    """The one deliberate disagreement the beat keeps (CLAUDE.md / the script's
+    PANEL DYNAMIC note: "some room for bickering") is Melia going after Wayne's
+    own word "latency" from his introduction, and him not conceding. Retuning
+    the rest of q1 toward addition must not soften this one exchange."""
+    beat = cast["melia"].beats["q1"]
+    assert "latency" in " ".join(beat.material).lower()
+    reaction = beat.reacting_to["wayne"].lower()
+    assert "not concede" in reaction or "will not concede" in reaction
+    assert "soften" in reaction
+
+
 def test_canonical_name_matches_the_alias_floor_addresses_use(cast: PanelCast) -> None:
     """`canonical_name` is what STT vocabulary bias targets (see
     `vocab_from_cast`) and `aliases()` is what the floor will accept in the
@@ -99,9 +181,10 @@ def test_canonical_name_matches_the_alias_floor_addresses_use(cast: PanelCast) -
         assert persona.canonical_name.lower() in persona.aliases()
 
 
-def test_only_melia_declares_sounds_like_today(cast: PanelCast) -> None:
-    """Dexter and Wayne are common English names already well represented
-    in STT vocabularies — see the comments in their YAML files for why they
-    deliberately carry no `sounds_like` hints yet."""
+def test_only_melia_and_wayne_declare_sounds_like_today(cast: PanelCast) -> None:
+    """Dexter is a common English name already well represented in STT
+    vocabularies — see the comment in his YAML for why he deliberately
+    carries no `sounds_like` hints yet. Melia's and Wayne's both fix real
+    misrecognitions (see their own YAML comments)."""
     with_hints = {p.id for p in cast.personas.values() if p.sounds_like}
-    assert with_hints == {"melia"}
+    assert with_hints == {"melia", "wayne"}

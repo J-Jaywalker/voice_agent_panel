@@ -11,6 +11,7 @@ No LLM call happens anywhere in this path (FEASIBILITY.md 3.5).
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from .events import Signals
@@ -331,6 +332,174 @@ def is_backchannel(text: str, *, min_words: int) -> bool:
         return True  # VAD fired but nothing transcribed yet — assume backchannel
     substantive = [t for t in tokens if t not in BACKCHANNEL_LEXICON]
     return len(substantive) < min_words
+
+
+# Phrases that hold the floor for someone else and say nothing. Matched as
+# whole phrases against normalised text, never as bare words: "wait" and "hold
+# on" alone open plenty of legitimate reactions ("Wait, what?"), so only the
+# multi-word forms are listed and the residue rule below decides the rest.
+WAIT_PHRASES: tuple[str, ...] = (
+    (
+        r"let (?:him|her|them|me|us|you) finish"
+        r"(?:(?: the| that| his| her| their| your)?"
+        r"(?: sentence| thought| point| question| answer| story))?"
+    ),
+    r"(?:go|carry|crack) (?:on|ahead)",
+    r"after you",
+    r"you (?:go )?first",
+    r"take your time",
+    r"no rush",
+    r"in your own time",
+    r"(?:we|they)'re listening",
+    r"i'm listening",
+    r"(?:the )?floor'?s? (?:is )?(?:all )?(?:yours|his|hers|theirs)",
+    r"whenever you(?:'re| are)? (?:want|like|ready)(?: it| to)?",
+    (
+        r"(?:i'll|i will|happy to|content to|glad to|i'm happy to) wait"
+        r"(?: my turn| your turn| his turn| her turn| their turn)?"
+        r"(?: for (?:the )?(?:floor|turn|him|her|them|you|it|that|this))?"
+    ),
+    r"wait(?:ing)? (?:my|his|her|their|your) turn",
+    r"(?:hold|hang) on",
+    r"give (?:it|him|her|them|us|me|you) a (?:sec|second|moment|minute)",
+    r"(?:just )?(?:a|one) (?:sec|second|moment|minute)",
+    (
+        r"i'?ll (?:come|jump|chime|cut) in"
+        r"(?: after(?:wards)?| later| next| behind (?:him|her|them|you))?"
+    ),
+    r"let'?s hear (?:the|his|her|their|that|this) \w+ first",
+    r"don'?t let me (?:stop|interrupt|hold up) you",
+)
+
+_WAIT_RE = re.compile(r"\b(?:" + "|".join(WAIT_PHRASES) + r")\b")
+
+# Digits count as words here, unlike in `is_backchannel`'s `_WORD_RE`. The
+# hold phrases contain none, so matching is unaffected — what changes is that
+# "Hold on — 40%." keeps a residue. Under a letters-only tokeniser a figure is
+# not thin content, it is *no* content, and the one line most worth protecting
+# is the one that is nothing but a number: `build_turn_prompt` asks for "a
+# figure, date, count, deployment" by name.
+_WAIT_WORD_RE = re.compile(r"[a-z0-9']+")
+
+# Every word any hold phrase can be built out of, read straight off the
+# patterns above so adding a phrase cannot leave this behind. Only `complete=
+# False` uses it, and only to decide that a *half-written* line is still
+# inside the lexicon — "let", "let him", "take your" are each a hold phrase
+# that has not finished arriving, and none of them is yet evidence of a turn.
+# `\w`, `\b` and the group syntax carry no words; apostrophes are split so a
+# pattern's `(?:we|they)'re` covers the normalised token "we're".
+_WAIT_VOCAB: frozenset[str] = frozenset(
+    part
+    for source in WAIT_PHRASES
+    for token in _WORD_RE.findall(re.sub(r"\\[a-z]", " ", source))
+    for part in token.split("'")
+    if part
+)
+
+# What is left over after a hold phrase and still cannot carry a turn:
+# discourse particles, apologies, and the moderator's name as a vocative.
+# "ricky" is here rather than passed in because he is not a persona — the
+# system prompt already names him literally (`prompts.build_system_prompt`);
+# the cast's own ids and names are data and arrive via `names`.
+WAIT_FILLER: frozenset[str] = frozenset(
+    {
+        "sorry",
+        "yeah",
+        "yep",
+        "yes",
+        "yup",
+        "ok",
+        "okay",
+        "mm",
+        "mmm",
+        "mhm",
+        "mmhm",
+        "mhhm",
+        "hm",
+        "hmm",
+        "oh",
+        "ah",
+        "right",
+        "sure",
+        "please",
+        "no",
+        "nope",
+        "and",
+        "but",
+        "so",
+        "then",
+        "well",
+        "just",
+        "first",
+        "of",
+        "course",
+        "fine",
+        "ricky",
+    }
+)
+
+
+def is_wait_narration(text: str, *, names: Iterable[str] = (), complete: bool = True) -> bool:
+    """Is this line *only* an offer to wait, with no turn inside it?
+
+    "Let him finish the sentence, Ricky." and "Take your time, Ricky — floor's
+    yours whenever you want it." are not turns. They clear the score floor
+    anyway (`floor_priority` weights expertise and novelty whether or not the
+    agent wants to speak), so the prompt alone cannot be the only thing
+    stopping them reaching the PA.
+
+    A *residue* rule, not a phrase match: the hold phrases are deleted and the
+    line is wait-narration only if nothing substantive survives. Phrase
+    matching alone fails on the short reactions GUARDRAILS exists to protect —
+    "Wait, what?", "Hold on, Dexter, say that number again." — and on
+    "Let him finish his story, but I've got my own point.", where the real
+    turn follows the hold phrase. All three keep a residue and all three pass.
+
+    **Biased to fail open** — the opposite bias from `is_backchannel`. A line
+    with no hold phrase in it at all is never flagged, however thin. Missing a
+    filler line costs a few seconds of dead air; a false positive deletes a
+    legitimate short reaction, and on this stage that is the worse half of the
+    trade.
+
+    `complete=False` asks the *streaming* question instead — "is there a turn
+    in this yet?" — and it is a different question, not a looser version of
+    the same one. A caller watching an utterance arrive character by character
+    sees "L", "Let him", "Let him finish the sentenc" before it ever sees the
+    line, and every one of those passes the rule above: no hold phrase has
+    finished arriving, so there is no residue and nothing is flagged. Judged
+    that way the predicate never fires on a stream at all. So under
+    `complete=False` the rule inverts: the line is held while everything
+    certainly written so far is drawn from the hold lexicon (`_WAIT_VOCAB`) or
+    the filler, with a trailing word that may still be growing set aside. That
+    holds a thin-but-honest opening too ("Yeah. Sure.") — which is why a
+    streaming caller must settle the hold with a `complete=True` call once the
+    utterance is whole, rather than treating a hold as a verdict.
+
+    Args:
+        names: Cast ids and display names, so "go on, Wayne" reduces to a bare
+            vocative. Personas are data; this function does not know the cast.
+        complete: False while `text` is a prefix of an utterance still being
+            generated. See above — the two modes answer different questions.
+    """
+    normalised = " ".join(_WAIT_WORD_RE.findall(text.lower().replace("’", "'")))
+    if not normalised:
+        return False  # the empty-utterance gate owns this case
+    residue = _WAIT_RE.sub(" ", normalised)
+    filler = WAIT_FILLER | {n.lower() for n in names}
+    if not complete:
+        tokens = _WAIT_WORD_RE.findall(residue)
+        if tokens and text[-1:].isalpha():
+            # The last word is still arriving — "sentenc" is not a word this
+            # agent has chosen, and counting it as content opens the gate on
+            # every line this predicate exists to catch.
+            tokens.pop()
+        return all(
+            all(part in filler or part in _WAIT_VOCAB for part in t.split("'") if part)
+            for t in tokens
+        )
+    if residue == normalised:
+        return False  # no hold phrase — not this predicate's business
+    return not [t for t in _WAIT_WORD_RE.findall(residue) if t not in filler]
 
 
 def floor_priority(

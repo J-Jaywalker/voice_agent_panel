@@ -40,11 +40,13 @@ def test_vocab_from_cast_has_one_entry_per_persona_with_sounds_like(cast: PanelC
     vocab = vocab_from_cast(cast)
     contents = {entry["content"] for entry in vocab}
     show_contents = {entry["content"] for entry in SHOW_VOCAB}
-    assert contents == {"Melia"} | show_contents, (
-        "only melia.yaml declares `sounds_like` today; the rest is SHOW_VOCAB"
+    assert contents == {"Melia", "Wayne"} | show_contents, (
+        "melia.yaml and wayne.yaml declare `sounds_like` today; the rest is SHOW_VOCAB"
     )
-    entry = next(e for e in vocab if e["content"] == "Melia")
-    assert entry["sounds_like"] == cast["melia"].sounds_like
+    melia_entry = next(e for e in vocab if e["content"] == "Melia")
+    assert melia_entry["sounds_like"] == cast["melia"].sounds_like
+    wayne_entry = next(e for e in vocab if e["content"] == "Wayne")
+    assert wayne_entry["sounds_like"] == cast["wayne"].sounds_like
 
 
 def test_show_vocab_rides_on_every_session(cast: PanelCast) -> None:

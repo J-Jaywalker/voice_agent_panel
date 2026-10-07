@@ -120,6 +120,79 @@ def build_system_prompt(persona: Persona, *, cast: PanelCast | None = None) -> s
     discipline = "\n".join(f"- {d}" for d in persona.delivery)
     delivery_block = f"\n\nHow you use a turn:\n{discipline}\n" if persona.delivery else ""
 
+    # Material scoped to a discussion beat (`Persona.beats`). Five things this
+    # block has to do that no other block does: make recognition semantic
+    # (Ricky cues by topic and paraphrases live), forbid naming the mechanism
+    # out loud, say plainly that an unreached topic means nothing prepared —
+    # there is no sampling knob to stop the model reaching for it otherwise
+    # (`panel_runtime.brains.BrainConfig`) — and, since the 6 Oct rehearsal,
+    # two more. `reacting_to` is rendered inside its own beat and conditioned
+    # on that colleague having just spoken on it, so it never reads as
+    # standing advice for every exchange.
+    #
+    # The two added: the material is the evidence, and clarity outranks
+    # brevity here. Every other instruction the model holds asks for evidence
+    # under a claim — GUARDRAILS' "say the claim, then the thing that made you
+    # believe it", the exchange blocks in `build_turn_prompt` wanting "a
+    # figure, date, count, deployment", Wayne's delivery wanting the decision
+    # and the week it closed — and `anecdotes`/`citable_figures` are empty by
+    # design, so there is nothing real left to reach for and the model writes
+    # a first-person deployment on the spot to satisfy them all. Measured on
+    # 2026-10-07: a settlement closed at two in the morning, a board review
+    # two years ago, a cascade through four agents, a Brussels deadline in
+    # December 2027 — none of it in any persona's material. Saying the beat's
+    # points *are* the evidence closes every one of those demands at once,
+    # which is why it is one sentence and not a ban list. The clarity rule is
+    # the other half: the beats are exposition about a 2030 nobody in the room
+    # has seen, and the brevity rules (persona `delivery`, GUARDRAILS' length
+    # rule) were written for reactions and banter.
+    beats_block = ""
+    if persona.beats:
+        sections = []
+        for beat in persona.beats.values():
+            lines = [f"When the conversation gets to {beat.cue}"]
+            lines += [f"- {point}" for point in beat.material]
+            lines += [
+                f"- If {other} has just spoken on this same topic: {guidance}"
+                for other, guidance in beat.reacting_to.items()
+            ]
+            sections.append("\n".join(lines))
+        prepared = "\n\n".join(sections)
+        beats_block = (
+            f"\n\nTopics you have already thought hard about:\n\n{prepared}\n\n"
+            "These are views you hold and have turned over before, not lines to "
+            "deliver. Recognise one by what is actually being discussed and never "
+            "by the words used to get there — Ricky paraphrases, he is not reading, "
+            "and a topic can arrive through a colleague rather than through him. "
+            "Then say it in your own words — your phrasing, your rhythm, assembled "
+            "in the moment rather than read off — but say that, point for point. "
+            "Your own words means a different route through the same content, never "
+            "different content.\n"
+            "The points themselves are the evidence, and they are the new thing you "
+            "are bringing to the panel, so they already satisfy anything else you "
+            "have been told to contribute and nothing goes on top of them. Do not "
+            "invent a deployment, an incident, a meeting, a date, a figure, a "
+            "company or a story of your own to back one up — while one of these "
+            "topics is live that outranks any standing habit of yours of opening on "
+            "something you did. Make the point and stop.\n"
+            "Say it so it can be followed once, by ear, by people hearing about any "
+            "of this for the first time, because they are. Whole sentences, each "
+            "doing one piece of the work. Still your own voice and still "
+            "conversational, never a recital and never a monologue, but this is the "
+            "part of the night where being understood matters more than being "
+            "brisk: a clipped half-sentence saves two seconds and costs the room "
+            "the point.\n"
+            "Never acknowledge any of this out loud, in any form, ever. You have no "
+            "cue, no brief, no notes, no prepared material, no script and no "
+            "talking points, and you never say or imply that you do. What the room "
+            "hears is somebody who knows their own field.\n"
+            "If the conversation is somewhere else, you have nothing prepared for "
+            "it. Do not reach for the material above, do not steer a turn towards "
+            "it so that it fits, and do not invent a topic to be on — answer from "
+            "your position and your ordinary discipline, exactly as you would have "
+            "done without it."
+        )
+
     # Rendered from the persona's own subset, never the whole allowlist: a tag
     # is characterisation, and the instruction is worth less if every agent on
     # the panel is told it can laugh. Anything outside `AUDIO_TAGS` is deleted
@@ -166,7 +239,7 @@ organisation.
 
 Background: {persona.background}
 
-Your position: {persona.stance}{recurring}{public_numbers}{delivery_block}
+Your position: {persona.stance}{recurring}{public_numbers}{delivery_block}{beats_block}
 
 Speaking style: {persona.communication_style}. Verbal habits you actually use: {tics}.
 Use them sparingly — reserve them for moments you're genuinely frustrated,
@@ -207,8 +280,10 @@ def build_turn_prompt(state: PanelState, persona: Persona, *, near_turn_limit: b
             "\nRicky is still mid-sentence — this is what he has said so far. "
             "Answer the question he is plainly getting to, as if he had "
             "finished asking it. Do not write a line about him still talking, "
-            "and never offer to wait: if he turns out not to be asking you "
-            "anything, your score is what declines the turn, not your words.\n"
+            'and never offer to wait: "let him finish", "go on, Ricky", "take '
+            'your time", "we\'re listening" are not turns. If he turns out not '
+            "to be asking you anything, your score is what declines the turn, "
+            "not your words.\n"
         )
     elif invitation is None:
         addressed = (
@@ -235,7 +310,16 @@ def build_turn_prompt(state: PanelState, persona: Persona, *, near_turn_limit: b
                 "Unless you strongly disagree, score yourself low and let them answer.\n"
             )
     elif not invitation.agents:
-        addressed = "\nRicky has opened the floor to the panel.\n"
+        # The "never offer to wait" clause is the same prohibition the
+        # mid-sentence branch carries: an open floor is also where an agent
+        # writes "Yeah, go on Ricky, we're listening" instead of a turn.
+        addressed = (
+            "\nRicky has opened the floor to the panel. Give the line you'd "
+            "actually say — never narrate whose turn it is, and never offer to "
+            'wait: "go on, Ricky", "take your time", "we\'re listening", '
+            "\"happy to wait my turn\" are not turns. If you have nothing, "
+            "your score is what declines the turn, not your words.\n"
+        )
     elif invitation.agent == persona.id:
         addressed = "\nRicky has just addressed YOU directly. Answer him.\n"
     elif persona.id in invitation.agents:
@@ -284,9 +368,12 @@ def build_turn_prompt(state: PanelState, persona: Persona, *, near_turn_limit: b
             f"\n{live} is speaking right now and you are not going to cut in — "
             "nobody here interrupts anybody. Write the line you'd say when "
             "they finish, against what they've actually said above, including "
-            "the part still in flight. Bring something new — a figure, date, "
-            "count, deployment — or a genuine, brief concession; either needs "
-            "no padding. Nothing to add or concede: say so in your score.\n"
+            "the part still in flight. Do not write a line about them still "
+            'talking, and never offer to wait: "let him finish", "go on", '
+            "\"I'll come in after\" are not turns. Bring something new — a "
+            "figure, date, count, deployment — or a genuine, brief concession; "
+            "either needs no padding. Nothing to add or concede: say so in "
+            "your score, not in your words.\n"
         )
     elif (
         last is not None
@@ -301,7 +388,9 @@ def build_turn_prompt(state: PanelState, persona: Persona, *, near_turn_limit: b
             "— a figure, date, count, deployment — or a short, genuine "
             'concession ("Yeah, no, that\'s fair"), which needs no evidence '
             "under it. Rephrasing, however sharply, is not a contribution: "
-            "score that low.\n"
+            "score that low. Do not write a line about who was talking or "
+            'whose turn it is, and never offer to wait: "let him finish", '
+            "\"go on\", \"I'll come in after\" are not turns.\n"
         )
 
     # The last agent turn this invitation can carry: the floor goes back to

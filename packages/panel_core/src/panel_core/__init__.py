@@ -33,7 +33,7 @@ from .events import (
     UnverifiedSpeechDetected,
 )
 from .floor import AddressRole, CueReason, FloorController
-from .personas import PanelCast, Persona
+from .personas import Beat, PanelCast, Persona
 from .prompts import (
     GUARDRAILS,
     PROPOSAL_SCHEMA,
@@ -46,6 +46,7 @@ from .scoring import (
     FloorConfig,
     floor_priority,
     is_backchannel,
+    is_wait_narration,
 )
 from .state import (
     AgentState,
@@ -68,6 +69,7 @@ __all__ = [
     "AgentSpeechStarted",
     "AgentState",
     "AgentUtteranceProgress",
+    "Beat",
     "Command",
     "CueModerator",
     "CueReason",
@@ -102,6 +104,7 @@ __all__ = [
     "build_turn_prompt",
     "floor_priority",
     "is_backchannel",
+    "is_wait_narration",
     "sanitise",
     "stable_prefix",
 ]
