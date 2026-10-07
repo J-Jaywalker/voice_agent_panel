@@ -41,7 +41,6 @@ AUDIO_TAGS: frozenset[str] = frozenset(
         "exhales",
         "dryly",
         "clears throat",
-        "Yorkshire accent",
         "London accent",
         "irish accent",
     }
@@ -55,20 +54,22 @@ AUDIO_TAGS: frozenset[str] = frozenset(
 # reference recording's accent; v3 does not implement that setting at all
 # (dropped in `panel_runtime.tts`'s `TTSConfig`), and every persona's
 # `stability` separately collapsed onto the same 0.5 preset (`_preset_stability`,
-# same module) — between the two, Dexter's Northern accent read as flattened
-# towards the model's generic defaults. (Melia's `strong irish accent` was
+# same module) — between the two, a persona's accent read as flattened
+# towards the model's generic defaults. Melia's `strong irish accent` was
 # tried the same way at stability 0.0 Creative and dropped 5 Oct 2026 — the
 # tag did not move this particular voice. Re-added 6 Oct 2026 as plain
 # "irish accent", same stability; untested on the real voice since the
 # phrasing change — if it still doesn't move, recasting `voice_id` to a voice
 # already labelled Irish is the more likely fix than more tag or stability
-# tuning, see `personas/melia.yaml`. A `pace` field and `[rapid-fire]` tag
-# were tried the same way for Wayne the same day, to compensate for v3
-# dropping `speed` entirely — measured as working, ~15% shorter audio for the
-# same text, but it read as shouting rather than brisk and was reverted; see
-# `personas/wayne.yaml`. That revert was of the tag, not of the mechanism:
-# `PACE_TAGS` below is the same field tried again on 2026-10-07 with
-# `[briskly]`, and it is live for Wayne.)
+# tuning, see `personas/melia.yaml`. Dexter's own standing accent (Yorkshire)
+# was tried the same way and dropped entirely 7 Oct 2026, not retuned — not
+# in use. A `pace` field and `[rapid-fire]` tag were tried the same way for
+# Wayne the same day, to compensate for v3 dropping `speed` entirely —
+# measured as working, ~15% shorter audio for the same text, but it read as
+# shouting rather than brisk and was reverted; see `personas/wayne.yaml`.
+# That revert was of the tag, not of the mechanism: `PACE_TAGS` below is the
+# same field tried again on 2026-10-07 with `[briskly]`, and it is live for
+# Wayne.
 #
 # The vendor's fix for an accent is an inline tag, but rendering it into the
 # "sounds your voice can actually make" prompt block (below) is the wrong
@@ -82,7 +83,7 @@ AUDIO_TAGS: frozenset[str] = frozenset(
 # fixed rather than generated: the failure mode of leaving it to the model is
 # a turn where it quietly does not show up, and there is no way to notice
 # that without listening to the whole show.
-ACCENT_TAGS: frozenset[str] = frozenset({"Yorkshire accent", "London accent", "irish accent"})
+ACCENT_TAGS: frozenset[str] = frozenset({"London accent", "irish accent"})
 
 # `PACE_TAGS` is the accent mechanism above applied to a different standing
 # property: how fast a voice talks. Not an accent, and deliberately its own

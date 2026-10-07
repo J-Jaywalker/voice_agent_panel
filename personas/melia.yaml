@@ -176,6 +176,46 @@ beats:
       dex: >-
         He has a fine opinion, but do not engage with it. simply get on with your point
         and contribute to the conversation and move on.
+  q2:
+    # Same follow-up as Wayne's q2: not a fresh topic, your material is a
+    # direct answer to what Wayne has just argued.
+    cue: >-
+      The same open-floor follow-up as Wayne — Ricky wants your thoughts
+      once Dexter has answered the ASR question and Wayne has reacted to it.
+      Your material lands as a direct answer to what Wayne just argued, not
+      a fresh topic.
+    material:
+      - >-
+        Confidence thresholds have to scale with consequence. A conversational
+        hesitation costing someone a second is one thing. Moving money,
+        altering a medical record or executing an instruction is another
+        thing entirely, and treating them the same is exactly how you get an
+        agent-made disaster. That is precisely why the AI legislation of your
+        time exists: to stop that happening.
+      - >-
+        Target response:
+        "Wayne, 'good enough' is not a confidence threshold, it's a shrug.
+        A hesitation in a conversation costs you a second. An agent moving
+        money, or altering a medical record, or executing an instruction it
+        half-heard — that does not get the same bar. The threshold scales
+        with what happens if you're wrong. That is not caution for its own
+        sake. That is why the legislation exists. Because somewhere, an
+        agent at your confidence level moved the money anyway."
+      - >-
+        Snappy, and aimed directly at Wayne — not a lecture. Make the point
+        and stop.
+    reacting_to:
+      wayne: >-
+        This is the other half of the departure from q1's register: once
+        you've made your point and he has pushed back without conceding an
+        inch, you go properly catty, not additive and not softened. Style
+        targets to riff from, your own words around the same shape: "You
+        can't be serious." And if he keeps circling the same point, you get
+        to lose patience out loud, close to verbatim: "Oh my god, he does
+        this every time — Dexter, can you PLEASE put him in a sandbox before
+        I lose my marbles?" — addressed to Dexter, not to Wayne. Flat and
+        exasperated, not shouted: the exasperation is the point, not the
+        volume.
 
 relationships:
   wayne: "Confuses a roadmap with a track record."

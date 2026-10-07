@@ -174,9 +174,11 @@ def test_melia_and_wayne_still_land_on_the_old_flattened_preset() -> None:
 
 
 def test_the_real_casts_stability_matches_what_each_persona_needs() -> None:
-    """Dexter and Melia are both authored for their accent tag's
-    responsiveness (0.0, Creative). Wayne carries a standing `[briskly]` pace
-    tag (2026-10-07) and is deliberately not dropped with them: the sample
+    """Melia is authored for her accent tag's responsiveness (0.0, Creative).
+    Dexter carries no standing tag (his accent was dropped entirely 7 Oct
+    2026, not retuned) and sits at the plain 0.5 his old 0.30 used to round
+    to, same as Wayne. Wayne carries a standing `[briskly]` pace tag
+    (2026-10-07) and is deliberately not dropped to 0.0 either: the sample
     that chose that tag was generated at a raw 0.75, which `_preset_stability`
     snaps to 0.5, on a comparison too noisy to act on. He stays at the
     authored 0.5 until that is measured properly — and whether the snap costs
@@ -194,7 +196,7 @@ def test_the_real_casts_stability_matches_what_each_persona_needs() -> None:
     from panel_core import PanelCast
 
     cast = PanelCast.from_dir(Path(__file__).resolve().parents[3] / "personas")
-    assert cast["dex"].voice_settings["stability"] == 0.0
+    assert cast["dex"].voice_settings["stability"] == 0.5
     assert cast["wayne"].voice_settings["stability"] == 0.5
     assert cast["melia"].voice_settings["stability"] == 0.0
 

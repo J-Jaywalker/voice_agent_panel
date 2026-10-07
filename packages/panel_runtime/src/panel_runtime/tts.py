@@ -62,7 +62,7 @@ violation with a 1008 close of the socket:
 **A voice's standing characteristics are injected here, not written by the
 model** (accent migrated 5 Oct 2026 alongside the move to v3; pace added
 2026-10-07). `_VoiceChannel.push` prepends a persona's standing accent tag —
-e.g. `[Yorkshire accent]`, `[irish accent]` — and its standing pace tag —
+e.g. `[irish accent]` — and its standing pace tag —
 `[briskly]` — to *every* push, not just a context's first:
 this endpoint buffers and flushes roughly every 40 characters/8 words
 (above), each flush is its own generation, and a tag asserted only at the
@@ -151,24 +151,25 @@ def _preset_stability(value: float) -> float:
     being wrong: it is what the server does with those numbers either way,
     made visible.
 
-    Dexter is since re-authored straight to 0.0 (Creative) — not for that
-    contrast, but because he now carries a standing `accent` tag
-    (`panel_core.personas.ACCENT_TAGS`), and the vendor's own guidance is that
-    Robust "suppresses audio tag responsiveness" and Natural is a real step in
-    that direction. The same was tried for Melia's accent and for Wayne's
-    pace (a `[rapid-fire]` tag, to compensate for v3 dropping `speed`
-    entirely) and both were reverted 5 Oct 2026 — Melia's tag did not move
-    the voice, and Wayne's measurably worked but read as shouting rather than
-    brisk. Melia's accent was re-added 6 Oct 2026 with stability dropped to
-    0.0 again — see `personas/melia.yaml` for the trade-off and the fallback
-    if it still doesn't render.
+    Melia carries a standing `accent` tag (`panel_core.personas.ACCENT_TAGS`)
+    and is dropped to 0.0 (Creative) for it — the vendor's own guidance is
+    that Robust "suppresses audio tag responsiveness" and Natural is a real
+    step in that direction. The same was tried for Dexter's accent (dropped
+    entirely 7 Oct 2026, not in use — see `personas/dexter.yaml`) and for
+    Wayne's pace (a `[rapid-fire]` tag, to compensate for v3 dropping `speed`
+    entirely) and both were reverted 5 Oct 2026 — Wayne's measurably worked
+    but read as shouting rather than brisk, and Melia's first attempt at the
+    tag did not move the voice at this stability. Melia's accent was
+    re-added 6 Oct 2026 with stability dropped to 0.0 again — see
+    `personas/melia.yaml` for the trade-off and the fallback if it still
+    doesn't render.
 
     Wayne now carries a standing `[briskly]` pace tag (2026-10-07,
     `panel_core.personas.PACE_TAGS`) but is deliberately *not* dropped to 0.0
-    with the other two: the sample that chose that tag was generated at a raw
+    like Melia: the sample that chose that tag was generated at a raw
     0.75, which this function snaps to 0.5, on a single-sample comparison too
-    noisy to act on. He stays at the 0.5 he was already authored at and is the
-    one persona this function's flattening still applies to. See
+    noisy to act on. He stays at the 0.5 he was already authored at, and
+    Dexter — with no standing tag of his own now — joins him there. See
     `personas/wayne.yaml`.
 
     **Checked again, 2026-10-07.** ElevenLabs' own schema types `stability` as

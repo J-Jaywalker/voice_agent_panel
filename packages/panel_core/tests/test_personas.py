@@ -123,6 +123,15 @@ def test_the_real_cast_carries_beats_keyed_by_question(cast: PanelCast) -> None:
         assert persona.beats["q1"].material
 
 
+def test_the_real_cast_also_carries_beats_for_question_two(cast: PanelCast) -> None:
+    """Question two (what ASR has to become) is Dexter-led rather than open
+    floor, but the follow-up still asks Wayne and Melia for their reactions,
+    so all three need material."""
+    for persona in cast.personas.values():
+        assert "q2" in persona.beats, f"{persona.id} has no q2 beat"
+        assert persona.beats["q2"].material
+
+
 def test_dexters_q1_stands_up_without_a_colleague_having_spoken(cast: PanelCast) -> None:
     """His q1 claim is a general one about agent-to-agent delegation —
     identity proves who, not what they are authorised to do — so it has to
@@ -167,6 +176,51 @@ def test_melias_wayne_friction_in_q1_stays_sharp(cast: PanelCast) -> None:
     reaction = beat.reacting_to["wayne"].lower()
     assert "not concede" in reaction or "will not concede" in reaction
     assert "soften" in reaction
+
+
+def test_dexters_q2_frames_asr_as_moving_into_the_control_layer(cast: PanelCast) -> None:
+    """The substantive content of q2: ASR stops being just transcription and
+    becomes part of the decision/orchestration/control layer. This is the
+    user's explicit main point for the beat, so pin it as content, not just
+    presence."""
+    joined = " ".join(cast["dex"].beats["q2"].material).lower()
+    assert "transcription layer" in joined
+    assert "orchestration" in joined or "control layer" in joined
+
+
+def test_dexters_q2_does_not_leak_q1_or_q3_vocabulary(cast: PanelCast) -> None:
+    """q2 is ASR's role — not q1's identity/authority/handshake framing and
+    not q3's jailbreaking/security-attack framing. The beat's own material
+    tells Dexter explicitly to stay off both (so a model straying there is
+    disobeying an instruction, not an unguarded gap); this pins that the
+    instruction itself never does what it's warning against by reusing their
+    vocabulary wholesale. Terms chosen to be distinctive to those beats
+    rather than generic English that could land here innocently."""
+    beat = cast["dex"].beats["q2"]
+    text = (beat.cue + " " + " ".join(beat.material)).lower()
+    for banned in ("identity", "authority", "handshake", "jailbreak"):
+        assert banned not in text, f"q2 leaks q1/q3 vocabulary: {banned!r}"
+
+
+def test_melias_and_waynes_q2_bickering_is_not_q1s_additive_register(cast: PanelCast) -> None:
+    """q1's reaction register was explicitly additive — never a rebuttal. q2's
+    Wayne/Melia exchange is the opposite on purpose: sharp, personal,
+    bickering, and the YAML has to say so rather than silently reusing q1's
+    tone."""
+    wayne_reaction = cast["wayne"].beats["q2"].reacting_to["melia"].lower()
+    melia_reaction = cast["melia"].beats["q2"].reacting_to["wayne"].lower()
+    for reaction in (wayne_reaction, melia_reaction):
+        assert "not q1" in reaction or "not additive" in reaction
+        assert "additive" in reaction  # named explicitly, as the thing being departed from
+
+
+def test_melias_q2_sandbox_line_survives(cast: PanelCast) -> None:
+    """Melia's strongest line in q2 — asking Dexter, not Wayne, to put Wayne
+    in a sandbox — is specific enough to be worth preserving close to
+    verbatim as a style target."""
+    reaction = cast["melia"].beats["q2"].reacting_to["wayne"].lower()
+    assert "sandbox" in reaction
+    assert "dexter" in reaction, "the line is addressed to Dexter, not Wayne — that's the joke"
 
 
 def test_canonical_name_matches_the_alias_floor_addresses_use(cast: PanelCast) -> None:

@@ -333,7 +333,7 @@ _INTRODUCTION_RE = re.compile(r"\bintro(?:duc\w*|s)?\b", re.IGNORECASE)
 # advisory only, honoured by the runtime, not awaited here (see
 # `StartSpeech`).
 _INTRO_OPENING_PAUSE_S = 0.5
-_INTRO_BEAT_PAUSE_S = 0.4
+_INTRO_BEAT_PAUSE_S = 0.3
 
 # Provenance for an invitation the classifier opened rather than the regex.
 # `Invitation.role` and `.rule` are what `_paint` hands the operator console and
