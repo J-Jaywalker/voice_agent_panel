@@ -20,7 +20,7 @@ help:
 	@echo "  make display         video wall alone, synthetic panel, no mic or keys"
 	@echo "  make sim             text mode, offline stub brains"
 	@echo "  make aec-test        measure this rig's speaker->mic echo path, no headphones"
-	@echo "  make feedback-test   loop agent voices + speak into the mic, watch for false transcripts/interrupts"
+	@echo "  make feedback-test   loop agent voices + speak into the mic, watch for false transcripts and how close the bleed gets to a real floor interrupt"
 	@echo "  make feedback-test-unlocked  the same, mic ungated (no speaker enrolment)"
 	@echo "  make test            everything (~2min)"
 	@echo "  make test-core       floor logic only (~4s) — the tight loop"

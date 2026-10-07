@@ -59,23 +59,26 @@ violation with a 1008 close of the socket:
   `voices` requirement, and takes the socket down. So an ended context is
   remembered and further pushes to it are dropped.
 
-**Accent is injected here, not written by the model** (migrated 5 Oct 2026,
-alongside the move to v3). `_VoiceChannel.push` prepends a persona's standing
-accent tag — e.g. `[Yorkshire accent]`, `[irish accent]` — to *every*
-push, not just a context's first:
+**A voice's standing characteristics are injected here, not written by the
+model** (accent migrated 5 Oct 2026 alongside the move to v3; pace added
+2026-10-07). `_VoiceChannel.push` prepends a persona's standing accent tag —
+e.g. `[Yorkshire accent]`, `[irish accent]` — and its standing pace tag —
+`[briskly]` — to *every* push, not just a context's first:
 this endpoint buffers and flushes roughly every 40 characters/8 words
 (above), each flush is its own generation, and a tag asserted only at the
 top of a turn was observed to drift back towards the voice's default within
-a few sentences. See `panel_core.personas.ACCENT_TAGS` for why this is not a
-prompt instruction. `_guard`'s allowlist check still applies to whatever the
-model wrote; the accent tag is prepended after that check, never subject to
-it.
+a few sentences. See `panel_core.personas.ACCENT_TAGS` and `PACE_TAGS` for
+why neither is a prompt instruction. `_guard`'s allowlist check still applies
+to whatever the model wrote; these tags are prepended after that check, never
+subject to it.
 
-(A `pace`/`[rapid-fire]` version of this same mechanism was tried for Wayne
-the same day, to compensate for v3 dropping `speed` entirely — measured as
-working, ~15% shorter audio for the same text, but it read as shouting
-rather than brisk on the real voice and was reverted. If this is revisited,
-it is a text/delivery problem, not a TTS-settings one.)
+(Pace is a tag because v3 leaves no numeric lever for it — the vendor's own
+position, not our inference: this endpoint's schema says only `stability` is
+supported for v3 dialogue models, and the prompting guide names audio tags and
+punctuation as the way to control pacing. `[rapid-fire]` was tried for Wayne on
+5 Oct 2026 and reverted — measurably faster, ~15% shorter audio for the same
+text, but it read as shouting. `[briskly]` is a different tag, preferred by ear
+on 2026-10-07 and now standing on Wayne.)
 
 `sanitise()` is applied by the caller in `panel_sim.brains`; this layer will not
 second-guess it, but it does refuse obviously unsafe input as a last line of
@@ -124,6 +127,16 @@ DEFAULT_MODEL = "eleven_v3_conversational"
 # Natural, 1.0 Robust. Anything else is rounded to the nearest of these by the
 # server, silently — it accepts the float and does not error, which is why the
 # rounding is done here instead, where it can be read in a diff.
+#
+# Re-checked 2026-10-07: ElevenLabs' own schema types v3's `stability` as a
+# continuous 0-1 double and does not itself call out rounding. But several
+# independent third-party integrations built directly on the v3 API — fal.ai,
+# Bolna, a community MCP server — each describe the same behaviour
+# independently: only 0.0/0.5/1.0 take effect and anything else is rounded to
+# the nearest. Converging independent reports, not one source, so the original
+# premise below still stands; snapping locally remains correct, now better
+# corroborated than it was when first written. See `_preset_stability`'s
+# docstring.
 _V3_STABILITY_PRESETS = (0.0, 0.5, 1.0)
 
 
@@ -146,11 +159,28 @@ def _preset_stability(value: float) -> float:
     pace (a `[rapid-fire]` tag, to compensate for v3 dropping `speed`
     entirely) and both were reverted 5 Oct 2026 — Melia's tag did not move
     the voice, and Wayne's measurably worked but read as shouting rather than
-    brisk. Wayne is back to his originally-authored value and is the one
-    persona this function's flattening still applies to; Melia's accent was
-    re-added 6 Oct 2026 with stability dropped to 0.0 again — see
-    `personas/melia.yaml` for the trade-off and the fallback if it still
-    doesn't render.
+    brisk. Melia's accent was re-added 6 Oct 2026 with stability dropped to
+    0.0 again — see `personas/melia.yaml` for the trade-off and the fallback
+    if it still doesn't render.
+
+    Wayne now carries a standing `[briskly]` pace tag (2026-10-07,
+    `panel_core.personas.PACE_TAGS`) but is deliberately *not* dropped to 0.0
+    with the other two: the sample that chose that tag was generated at a raw
+    0.75, which this function snaps to 0.5, on a single-sample comparison too
+    noisy to act on. He stays at the 0.5 he was already authored at and is the
+    one persona this function's flattening still applies to. See
+    `personas/wayne.yaml`.
+
+    **Checked again, 2026-10-07.** ElevenLabs' own schema types `stability` as
+    a continuous 0-1 double and the vendor's own reference page does not call
+    out rounding explicitly. But it is corroborated independently by several
+    integrations built directly on the v3 API (fal.ai, Bolna, a community MCP
+    server), each describing the same 0.0/0.5/1.0 snap without citing each
+    other. That is weaker than ElevenLabs saying so in one place, but it is
+    not nothing, and it is the reason this function still snaps rather than
+    passing a raw value through on the strength of one preferred sample.
+    Measuring 0.3 vs 0.5 vs 0.62 on one line, repeated, would settle it
+    properly if it is ever worth the time.
     """
     return min(_V3_STABILITY_PRESETS, key=lambda preset: abs(preset - value))
 
@@ -286,14 +316,16 @@ class _VoiceChannel:
         config: TTSConfig,
         *,
         accent_tag: str | None = None,
+        pace_tag: str | None = None,
     ) -> None:
         self.voice_id = voice_id
         self._api_key = api_key
         self._config = config
-        # A standing characteristic of this voice, not a per-turn choice — see
-        # `panel_core.personas.ACCENT_TAGS`. Applied in `push()`, on every
-        # push, never by the model.
+        # Standing characteristics of this voice, not per-turn choices — see
+        # `panel_core.personas.ACCENT_TAGS` and `PACE_TAGS`. Both applied in
+        # `push()`, on every push, never by the model.
         self._accent_tag = accent_tag
+        self._pace_tag = pace_tag
         self._ws: websockets.ClientConnection | None = None
         self._streams: dict[str, _ContextStream] = {}
         # Contexts the server has said `is_final` for. Pushing to one of these
@@ -478,16 +510,22 @@ class _VoiceChannel:
         if not self._writable(context_id):
             return
         assert self._ws is not None
-        if self._accent_tag is not None:
+        standing = [tag for tag in (self._accent_tag, self._pace_tag) if tag is not None]
+        if standing:
             # On every push, not just the context's first: each flushed push is
             # its own generation (this endpoint buffers ~40 characters/8 words
-            # before generating at all — the comment two lines down), and an
-            # accent asserted once at the top of a turn was observed to drift
-            # back towards the voice's default by the turn's second or third
-            # sentence. Measured as free: unlike a performance tag (`[sighs]`),
-            # an accent tag does not add performed audio length, so restating
-            # it costs nothing extra per sentence.
-            text = f"[{self._accent_tag}] {text}"
+            # before generating at all — the comment two lines down), and a
+            # characteristic asserted once at the top of a turn was observed to
+            # drift back towards the voice's default by the turn's second or
+            # third sentence. Measured as free for accent and the same
+            # reasoning holds for pace: unlike a performance tag (`[sighs]`),
+            # neither adds performed audio length, so restating them costs
+            # nothing extra per sentence.
+            #
+            # Accent before pace when a voice carries both — who the voice is,
+            # then how it is delivering. No persona has both today; the order
+            # is fixed so it never becomes a question.
+            text = "".join(f"[{tag}] " for tag in standing) + text
         # Text chunks must end with a space, per the API. `flush` matters more
         # here than it did on the old endpoint: this one buffers until roughly
         # 40 characters and 8 words before it generates anything, and a short
@@ -593,6 +631,7 @@ class ElevenLabsTTS:
         api_key: str | None = None,
         voice_overrides: dict[str, dict[str, float]] | None = None,
         accent_tags: dict[str, str] | None = None,
+        pace_tags: dict[str, str] | None = None,
     ) -> None:
         self.config = config or TTSConfig()
         key = api_key or os.environ.get("ELEVENLABS_API_KEY")
@@ -610,6 +649,11 @@ class ElevenLabsTTS:
         # `TTSConfig` honest about only holding things that reach the wire as
         # settings — see its docstring.
         self._accent_tags = accent_tags or {}
+        # Per-voice standing pace (`panel_core.personas.Persona.pace`), on the
+        # same terms as the accents above and for the same reason it cannot be
+        # a `voice_overrides` entry: v3 has no pace setting at all, so the only
+        # place this can exist is in the text.
+        self._pace_tags = pace_tags or {}
         self._channels: dict[str, _VoiceChannel] = {}
 
     def _channel(self, voice_id: str) -> _VoiceChannel:
@@ -621,6 +665,7 @@ class ElevenLabsTTS:
                 self._api_key,
                 config,
                 accent_tag=self._accent_tags.get(voice_id),
+                pace_tag=self._pace_tags.get(voice_id),
             )
             self._channels[voice_id] = channel
         return channel

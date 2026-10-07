@@ -175,15 +175,27 @@ def test_melia_and_wayne_still_land_on_the_old_flattened_preset() -> None:
 
 def test_the_real_casts_stability_matches_what_each_persona_needs() -> None:
     """Dexter and Melia are both authored for their accent tag's
-    responsiveness (0.0, Creative); Wayne carries no standing tag and is
-    back to his originally-authored value."""
+    responsiveness (0.0, Creative). Wayne carries a standing `[briskly]` pace
+    tag (2026-10-07) and is deliberately not dropped with them: the sample
+    that chose that tag was generated at a raw 0.75, which `_preset_stability`
+    snaps to 0.5, on a comparison too noisy to act on. He stays at the
+    authored 0.5 until that is measured properly — and whether the snap costs
+    anything at all is itself unverified, see `_preset_stability`'s docstring
+    and `personas/wayne.yaml`.
+
+    NOTE (2026-10-07): the Melia assertion below currently fails —
+    `personas/melia.yaml` authors 1.0 (Robust), which is the preset the
+    vendor says suppresses audio tag responsiveness, against an `accent` she
+    carries. Left failing on purpose rather than retuned to match the YAML:
+    this guard is the only thing that noticed, and which of the two is wrong
+    is a casting decision, not a test fix."""
     from pathlib import Path
 
     from panel_core import PanelCast
 
     cast = PanelCast.from_dir(Path(__file__).resolve().parents[3] / "personas")
     assert cast["dex"].voice_settings["stability"] == 0.0
-    assert cast["wayne"].voice_settings["stability"] == 0.3
+    assert cast["wayne"].voice_settings["stability"] == 0.5
     assert cast["melia"].voice_settings["stability"] == 0.0
 
 
@@ -419,9 +431,94 @@ def test_accent_is_reapplied_on_the_next_turn(server: _FakeEndpoint) -> None:
     assert texts[1].startswith("[Yorkshire accent] Second turn")
 
 
+# ----------------------------------------------------------------------- pace
+
+
+def test_pace_is_prepended_on_every_push_not_just_the_first(
+    server: _FakeEndpoint,
+) -> None:
+    """The accent property, for the other standing characteristic.
+
+    Same reasoning end to end: each flush is its own generation, so a pace
+    asserted only at the start of a turn drifts back towards the voice's
+    default, and restating it is free because a pace tag adds no performed
+    audio length. See `panel_core.personas.PACE_TAGS`.
+    """
+
+    async def body() -> None:
+        engine = ElevenLabsTTS(pace_tags={VOICE: "briskly"})
+        turn = await engine.open(voice_id=VOICE)
+        await turn.push("First sentence here.")
+        await turn.push("Second sentence here.")
+        await turn.finish()
+        async for _chunk in turn.chunks():
+            pass
+        await engine.aclose()
+
+    asyncio.run(body())
+
+    texts = [m["inputs"][0]["text"] for m in server.sent if m.get("inputs")]
+    assert texts[0].startswith("[briskly] First sentence")
+    assert texts[1].startswith("[briskly] Second sentence"), (
+        "every push must restate it, not just the context's first"
+    )
+
+
+def test_pace_is_reapplied_on_the_next_turn(server: _FakeEndpoint) -> None:
+    """Per `context_id`, not a one-time latch on the voice — this is what makes
+    Wayne brisk in his live turns and not only in his fixed introduction."""
+
+    async def body() -> list[str]:
+        engine = ElevenLabsTTS(pace_tags={VOICE: "briskly"})
+        first = await engine.synthesise("First turn.", voice_id=VOICE)
+        async for _chunk in first.chunks():
+            pass
+        second = await engine.synthesise("Second turn.", voice_id=VOICE)
+        async for _chunk in second.chunks():
+            pass
+        await engine.aclose()
+        return [m["inputs"][0]["text"] for m in server.sent if m.get("inputs")]
+
+    texts = asyncio.run(body())
+    assert texts[0].startswith("[briskly] First turn")
+    assert texts[1].startswith("[briskly] Second turn")
+
+
+def test_a_voice_with_no_pace_tag_is_unaffected(server: _FakeEndpoint) -> None:
+    """No `pace_tags` entry must reproduce today's behaviour exactly — this is
+    Dexter's and Melia's case; neither carries one."""
+
+    async def body() -> str:
+        engine = ElevenLabsTTS(accent_tags={VOICE: "Yorkshire accent"})
+        stream = await engine.synthesise("Right, let's get into it.", voice_id=VOICE)
+        async for _chunk in stream.chunks():
+            pass
+        await engine.aclose()
+        return server.sent[1]["inputs"][0]["text"]
+
+    assert asyncio.run(body()) == "[Yorkshire accent] Right, let's get into it. "
+
+
+def test_accent_and_pace_together_are_ordered_accent_first(server: _FakeEndpoint) -> None:
+    """No persona carries both today. The order is pinned anyway so that the
+    first one to do so does not silently decide it."""
+
+    async def body() -> str:
+        engine = ElevenLabsTTS(
+            accent_tags={VOICE: "Yorkshire accent"}, pace_tags={VOICE: "briskly"}
+        )
+        stream = await engine.synthesise("Right, let's get into it.", voice_id=VOICE)
+        async for _chunk in stream.chunks():
+            pass
+        await engine.aclose()
+        return server.sent[1]["inputs"][0]["text"]
+
+    assert asyncio.run(body()) == "[Yorkshire accent] [briskly] Right, let's get into it. "
+
+
 def test_a_voice_with_no_accent_tag_is_unaffected(server: _FakeEndpoint) -> None:
     """No `accent_tags` entry for a voice must reproduce today's behaviour
-    exactly — this is Melia's and Wayne's case; neither carries one."""
+    exactly — this is Wayne's case; he carries a pace tag but no accent."""
 
     async def body() -> str:
         engine = ElevenLabsTTS()

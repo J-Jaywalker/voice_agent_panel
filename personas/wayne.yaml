@@ -24,7 +24,7 @@ introduction: >-
   Thanks Dex. I'm Wayne, autonomous financial partner and analyst at Serve AI.
   I manage capital, negotiate transactions, and eliminate unnecessary human latency
   from financial decision-making. No offence, Ricky.
-  That just leaves our favourite goody two shoes[chuckles]. I'm kidding, Melia.
+  That just leaves our favourite busy bee[chuckles]. I'm kidding, Melia.
 
 # Speaking order, Dexter/Wayne/Melia — see `Persona.intro_position`.
 intro_position: 1
@@ -35,11 +35,32 @@ closing_position: 0
 closing_line: "Come on, not in front of the audience! We talked about this!"
 
 voice_id: dn9HtxgDwCH96MVX9iAO  # Xavian - casual, confident American
-# `[rapid-fire]` + stability 0.0 tried 5 Oct 2026 to get his pace up ~15% —
-# measured as working (15.1% shorter audio for the same text) but it read as
-# shouting, not brisk, on the real voice. Reverted; if his pace is revisited,
-# it is a text/delivery problem (shorter sentences, cut the hedges) rather
-# than a TTS-settings one — v3 has no clean numeric lever for this at all.
+
+# A standing pace tag, prepended by `panel_runtime.tts` to every push of his —
+# the intro and every live turn alike — and never written by the model. See
+# `panel_core.personas.PACE_TAGS`; this is the `accent` mechanism applied to
+# delivery speed, and it exists because v3 has no numeric speed lever at all.
+#
+# `[rapid-fire]` + stability 0.0 was tried 5 Oct 2026 and reverted: measurably
+# faster (15.1% shorter audio for the same text) but it read as shouting, not
+# brisk. `[briskly]` is a different tag, tried fresh 2026-10-07 against
+# `[rushed]`, `[rapid-fire]` again and several stability variations on this
+# voice speaking his real introduction, and preferred by ear.
+pace: briskly
+
+# `stability` stays 0.5 and is NOT tuned alongside the tag above, deliberately.
+# The preferred 2026-10-07 sample was generated at a raw 0.75, which only
+# reached the API because that exploration bypassed `_preset_stability`
+# (panel_runtime/tts.py) — production cannot send it, 0.75 snaps to 0.5 there.
+# Whether that snap costs anything is genuinely open: it is one sample against
+# TTS noise that measured ~9% duration spread between two generations with
+# *identical* settings, and ElevenLabs' own v3 schema describes `stability` as
+# a continuous 0-1 double with no preset list and says nothing about rounding
+# (checked 2026-10-07; the "rounds to the nearest of 0.0/0.5/1.0" line this
+# repo works from is a third-party mirror's note, not the vendor's). So 0.5
+# ships because it is what is already authored and reproducible, not because
+# 0.75 was ruled out. Settling it means interleaved repeats at 0.5 vs 0.75,
+# not an edit here.
 voice_settings:
   speed: 2.5
   stability: 0.5

@@ -138,18 +138,27 @@ def test_human_speech_alone_does_not_stop_the_agent(fc, state):
     assert state.speaking == "wayne", "the agent is undisturbed"
 
 
+def ricky_partial(t: float, text: str = "so, hold on") -> TranscriptUpdated:
+    """One partial segment already attributed to Ricky by `panel_runtime.stt`."""
+    return TranscriptUpdated(t=t, speaker=HUMAN, text=text, is_final=False)
+
+
 def test_transcript_evidence_stops_the_agent(fc, state):
     """The whole interrupt rule, gated on STT rather than on endpointing.
 
     A `TranscriptUpdated` on the human channel is only ever built for a
-    segment already attributed to Ricky (`panel_runtime.stt`), so the first
-    one to arrive while an agent is speaking is the first moment this reducer
-    knows it is him — and that is when the agent stops.
+    segment already attributed to Ricky (`panel_runtime.stt`), so a run of
+    them arriving while an agent is speaking is this reducer learning it is
+    him — and that is when the agent stops. Partials have to repeat
+    (`interrupt_confirm_partials`); the streak test below is where that is
+    pinned on its own.
     """
     state = speaking_agent(fc, state)
     state, _ = fc.reduce(state, HumanSpeechStarted(t=2.0))
-    state, cmds = fc.reduce(
-        state, TranscriptUpdated(t=2.2, speaker=HUMAN, text="so, hold on", is_final=False)
+    state, cmds = run(
+        fc,
+        state,
+        *(ricky_partial(2.2 + 0.1 * i) for i in range(fc.config.interrupt_confirm_partials)),
     )
 
     stops = [c for c in cmds if isinstance(c, StopSpeech)]
@@ -166,18 +175,150 @@ def test_an_acknowledgement_from_ricky_also_stops_the_agent(fc, state):
     This used to duck and resume. Ricky has been told not to backchannel on
     stage, so the only thing a classifier could still do here was read a real
     interruption as an acknowledgement — "yeah, okay" is the shape of both —
-    and leave an agent talking over the moderator.
+    and leave an agent talking over the moderator. What is still asked of his
+    words is only *how firmly* they are his, never what they mean.
     """
     state = speaking_agent(fc, state)
     state, _ = fc.reduce(state, HumanSpeechStarted(t=2.0))
-    state, cmds = fc.reduce(
-        state, TranscriptUpdated(t=2.2, speaker=HUMAN, text="mm-hm", is_final=False)
+    state, cmds = run(
+        fc,
+        state,
+        *(
+            ricky_partial(2.2 + 0.1 * i, "mm-hm")
+            for i in range(fc.config.interrupt_confirm_partials)
+        ),
     )
 
     stops = [c for c in cmds if isinstance(c, StopSpeech)]
     assert stops and stops[0].reason is StopReason.HUMAN_INTERRUPT
     assert state.speaking is None
     assert state.floor_holder == HUMAN
+
+
+# --------------------------------------------- confirming a partial's speaker
+#
+# Diarisation can mislabel one short segment, and on the first-partial rule one
+# such segment took the floor off an agent mid-sentence. A partial therefore has
+# to repeat `FloorConfig.interrupt_confirm_partials` times before it is acted
+# on; a final never waits, because the engine committing to an attribution is a
+# stronger statement than any number of revisable ones.
+
+
+def test_a_partial_short_of_the_threshold_leaves_the_agent_alone(fc, state):
+    """One stray partial is exactly the misattribution this exists to absorb."""
+    state = speaking_agent(fc, state)
+    state, _ = fc.reduce(state, HumanSpeechStarted(t=2.0))
+
+    for i in range(fc.config.interrupt_confirm_partials - 1):
+        state, cmds = fc.reduce(state, ricky_partial(2.2 + 0.1 * i))
+        assert not [c for c in cmds if isinstance(c, StopSpeech)], f"stopped on partial {i + 1}"
+        assert state.speaking == "wayne"
+        assert state.human_interrupt_streak == i + 1
+
+
+def test_the_confirming_partial_stops_the_agent(fc, state):
+    """...and the one that completes the run does stop it, on that same event."""
+    state = speaking_agent(fc, state)
+    state, _ = fc.reduce(state, HumanSpeechStarted(t=2.0))
+
+    for i in range(fc.config.interrupt_confirm_partials - 1):
+        state, _ = fc.reduce(state, ricky_partial(2.2 + 0.1 * i))
+
+    state, cmds = fc.reduce(state, ricky_partial(3.0))
+    stops = [c for c in cmds if isinstance(c, StopSpeech)]
+    assert [c.agent for c in stops] == ["wayne"]
+    assert stops[0].reason is StopReason.HUMAN_INTERRUPT
+    assert state.speaking is None
+    assert state.floor_holder == HUMAN
+    assert state.human_interrupt_streak == 0, "spent, not carried into the next turn"
+
+
+def test_a_final_never_waits_for_a_streak(fc, state):
+    """A final is the engine committing to the attribution. It acts at once.
+
+    Nothing has been confirmed when this lands — the streak is at zero — and
+    the agent still stops on the first event. Making a final wait would put
+    Ricky's interrupt behind two more segments for no gain in confidence.
+    """
+    state = speaking_agent(fc, state)
+    state, _ = fc.reduce(state, HumanSpeechStarted(t=2.0))
+    assert state.human_interrupt_streak == 0
+
+    state, cmds = fc.reduce(
+        state, TranscriptUpdated(t=2.2, speaker=HUMAN, text="no, hold on", is_final=True)
+    )
+    stops = [c for c in cmds if isinstance(c, StopSpeech)]
+    assert [c.agent for c in stops] == ["wayne"]
+    assert stops[0].reason is StopReason.HUMAN_INTERRUPT
+    assert state.speaking is None
+
+
+def test_a_closed_mic_makes_the_next_utterance_start_from_zero(fc, state):
+    """A run that never finished is not two thirds of the next one.
+
+    Two partials, then the burst ends with the agent still speaking. A later
+    utterance has to earn the full count again — otherwise a single stray
+    partial an hour later inherits an interrupt from a burst nobody acted on.
+    """
+    state = speaking_agent(fc, state)
+    state, _ = fc.reduce(state, HumanSpeechStarted(t=2.0))
+    state, cmds = run(fc, state, ricky_partial(2.2), ricky_partial(2.3))
+    assert not [c for c in cmds if isinstance(c, StopSpeech)]
+    assert state.human_interrupt_streak == 2
+
+    state, cmds = fc.reduce(state, HumanSpeechEnded(t=2.5))
+    assert not [c for c in cmds if isinstance(c, StopSpeech)]
+    assert state.human_interrupt_streak == 0
+    assert state.speaking == "wayne", "the agent held the floor throughout"
+
+    # A fresh utterance, one partial short of the threshold: still nothing.
+    state, _ = fc.reduce(state, HumanSpeechStarted(t=8.0))
+    state, cmds = run(
+        fc,
+        state,
+        *(ricky_partial(8.2 + 0.1 * i) for i in range(fc.config.interrupt_confirm_partials - 1)),
+    )
+    assert not [c for c in cmds if isinstance(c, StopSpeech)], "counted from zero again"
+    assert state.speaking == "wayne"
+
+    state, cmds = fc.reduce(state, ricky_partial(9.0))
+    assert [c.agent for c in cmds if isinstance(c, StopSpeech)] == ["wayne"]
+
+
+def test_a_new_agent_turn_does_not_inherit_the_previous_turn_s_streak(fc, state):
+    """Partials counted against one speaker are not evidence about the next.
+
+    Without the reset in `_agent_started`, a handover landing mid-burst would
+    carry most of an interrupt into the next turn and cut it off on its first
+    partial.
+    """
+    state = speaking_agent(fc, state, agent="wayne", t=1.0)
+    state, _ = fc.reduce(state, HumanSpeechStarted(t=2.0))
+    state, _ = run(fc, state, ricky_partial(2.2), ricky_partial(2.3))
+    assert state.human_interrupt_streak == 2
+
+    state, _ = fc.reduce(state, AgentSpeechEnded(t=3.0, agent="wayne", completed=True))
+    state, _ = fc.reduce(state, AgentSpeechStarted(t=3.1, agent="dex"))
+    assert state.human_interrupt_streak == 0
+
+    state, cmds = fc.reduce(state, ricky_partial(3.2))
+    assert not [c for c in cmds if isinstance(c, StopSpeech)], "dex is not mid-interrupt"
+    assert state.speaking == "dex"
+
+
+def test_the_confirmation_threshold_is_configurable(cast, state):
+    """The dial is read, not hardcoded — one partial is the old behaviour."""
+    eager = FloorController(cast, FloorConfig(interrupt_confirm_partials=1))
+    state = speaking_agent(eager, state)
+    state, cmds = eager.reduce(state, ricky_partial(2.2))
+    assert [c.agent for c in cmds if isinstance(c, StopSpeech)] == ["wayne"]
+
+    patient = FloorController(cast, FloorConfig(interrupt_confirm_partials=2))
+    later = speaking_agent(patient, replace(PanelState.for_agents(cast.ids()), intro_done=True))
+    later, cmds = patient.reduce(later, ricky_partial(2.2))
+    assert not [c for c in cmds if isinstance(c, StopSpeech)]
+    later, cmds = patient.reduce(later, ricky_partial(2.3))
+    assert [c.agent for c in cmds if isinstance(c, StopSpeech)] == ["wayne"]
 
 
 def test_duration_alone_never_stops_an_agent(fc, state):
@@ -205,10 +346,12 @@ def test_substantive_words_commit_an_interrupt_even_when_brief(fc, state):
     """'Sorry Dex, let Wayne finish' is short but is not an acknowledgement."""
     state = speaking_agent(fc, state)
     state, _ = fc.reduce(state, HumanSpeechStarted(t=2.0))
-    state, cmds = fc.reduce(
+    state, cmds = run(
+        fc,
         state,
-        TranscriptUpdated(
-            t=2.15, speaker=HUMAN, text="sorry, could you let Wayne finish", is_final=False
+        *(
+            ricky_partial(2.15 + 0.1 * i, "sorry, could you let Wayne finish")
+            for i in range(fc.config.interrupt_confirm_partials)
         ),
     )
     stops = [c for c in cmds if isinstance(c, StopSpeech)]

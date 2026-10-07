@@ -43,8 +43,9 @@ before that the reflex ran on a local Silero VAD and these were dropped. ADR
   `BargeInConfig.hard_limit_ms` is a target, not a result.
 * A dropped socket now costs interruption as well as transcription. No second
   detector stands behind it.
-* Still identity-blind — these messages carry no speaker, same as the VAD. The
-  duck is confirmed downstream in `_transcript`.
+* Still identity-blind — these messages carry no speaker, same as the VAD. So
+  they move nothing on the PA by themselves: only a transcript attributed to
+  Ricky stops an agent, downstream in `FloorController._transcript`.
 
 Emitted unconditionally on every session, like `TurnYielded`. Filtering is the
 caller's job (`PanelRuntime._run_agent_stt` admits `TranscriptUpdated` only).
@@ -145,14 +146,14 @@ class STTConfig:
     # at one call site, by `PanelSTT.identify()` — never by changing this
     # default, because the two families share this dataclass and a default
     # change would silently diarise the agents' sockets too.
-    diarization: str = "none"
+    diarization: str = "speaker"
     speaker_diarization_config: dict[str, Any] | None = None
     # How readily the engine splits audio into distinct speakers, 0-1, server
-    speaker_sensitivity: float = 0.6
+    speaker_sensitivity: float = 0.66
     # Bias re-attribution toward whoever was just talking rather than
     # splitting off a new speaker — the audience/PA bleed this mic exists
     # alongside is the exact case this guards against.
-    prefer_current_speaker: bool = True
+    # prefer_current_speaker: bool = False
     # Known speakers to identify in this session, each
     # `{"label": ..., "speaker_identifiers": [...]}` as returned by a previous
     # session's `SpeakersResult`. A matched segment comes back carrying
@@ -208,7 +209,7 @@ class STTConfig:
         if self.diarization != "none":
             speaker_config: dict[str, Any] = dict(self.speaker_diarization_config or {})
             speaker_config["speaker_sensitivity"] = self.speaker_sensitivity
-            speaker_config["prefer_current_speaker"] = self.prefer_current_speaker
+            #speaker_config["prefer_current_speaker"] = self.prefer_current_speaker
             if self.get_speakers:
                 speaker_config["get_speakers"] = True
             if self.speakers:
@@ -614,8 +615,10 @@ class _AgentSTTSession:
         * **matched** — the enrolled moderator. Emitted exactly as before,
           unchanged in every field.
         * **attributed to someone else** — `UnverifiedSpeechDetected`, which
-          has no text field at all. The floor uses it to keep a duck
-          recoverable rather than promoting it to a stop.
+          has no text field at all. `panel_core` receives it and does nothing
+          with it; it exists so that "diarisation says this is not Ricky" is
+          distinguishable at the boundary from "no evidence at all", rather
+          than the two arriving as the same silence.
         * **no attribution at all** — dropped silently, and deliberately *not*
           reported as a stranger. "Diarization attributed nothing" and
           "diarization says this is not Ricky" are different facts, and

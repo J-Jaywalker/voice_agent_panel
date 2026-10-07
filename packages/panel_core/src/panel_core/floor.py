@@ -540,9 +540,14 @@ class FloorController:
         the words — not here, on how long the voice lasted. Duration used to
         promote a duck to a stop; there is no duck any more, so there is
         nothing left for the end of a burst to resolve.
+
+        The confirmation streak is cleared: partials that never reached
+        `interrupt_confirm_partials` belong to an utterance that is over, and a
+        later one must earn its own confirmation rather than inherit two thirds
+        of it from a burst nobody acted on.
         """
         del event  # only `t`, and nothing here is timed
-        return replace(state, human_speaking=False), []
+        return replace(state, human_speaking=False, human_interrupt_streak=0), []
 
     def _commit_human_interrupt(
         self, state: PanelState, *, t: float
@@ -569,6 +574,9 @@ class FloorController:
             invitation=None,  # Ricky is taking the floor back
             pending_invite=None,  # ...so the interrupted turn's handoff goes too
             address_conflict=(),
+            # The streak has done its job; the next agent to reach the PA must
+            # be confirmed afresh rather than inherit this one's evidence.
+            human_interrupt_streak=0,
             # An incomplete introduction round is abandoned, not spent — it
             # has not "been done", so the safety latch does not engage and
             # the phrase can be said again to restart it cleanly. Same for
@@ -630,9 +638,35 @@ class FloorController:
         # only thing the classifier could still do was mis-read a real
         # interruption as an acknowledgement — "yeah, okay" is the shape of
         # both — and leave an agent running over him.
+        #
+        # What the words still have to clear is *how firmly* they are his, and
+        # the two kinds of segment answer that differently:
+        #
+        # * A **final** stops the agent on its own. The engine has committed to
+        #   the attribution rather than left it open to revision, and that is
+        #   the strongest statement about identity this pipeline produces.
+        # * A **partial** has to repeat. Diarisation mislabelling one short
+        #   segment is a real and occasional failure, and on the first-partial
+        #   rule one such segment — an audience laugh, a bar of PA bleed —
+        #   took the floor off an agent mid-sentence. Three consecutive
+        #   partials attributed to Ricky (`interrupt_confirm_partials`) is a
+        #   far harder thing to get wrong than one, and costs a fraction of a
+        #   second at Speechmatics' partial rate.
+        #
+        # Consecutive is what `human_interrupt_streak` means, and it is only
+        # ever counted while an agent is actually on the PA, so the streak is a
+        # statement about the current turn. `_human_ended` and `_agent_started`
+        # are the other two places it goes back to zero; see both.
         if event.speaker == HUMAN and state.speaking is not None:
-            state, interrupt_cmds = self._commit_human_interrupt(state, t=event.t)
-            commands.extend(interrupt_cmds)
+            if event.is_final:
+                state, interrupt_cmds = self._commit_human_interrupt(state, t=event.t)
+                commands.extend(interrupt_cmds)
+            else:
+                streak = state.human_interrupt_streak + 1
+                state = replace(state, human_interrupt_streak=streak)
+                if streak >= self.config.interrupt_confirm_partials:
+                    state, interrupt_cmds = self._commit_human_interrupt(state, t=event.t)
+                    commands.extend(interrupt_cmds)
 
         # Finals only. A partial can match a pattern the completed sentence
         # does not, and a stale invitation is a live mic on the wrong agent.
@@ -1058,6 +1092,11 @@ class FloorController:
             # shared: a round opened during the previous speaker's turn must
             # not hold off the first round of this one.
             agent_turn_request_t=None,
+            # And the same reasoning once more: partials that counted against
+            # the previous speaker are not evidence about this one. Without
+            # this, a handover landing mid-burst could carry two thirds of an
+            # interrupt into the next turn and cut it off on its first partial.
+            human_interrupt_streak=0,
         )
         return state, [self._paint(state)]
 

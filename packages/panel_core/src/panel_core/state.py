@@ -272,6 +272,15 @@ class PanelState:
     address_conflict: tuple[str, ...] = ()
     human_speaking: bool = False
 
+    # Consecutive partials attributed to Ricky that have landed over the agent
+    # currently on the PA. Counted up in `FloorController._transcript` and read
+    # against `FloorConfig.interrupt_confirm_partials`; reset to zero wherever
+    # the run it is counting ends — the interrupt firing, the mic going quiet,
+    # and a fresh agent turn beginning. Only ever advanced while an agent is
+    # speaking, so with those three resets it can never describe anything but
+    # the turn in progress.
+    human_interrupt_streak: int = 0
+
     transcript: tuple[Utterance, ...] = ()
     partial: str = ""
 

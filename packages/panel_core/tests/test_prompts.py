@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 from panel_core.events import HUMAN
-from panel_core.personas import ACCENT_TAGS, AUDIO_TAGS, Beat, PanelCast, Persona
+from panel_core.personas import ACCENT_TAGS, AUDIO_TAGS, PACE_TAGS, Beat, PanelCast, Persona
 from panel_core.prompts import (
     GUARDRAILS,
     build_system_prompt,
@@ -648,3 +648,28 @@ def test_the_real_cast_only_uses_allowlisted_accents() -> None:
     for persona in cast.personas.values():
         if persona.accent is not None:
             assert persona.accent in ACCENT_TAGS
+
+
+def test_personas_pace_must_be_allowlisted() -> None:
+    """Same failure shape again: a typo here is silently never applied."""
+    with pytest.raises(ValueError, match="PACE_TAGS"):
+        _persona(pace="quickly")
+
+
+def test_pace_never_reaches_the_system_prompt() -> None:
+    """Like `accent` and unlike `audio_tags`: `panel_runtime.tts` applies it
+    directly, and telling the model about it would give it a second,
+    uncontrolled way to write the tag inline."""
+    prompt = build_system_prompt(_persona(pace="briskly"))
+    assert "briskly" not in prompt.lower()
+
+
+def test_the_real_cast_only_uses_allowlisted_paces() -> None:
+    """The `accent` equivalent, for `pace` — and the assertion that Wayne's
+    standing `[briskly]` is actually authored, since nothing else in the cast
+    data would notice if it were dropped."""
+    cast = PanelCast.from_dir(PERSONA_DIR)
+    for persona in cast.personas.values():
+        if persona.pace is not None:
+            assert persona.pace in PACE_TAGS
+    assert cast["wayne"].pace == "briskly"

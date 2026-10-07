@@ -390,11 +390,13 @@ class PanelRuntime:
             p.voice_id: p.voice_settings for p in cast.personas.values() if p.voice_settings
         }
         accent_tags = {p.voice_id: p.accent for p in cast.personas.values() if p.accent}
+        pace_tags = {p.voice_id: p.pace for p in cast.personas.values() if p.pace}
         self.tts = (
             ElevenLabsTTS(
                 TTSConfig(),
                 voice_overrides=voice_overrides,
                 accent_tags=accent_tags,
+                pace_tags=pace_tags,
             )
             if use_tts
             else None
@@ -429,6 +431,10 @@ class PanelRuntime:
         # branch), so the wall's meter just reads silence, same as if Ricky
         # had stopped talking.
         self._muted = False
+        # True during the intro + closing round (`StateChanged.extra`); mic
+        # audio is withheld from STT entirely while set, same as `_muted`.
+        # `j` still works — it reaches the reducer from the keypress, not the mic.
+        self._intro_active = False
 
         self.events: asyncio.Queue = asyncio.Queue()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -535,7 +541,7 @@ class PanelRuntime:
         enrolling = self._enrolling
         if enrolling is not None:
             enrolling.feed(pcm.tobytes())
-        elif not self._muted:
+        elif not self._muted and not self._intro_active:
             # Mic audio goes to the STT that feeds the floor — both the words
             # and, via `SpeechStarted`, the barge-in reflex. Agent audio never
             # goes here.
@@ -552,11 +558,11 @@ class PanelRuntime:
             # an agent — diarisation remains the layer that decides whose
             # words these are.
             self.stt.feed("ricky", pcm.tobytes())
-        # Muted: the block is simply dropped here. VAD and STT never see it,
-        # so there is nothing for them to react to and nothing for the wall's
-        # mic meter to show — see `self._muted`.
+        # Muted or mid-intro: the block is simply dropped here. VAD and STT
+        # never see it, so there is nothing for them to react to and nothing
+        # for the wall's mic meter to show — see `self._muted`/`self._intro_active`.
 
-        if self._display is not None and not self._muted:
+        if self._display is not None and not self._muted and not self._intro_active:
             self._mic_level = max(self._mic_level, float(np.sqrt(np.mean(np.square(mono)))))
 
         # `render` also drives `Mixer.on_played`, which with `--display` hands
@@ -764,6 +770,9 @@ class PanelRuntime:
                 self._print(f"  [magenta]▸ back to Ricky ({command.reason.value})[/]")
 
             case StateChanged():
+                self._intro_active = bool(
+                    command.extra.get("intro_remaining") or command.extra.get("closing_remaining")
+                )
                 self._show_state_change(command)
 
             case _:

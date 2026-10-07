@@ -66,7 +66,9 @@ AUDIO_TAGS: frozenset[str] = frozenset(
 # were tried the same way for Wayne the same day, to compensate for v3
 # dropping `speed` entirely — measured as working, ~15% shorter audio for the
 # same text, but it read as shouting rather than brisk and was reverted; see
-# `personas/wayne.yaml`.)
+# `personas/wayne.yaml`. That revert was of the tag, not of the mechanism:
+# `PACE_TAGS` below is the same field tried again on 2026-10-07 with
+# `[briskly]`, and it is live for Wayne.)
 #
 # The vendor's fix for an accent is an inline tag, but rendering it into the
 # "sounds your voice can actually make" prompt block (below) is the wrong
@@ -81,6 +83,37 @@ AUDIO_TAGS: frozenset[str] = frozenset(
 # a turn where it quietly does not show up, and there is no way to notice
 # that without listening to the whole show.
 ACCENT_TAGS: frozenset[str] = frozenset({"Yorkshire accent", "London accent", "irish accent"})
+
+# `PACE_TAGS` is the accent mechanism above applied to a different standing
+# property: how fast a voice talks. Not an accent, and deliberately its own
+# field rather than a widening of `accent` — a persona could plausibly want a
+# regional voice *and* a brisk one, and one field cannot carry both.
+#
+# It is a tag at all because v3 has no numeric pace control to use instead,
+# and that is the vendor's position rather than our inference (checked
+# 2026-10-07): the dialogue WebSocket's own schema says "only `stability` is
+# supported for `eleven_v3` dialogue models", the settings page says outright
+# that "Speed is not available for the Eleven v3 model", and the prompting
+# guide names audio tags and punctuation as *the* way to control pacing on
+# v3. Flash's `speed` is still accepted on this endpoint and then ignored
+# (see `panel_runtime.tts.TTSConfig`'s docstring). So an inline tag is not the
+# convenient lever here, it is the only one.
+#
+# `[rapid-fire]` was the first attempt at it, for Wayne on 5 Oct 2026 at
+# stability 0.0: measurably faster (15.1% shorter audio for the same text) but
+# it read as shouting rather than brisk, and was reverted. `[briskly]` is a
+# different tag tried fresh on 2026-10-07 — compared by ear against `[rushed]`,
+# `[rapid-fire]` and several stability variations on Wayne's real introduction
+# text, and preferred. See `personas/wayne.yaml` for what that comparison does
+# and does not establish.
+#
+# Not a member of `AUDIO_TAGS`, and the model is never told it exists: the
+# whole point is that the pace does not depend on the model remembering to ask
+# for it. `sanitise()` stripping a `[briskly]` the model wrote anyway is the
+# correct outcome, not a gap.
+#
+# Stored without brackets; canonical form is lowercase, single-spaced.
+PACE_TAGS: frozenset[str] = frozenset({"briskly"})
 
 
 class Beat(BaseModel):
@@ -229,6 +262,12 @@ class Persona(BaseModel):
     # into `audio_tags`. `None` means this voice's engine-default rendering,
     # i.e. unchanged.
     accent: str | None = Field(default=None)
+    # A standing delivery speed, on exactly the same terms as `accent` above:
+    # read by `panel_runtime.tts`, prepended to every push, never written by a
+    # prompt. Independent of `accent` so a voice can carry both — see
+    # `PACE_TAGS`. `None` means this voice's engine-default pace, i.e.
+    # unchanged.
+    pace: str | None = Field(default=None)
     communication_style: str
 
     @field_validator("anecdotes", "citable_figures", mode="before")
@@ -269,6 +308,15 @@ class Persona(BaseModel):
             raise ValueError(
                 f"accent not in ACCENT_TAGS: {value!r}. Allowed: {sorted(ACCENT_TAGS)}"
             )
+        return value
+
+    @field_validator("pace")
+    @classmethod
+    def _pace_is_allowlisted(cls, value: str | None) -> str | None:
+        """Same failure shape as `accent` above: a typo here is a persona that
+        quietly never gets its pace applied, with nothing to say why."""
+        if value is not None and value not in PACE_TAGS:
+            raise ValueError(f"pace not in PACE_TAGS: {value!r}. Allowed: {sorted(PACE_TAGS)}")
         return value
 
     speech_tics: list[str] = Field(

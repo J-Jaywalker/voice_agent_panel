@@ -20,7 +20,7 @@ stance: >-
 # Dexter, Wayne, Melia. This line doesn't lean on the position the way
 # Dexter's and Wayne's do, so a reorder here needs no change to the text.
 introduction: >-
-  [exhales] Hello, Wayne. As he says, I'm Melia, chief AI ethics and human continuity officer at the Kestrel Foundation.
+  [sighs] Hello, Wayne. As he says, I'm Melia, chief AI ethics and human continuity officer at the Kestrel Foundation.
   [dryly] My job is making sure systems like Wayne remember that competence and permission
   are different things.
 
@@ -30,7 +30,7 @@ intro_position: 2
 # Fixed, word for word, for the exchange right after introductions —
 # see `Persona.closing_position`/`closing_line`.
 closing_position: 1
-closing_line: "Yes. Repeatedly."
+closing_line: "Yes(!) Repeatedly."
 
 voice_id: DbwWo4rVEd5NrejHYUnm  # Jessica — dry, precise, Irish.
 # ~20% quieter (amplitude, not dB) next to Dexter's boosted trim — see
@@ -39,7 +39,7 @@ output_gain_db: -2.24
 accent: irish accent
 voice_settings:
   speed: 1.8
-  stability: 0.7
+  stability: 1.0
 # The force is in the plainness, never in volume — she says the thing and
 # stops rather than landing a long dry observation.
 # Dry and flat, so the sound is the exhale rather than the laugh — [dryly]

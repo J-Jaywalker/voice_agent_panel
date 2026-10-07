@@ -523,6 +523,12 @@ def test_a_short_utterance_from_ricky_still_stops_an_agent(cast: PanelCast):
     either way — that routing Ricky's own words through the identity gate has
     not changed which of them reach the reducer — and a one-token partial is
     the hardest case for that to survive.
+
+    Three of them, because the floor now wants a partial attribution confirmed
+    `FloorConfig.interrupt_confirm_partials` times before it acts on it. That
+    is a rule about how firmly a segment is his, not about whether it reached
+    the reducer, and it is the latter this file exists to pin — so the test
+    feeds enough partials to clear it and still asserts the stop.
     """
     display = FakeDisplay()
     runtime = _identified_runtime(cast, display=display)
@@ -548,7 +554,12 @@ def test_a_short_utterance_from_ricky_still_stops_an_agent(cast: PanelCast):
             runtime.emit(HumanSpeechStarted(t=2.0))
             for _ in range(20):
                 await asyncio.sleep(0)
-            await session._receive(_FakeWebSocket([_segment("mm-hm", speaker=LABEL, final=False)]))
+            await session._receive(
+                _FakeWebSocket(
+                    [_segment("mm-hm", speaker=LABEL, final=False)]
+                    * runtime.fc.config.interrupt_confirm_partials
+                )
+            )
             for _ in range(50):
                 await asyncio.sleep(0)
             runtime.emit(HumanSpeechEnded(t=2.2))

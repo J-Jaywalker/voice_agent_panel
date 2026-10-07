@@ -39,6 +39,15 @@ class FloorConfig:
     # --- humans ---
     # Ricky's mic wins instantly and with no overlap.
     human_duck_ms: int = 90
+    # How many *consecutive* partials attributed to Ricky must land over a
+    # speaking agent before the agent is stopped. Diarisation can mislabel one
+    # short segment, and a single mislabelled partial used to be enough to cut
+    # an agent off mid-sentence; the same voice surviving three partials in a
+    # row is a far harder thing to get wrong, and at Speechmatics' partial rate
+    # it costs a fraction of a second. Partials only — a *final* stops the
+    # agent on its own, whatever the streak, because it is the engine having
+    # committed to that attribution rather than revised it.
+    interrupt_confirm_partials: int = 6
 
     # --- invitation ---
     # The floor is CLOSED by default. Agents propose constantly (speculation is
