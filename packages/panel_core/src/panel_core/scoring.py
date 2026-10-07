@@ -40,19 +40,6 @@ class FloorConfig:
     # Ricky's mic wins instantly and with no overlap.
     human_duck_ms: int = 90
 
-    # --- backchannel discrimination (ADR 0001) ---
-    # The capability given up by not using LiveKit's AgentSession. Their
-    # defaults were min_duration=0.5 + resume_false_interruption; ours ducks
-    # first and classifies after, so responsiveness never trades against
-    # correctness. See FEASIBILITY.md 8.1 S0.2.
-    backchannel_duck_db: float = -15.0
-    duck_ramp_ms: int = 120
-    resume_ramp_ms: int = 220
-    # Human speech longer than this is an interruption regardless of content.
-    backchannel_max_duration_s: float = 0.6
-    # ...or shorter, if it carries this many non-backchannel words.
-    interrupt_min_words: int = 3
-
     # --- invitation ---
     # The floor is CLOSED by default. Agents propose constantly (speculation is
     # what keeps the post-turn gap short) but may only *take* the floor when
@@ -282,58 +269,6 @@ class FloorConfig:
     agent_audio_stall_timeout_s: float = 2.0
 
 
-BACKCHANNEL_LEXICON: frozenset[str] = frozenset(
-    {
-        "mm",
-        "mmm",
-        "mhm",
-        "mmhm",
-        "uhhuh",
-        "uhuh",
-        "hm",
-        "hmm",
-        "yeah",
-        "yep",
-        "yes",
-        "yup",
-        "right",
-        "sure",
-        "ok",
-        "okay",
-        "quite",
-        "indeed",
-        "true",
-        "exactly",
-        "totally",
-        "wow",
-        "oh",
-        "i",
-        "see",
-        "got",
-        "it",
-        "of",
-        "course",
-        "fair",
-        "enough",
-    }
-)
-
-
-def is_backchannel(text: str, *, min_words: int) -> bool:
-    """Is this an acknowledgement rather than a bid for the floor?
-
-    Conservative by construction: unknown words count against backchannel, so
-    anything substantive interrupts. Being wrong towards 'interrupt' is safe
-    (the human wanted the floor anyway); being wrong towards 'backchannel'
-    means talking over Ricky, which is not.
-    """
-    tokens = [t for t in _WORD_RE.findall(text.lower()) if t]
-    if not tokens:
-        return True  # VAD fired but nothing transcribed yet — assume backchannel
-    substantive = [t for t in tokens if t not in BACKCHANNEL_LEXICON]
-    return len(substantive) < min_words
-
-
 # Phrases that hold the floor for someone else and say nothing. Matched as
 # whole phrases against normalised text, never as bare words: "wait" and "hold
 # on" alone open plenty of legitimate reactions ("Wait, what?"), so only the
@@ -373,7 +308,7 @@ WAIT_PHRASES: tuple[str, ...] = (
 
 _WAIT_RE = re.compile(r"\b(?:" + "|".join(WAIT_PHRASES) + r")\b")
 
-# Digits count as words here, unlike in `is_backchannel`'s `_WORD_RE`. The
+# Digits count as words here, unlike in `_WORD_RE` above. The
 # hold phrases contain none, so matching is unaffected — what changes is that
 # "Hold on — 40%." keeps a residue. Under a letters-only tokeniser a figure is
 # not thin content, it is *no* content, and the one line most worth protecting
@@ -455,7 +390,7 @@ def is_wait_narration(text: str, *, names: Iterable[str] = (), complete: bool = 
     "Let him finish his story, but I've got my own point.", where the real
     turn follows the hold phrase. All three keep a residue and all three pass.
 
-    **Biased to fail open** — the opposite bias from `is_backchannel`. A line
+    **Biased to fail open.** A line
     with no hold phrase in it at all is never flagged, however thin. Missing a
     filler line costs a few seconds of dead air; a false positive deletes a
     legitimate short reaction, and on this stage that is the worse half of the

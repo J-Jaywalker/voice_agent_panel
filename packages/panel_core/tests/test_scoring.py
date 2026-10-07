@@ -76,7 +76,7 @@ def test_the_cast_s_own_names_are_vocatives_not_content():
 
 
 def test_a_line_with_no_hold_phrase_is_never_flagged():
-    """Thin is not the same as wait-narration — `is_backchannel` owns thin."""
+    """Thin is not the same as wait-narration, and only the latter is judged here."""
     assert not is_wait_narration("Yeah. Sure. Right.", names=NAMES)
     assert not is_wait_narration("", names=NAMES)
 

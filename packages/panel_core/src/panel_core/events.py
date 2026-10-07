@@ -96,17 +96,21 @@ class UnverifiedSpeechDetected:
     Nor is there a `speaker`: the only thing known about the voice is that it
     is not the one identifier we enrolled, and "not Ricky" is not an identity.
 
-    What the reducer does with it is narrow by design — see
-    `FloorController._unverified_speech`. It is evidence *against* promoting
-    the current duck to a full stop, and it is nothing else. It never opens a
-    duck, never closes one, and never emits a command.
+    `FloorController` does nothing with it at all — it falls to `reduce`'s
+    default case, changing no state and emitting no command. That is the
+    correct amount: the gate is the *absence* of a `TranscriptUpdated`, and
+    only a `TranscriptUpdated` can stop an agent, so there is no second
+    decision for this event to participate in. It had a handler
+    (`_unverified_speech`, removed with the backchannel duck) that withheld a
+    duration-based promotion; nothing is promoted on duration any more. What
+    it still does is reach the console, the video wall and the rehearsal log,
+    where "someone spoke and it was not Ricky" is worth seeing.
 
     Attributes:
         t: When the segment was received. The runtime clock, as everywhere.
         is_final: Whether this was a finalised segment or a partial. Carried
             for the log's sake — a rehearsal recording should show whether the
-            stranger evidence was firm or provisional — and read by nothing:
-            either kind is enough to withhold a stop.
+            stranger evidence was firm or provisional.
     """
 
     t: float

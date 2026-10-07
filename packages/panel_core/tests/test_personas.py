@@ -140,7 +140,8 @@ def test_dexters_q1_stands_up_without_a_colleague_having_spoken(cast: PanelCast)
     for text in (beat.cue, *beat.material):
         named = [c for c in colleagues if c in text.lower()]
         assert not named, f"q1 material depends on {named}: {text}"
-    assert "identity" in beat.material[0].lower(), "the standalone claim is not what he opens on"
+    joined = " ".join(beat.material).lower()
+    assert "2030" in joined and "identity" in joined, "the standalone 2030/identity claim is missing"
     assert "wayne" in beat.reacting_to
 
 

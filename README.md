@@ -206,22 +206,17 @@ stopwatch's reference mark, and timing the socket against another detector would
 measure the gap between two detectors. **Run this on the venue machine**: the
 network term is now the dominant unknown in the barge-in budget.
 
-This runs the real `panel_core.FloorController`, not a mock — so if the duck or
-resume feels wrong by ear, that is a genuine finding about the thresholds, not a
-demo artefact. The numbers most in need of a human verdict:
+This runs the real `panel_core.FloorController`, not a mock — so if the stop
+feels wrong by ear, that is a genuine finding about the thresholds, not a demo
+artefact. The one knob left on this path is `FloorConfig.human_duck_ms` (90ms),
+the ramp the full stop fades out over: short enough to read as immediate,
+long enough not to click. The rest live in
+`packages/panel_runtime/src/panel_runtime/config.py`.
 
-| Knob | Default | Question |
-|---|---|---|
-| `backchannel_duck_db` | −15 dB | Enough to feel responsive without being jarring? |
-| `backchannel_max_duration_s` | 0.6s | Right boundary between "mm-hm" and a real interrupt? |
-| `duck_ramp_ms` / `resume_ramp_ms` | 120 / 220 | Smooth, or audible as a pump? |
-
-All live in `packages/panel_runtime/src/panel_runtime/config.py` and
-`FloorConfig`.
-
-This harness has a real STT session, so content-based classification is live —
-"mm-hm" and "no, that's wrong" are distinguished by what they say, not just by
-how long they last.
+This harness has a real STT session, so what it exercises is the live rule:
+any segment attributed to Ricky while an agent is speaking stops that agent,
+"mm-hm" and "no, that's wrong" alike. The `DuckSpeech` branch in its `apply()`
+is vestigial — nothing on the live floor path emits one any more.
 
 ## 4. Latency benches — TTS, models, first audio, addressing
 

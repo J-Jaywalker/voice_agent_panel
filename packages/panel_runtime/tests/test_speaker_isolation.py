@@ -52,7 +52,6 @@ from panel_core import (
     HumanSpeechEnded,
     HumanSpeechStarted,
     PanelCast,
-    ResumeSpeech,
     StopSpeech,
     Tick,
     TranscriptUpdated,
@@ -330,13 +329,13 @@ def test_a_stranger_s_turn_never_opens_arbitration(cast: PanelCast):
 
 
 def test_a_stranger_cannot_stop_a_speaking_agent(cast: PanelCast):
-    """End to end, through the real reducer: the audience never ducks or stops an agent.
+    """End to end, through the real reducer: the audience never stops an agent.
 
-    The VAD fires on any voice — it is energy detection and knows nothing about
-    identity — but no longer opens a duck by itself (`panel_core.floor`); the
-    duck now only opens on a `TranscriptUpdated` already attributed to Ricky.
-    So a segment attributed to someone else never ducks the agent at all, and
-    is certainly never promoted to a full stop.
+    Endpointing fires on any voice and knows nothing about identity, but it
+    moves nothing on the PA by itself (`panel_core.floor`); only a
+    `TranscriptUpdated` stops an agent, and `stt.py` builds one only for a
+    segment attributed to Ricky. So a segment attributed to someone else
+    leaves the agent completely undisturbed.
     """
     display = FakeDisplay()
     runtime = _identified_runtime(cast, display=display)
@@ -386,8 +385,6 @@ def test_a_stranger_cannot_stop_a_speaking_agent(cast: PanelCast):
         "the audience must not be able to stop an agent"
     )
     assert runtime.state.speaking == "wayne", "the agent kept the floor"
-    assert runtime.state.ducked_agent is None, "a stranger never opened a duck at all"
-    assert runtime.state.duck_confirmed is None
 
 
 # --------------------------------------------------------- the test's teeth
@@ -518,12 +515,14 @@ def test_an_undiarized_session_is_byte_for_byte_unchanged(cast: PanelCast):
     assert not any(isinstance(e, UnverifiedSpeechDetected) for e in drained)
 
 
-def test_a_backchannel_from_ricky_still_resumes_rather_than_stopping(cast: PanelCast):
-    """The behaviour that existed before this feature, still intact.
+def test_a_short_utterance_from_ricky_still_stops_an_agent(cast: PanelCast):
+    """The counterweight to the stranger test above, on the shortest input there is.
 
-    Ducking on "mm-hm" and resuming is `panel_core`'s job and is tested there;
-    what this checks is that routing Ricky's own words through the identity
-    gate has not changed which of them reach the reducer to be classified.
+    "mm-hm" used to duck and resume; it now stops, like every other word of
+    his over a live agent. What this file is actually guarding is unchanged
+    either way — that routing Ricky's own words through the identity gate has
+    not changed which of them reach the reducer — and a one-token partial is
+    the hardest case for that to survive.
     """
     display = FakeDisplay()
     runtime = _identified_runtime(cast, display=display)
@@ -565,13 +564,9 @@ def test_a_backchannel_from_ricky_still_resumes_rather_than_stopping(cast: Panel
 
     asyncio.run(body())
 
-    assert any(isinstance(c, ResumeSpeech) for c in display.commands)
-    assert not any(isinstance(c, StopSpeech) for c in display.commands)
-    assert runtime.state.speaking == "wayne"
-    # His "mm-hm" did reach the reducer and did confirm the duck — which is
-    # what the gate had to not break — and the duck then resolved as a
-    # backchannel, clearing both fields with it. The confirmation is a fact
-    # about one duck and must not outlive it.
-    assert runtime.state.ducked_agent is None
-    assert runtime.state.duck_confirmed is None
+    # His "mm-hm" reached the reducer as his — which is what the gate had to
+    # not break — and took the floor off the agent.
+    assert any(isinstance(c, StopSpeech) for c in display.commands)
+    assert runtime.state.speaking is None
+    assert runtime.state.floor_holder == HUMAN
     assert [u.text for u in runtime.state.transcript] == [], "a partial is not the record"

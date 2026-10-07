@@ -35,7 +35,6 @@ from .events import (
     AgentUtteranceProgress,
     Command,
     CueModerator,
-    DuckSpeech,
     Event,
     HandsRaised,
     HumanSpeechEnded,
@@ -43,7 +42,6 @@ from .events import (
     OperatorAction,
     OperatorCommand,
     RequestProposals,
-    ResumeSpeech,
     StartSpeech,
     StateChanged,
     StopReason,
@@ -51,7 +49,6 @@ from .events import (
     Tick,
     TranscriptUpdated,
     TurnYielded,
-    UnverifiedSpeechDetected,
 )
 from .personas import PanelCast
 from .prompts import (
@@ -61,7 +58,7 @@ from .prompts import (
     OPEN_VERDICT,
     sanitise,
 )
-from .scoring import FloorConfig, floor_priority, is_backchannel
+from .scoring import FloorConfig, floor_priority
 from .state import AgentState, Invitation, InvitationSource, PanelState, Proposal, Utterance
 
 
@@ -469,8 +466,6 @@ class FloorController:
                 return self._human_ended(state, event)
             case TranscriptUpdated():
                 return self._transcript(state, event)
-            case UnverifiedSpeechDetected():
-                return self._unverified_speech(state, event)
             case AddressDetected():
                 return self._address_detected(state, event)
             case TurnYielded():
@@ -497,16 +492,15 @@ class FloorController:
     def _human_started(
         self, state: PanelState, event: HumanSpeechStarted
     ) -> tuple[PanelState, list[Command]]:
-        """VAD noticed a voice. No duck opens off this alone.
+        """Endpointing noticed a voice. Nothing on the PA moves off this alone.
 
-        VAD cannot say whose voice it heard — that is `panel_runtime.stt`'s
-        job, and its identity gate means the *only* way a segment reaches this
-        reducer as `TranscriptUpdated` is already-attributed-to-Ricky (see
-        `_transcript`). Ducking here, before that arrives, would duck for the
-        audience and the PA bleeding back into the stage mic exactly as
-        readily as for Ricky — the case `_unverified_speech`'s docstring is
-        about. So this handler only records that a voice has started, for the
-        duration math in `_human_ended`/`_tick`; the duck itself opens in
+        Endpointing cannot say whose voice it heard — that is
+        `panel_runtime.stt`'s job, and its identity gate means the *only* way a
+        segment reaches this reducer as `TranscriptUpdated` is
+        already-attributed-to-Ricky (see `_transcript`). Acting here, before
+        that arrives, would act for the audience and the PA bleeding back into
+        the stage mic exactly as readily as for Ricky. So this handler only
+        records that the human holds the floor; the stop itself happens in
         `_transcript`, on the first confirmed word.
         """
         if state.speaking is None:
@@ -515,7 +509,6 @@ class FloorController:
                 human_speaking=True,
                 floor_holder=HUMAN,
                 consecutive_agent_turns=0,
-                human_speech_started_at=event.t,
                 proposals={},  # a human turn invalidates speculative candidates
                 invitation=None,  # ...and revokes the standing invitation
                 address_conflict=(),  # ...and any unresolved tie with it
@@ -529,12 +522,11 @@ class FloorController:
             return state, [self._paint(state)]
 
         # An agent is on the PA. Ricky's voice over it cancels the handoff that
-        # turn had lined up, whatever the duck turns out to be: the floor is
-        # his to give once he has started talking.
+        # turn had lined up: the floor is his to give once he has started
+        # talking.
         state = replace(
             state,
             human_speaking=True,
-            human_speech_started_at=event.t,
             pending_invite=None,
         )
         return state, []
@@ -542,25 +534,21 @@ class FloorController:
     def _human_ended(
         self, state: PanelState, event: HumanSpeechEnded
     ) -> tuple[PanelState, list[Command]]:
-        state = replace(state, human_speaking=False)
-        if state.ducked_agent is None:
-            return state, []
+        """The mic went quiet. Bookkeeping only.
 
-        started = state.human_speech_started_at
-        duration = event.t - started if started is not None else 0.0
-        # Duration alone, exactly as before — *unless* identification has
-        # positively established that the voice is not the enrolled moderator,
-        # in which case this is the audience or room bleed and an agent must
-        # not lose the floor to it. See `_unverified_speech`.
-        if duration >= self.config.backchannel_max_duration_s and state.duck_confirmed is not False:
-            return self._commit_human_interrupt(state, t=event.t)
-        return self._resume_ducked(state)
+        Whether an agent was stopped was already decided in `_transcript`, on
+        the words — not here, on how long the voice lasted. Duration used to
+        promote a duck to a stop; there is no duck any more, so there is
+        nothing left for the end of a burst to resolve.
+        """
+        del event  # only `t`, and nothing here is timed
+        return replace(state, human_speaking=False), []
 
     def _commit_human_interrupt(
         self, state: PanelState, *, t: float
     ) -> tuple[PanelState, list[Command]]:
-        """Classification resolved: a real barge-in. Stop the agent outright."""
-        agent = state.ducked_agent or state.speaking
+        """Ricky is talking over an agent. Stop the agent outright."""
+        agent = state.speaking
         commands: list[Command] = []
         if agent is not None:
             commands.append(
@@ -574,8 +562,6 @@ class FloorController:
         state = replace(
             state,
             speaking=None,
-            ducked_agent=None,
-            duck_confirmed=None,
             floor_holder=HUMAN,
             consecutive_agent_turns=0,
             last_audio_progress_t=None,
@@ -592,14 +578,6 @@ class FloorController:
         )
         commands.append(self._paint(state))
         return state, commands
-
-    def _resume_ducked(self, state: PanelState) -> tuple[PanelState, list[Command]]:
-        """It was only an acknowledgement. Bring the agent back to full gain."""
-        agent = state.ducked_agent
-        state = replace(state, ducked_agent=None, human_speech_started_at=None, duck_confirmed=None)
-        if agent is None:
-            return state, []
-        return state, [ResumeSpeech(agent=agent, ramp_ms=self.config.resume_ramp_ms)]
 
     def _transcript(
         self, state: PanelState, event: TranscriptUpdated
@@ -644,35 +622,17 @@ class FloorController:
         # with no text on it at all. So by the time a transcript reaches this
         # reducer, "these are Ricky's words" is already established.
         #
-        # This is also, now, the *only* place a duck opens (`_human_started`
-        # no longer does — see its docstring): the reflex used to duck blind
-        # on VAD and classify after, trading a few false ducks on the audience
-        # for speed; it now waits for STT to say whose voice this is, so it
-        # never ducks for anyone but Ricky. `duck_confirmed` is therefore
-        # already `True` at the moment a duck opens rather than latched onto
-        # one opened earlier — but the field, and `_unverified_speech`'s
-        # latch, stay: they are what stops a stranger talking mid-duck (after
-        # Ricky has already opened it) from undoing his confirmation.
+        # Which makes this the whole interrupt rule: Ricky's words over an
+        # agent stop that agent, immediately and in full. There is no
+        # backchannel classification left to run. The duck-then-classify
+        # mechanism it replaced existed so "mm-hm" could pass without taking
+        # the floor; Ricky has been told not to backchannel on stage, so the
+        # only thing the classifier could still do was mis-read a real
+        # interruption as an acknowledgement — "yeah, okay" is the shape of
+        # both — and leave an agent running over him.
         if event.speaker == HUMAN and state.speaking is not None:
-            if not is_backchannel(text, min_words=self.config.interrupt_min_words):
-                # Content-based classification: substantive words while an
-                # agent is speaking are a barge-in, however briefly they were
-                # spoken, and however little of the duck-then-classify dance
-                # above ran first. This also catches a short-but-real
-                # interruption already resumed by `_human_ended`.
-                state, interrupt_cmds = self._commit_human_interrupt(state, t=event.t)
-                commands.extend(interrupt_cmds)
-            elif state.ducked_agent is None:
-                state = replace(state, ducked_agent=state.speaking, duck_confirmed=True)
-                commands.append(
-                    DuckSpeech(
-                        agent=state.speaking,
-                        gain_db=self.config.backchannel_duck_db,
-                        ramp_ms=self.config.duck_ramp_ms,
-                    )
-                )
-            else:
-                state = replace(state, duck_confirmed=True)
+            state, interrupt_cmds = self._commit_human_interrupt(state, t=event.t)
+            commands.extend(interrupt_cmds)
 
         # Finals only. A partial can match a pattern the completed sentence
         # does not, and a stale invitation is a live mic on the wrong agent.
@@ -743,45 +703,6 @@ class FloorController:
                     commands.append(request)
 
         return state, commands
-
-    def _unverified_speech(
-        self, state: PanelState, event: UnverifiedSpeechDetected
-    ) -> tuple[PanelState, list[Command]]:
-        """Someone who is not the enrolled moderator was heard. Bookkeeping only.
-
-        Emits nothing. This event is evidence about the duck already in
-        progress and is not itself a floor signal: it must never open a duck,
-        never close one, and never put a command on the wire. An unenrolled
-        voice on the mic is the audience or the PA bleeding back in, and the
-        panel's audible response to it is exactly what it is today — the brief
-        recoverable duck the VAD already started, which now resumes instead of
-        promoting to a stop.
-
-        Three rules, all of them in the two conditions below:
-
-        * **Only while ducked.** With nobody on the PA there is no duck to
-          qualify and nothing to decide, so a stranger talking into a silent
-          room changes no state at all.
-        * **Never downgrades a confirmation.** Once a segment in this duck has
-          been identified as Ricky, a later stranger segment leaves it alone.
-          Ricky interrupting over audience noise produces both kinds of
-          evidence, in either order, and he must still be able to stop an
-          agent.
-        * **Never itself permits anything.** The field it writes is read in
-          exactly two places, and in both it can only withhold a stop.
-
-        Args:
-            state: Current panel state.
-            event: The content-free stranger-speech notification.
-
-        Returns:
-            The state with `duck_confirmed` possibly set to False, and no
-            commands.
-        """
-        del event  # carries only `t`/`is_final`; neither changes the outcome
-        if state.ducked_agent is None or state.duck_confirmed is True:
-            return state, []
-        return replace(state, duck_confirmed=False), []
 
     def _address_detected(
         self, state: PanelState, event: AddressDetected
@@ -1320,12 +1241,6 @@ class FloorController:
             floor_holder=HUMAN,
             consecutive_agent_turns=0,
             last_audio_progress_t=None,
-            # A stalled agent may also have been ducked — Ricky can say "mm-hm"
-            # over a turn that is already broken — and the duck must not outlive
-            # the turn it applied to. Nor may its identity verdict: that is a
-            # fact about one duck, and this one is over.
-            ducked_agent=None,
-            duck_confirmed=None,
             proposals={},
             invitation=None,
             pending_invite=None,
@@ -1363,8 +1278,6 @@ class FloorController:
         )
         if state.speaking == event.agent:
             state = replace(state, speaking=None, floor_holder=None, last_audio_progress_t=None)
-        if state.ducked_agent == event.agent:
-            state = replace(state, ducked_agent=None, duck_confirmed=None)
 
         if event.utterance:
             state = replace(
@@ -1543,27 +1456,10 @@ class FloorController:
         return state, commands
 
     def _tick(self, state: PanelState, event: Tick) -> tuple[PanelState, list[Command]]:
-        # Duration-based classification: speech this long is a bid for the
-        # floor whatever the words turn out to be.
-        #
-        # This is the branch that actually fires on stage, and the identity
-        # guard therefore matters more here than on `HumanSpeechEnded`. A
-        # sustained voice trips this ~0.6s in, while it is still talking;
-        # `_human_ended`'s copy of the same rule only gets a look in for speech
-        # that stops just after the threshold. Guarding one and not the other
-        # would leave the audience able to stop an agent by the usual route and
-        # block them only on the rare one. Same condition, same reasoning as
-        # `_human_ended`: `False` is "confirmed not Ricky" and withholds the
-        # stop; `None` (no evidence yet) and `True` behave as they always have.
-        started = state.human_speech_started_at
-        if (
-            state.ducked_agent is not None
-            and started is not None
-            and event.t - started >= self.config.backchannel_max_duration_s
-            and state.duck_confirmed is not False
-        ):
-            return self._commit_human_interrupt(state, t=event.t)
-
+        # Nothing about the human mic is decided here. An interrupt is a fact
+        # about words that have been attributed to Ricky (`_transcript`), not
+        # about how long a voice on the stage mic has been going — a duration
+        # rule running on this tick could only ever be measuring the audience.
         if state.awaiting_agents:
             # Checked ahead of the TTL: this is a sub-second beat and the TTL is
             # 25 seconds, so they can never contend, but the cue must not be

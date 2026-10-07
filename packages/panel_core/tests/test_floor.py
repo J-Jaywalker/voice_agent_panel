@@ -19,7 +19,6 @@ from panel_core import (
     AgentState,
     AgentUtteranceProgress,
     CueModerator,
-    DuckSpeech,
     FloorConfig,
     FloorController,
     HandsRaised,
@@ -30,7 +29,6 @@ from panel_core import (
     PanelCast,
     PanelState,
     RequestProposals,
-    ResumeSpeech,
     Signals,
     StartSpeech,
     StopReason,
@@ -124,30 +122,51 @@ def speaking_agent(fc, state, agent="wayne", t=1.0):
     return state
 
 
-def test_human_speech_alone_does_not_duck_the_agent(fc, state):
-    """VAD cannot say whose voice it heard, so it opens no duck by itself.
+def test_human_speech_alone_does_not_stop_the_agent(fc, state):
+    """Endpointing cannot say whose voice it heard, so it stops nothing by itself.
 
-    Ducking on VAD used to be the reflex: fast, but blind to who was talking,
-    so the audience and the PA bleeding back into the stage mic ducked an
-    agent exactly as readily as Ricky did. The duck now waits for STT to say
-    this is him — see `test_transcript_evidence_ducks_the_agent` for the
-    reflex that replaced it.
+    `HumanSpeechStarted` is the barge-in *reflex*'s event elsewhere in the
+    runtime, but in here it carries no speaker and the audience and the PA
+    bleeding back into the stage mic fire it exactly as readily as Ricky. The
+    stop waits for STT to say this is him — see
+    `test_transcript_evidence_stops_the_agent`.
     """
     state = speaking_agent(fc, state)
     state, cmds = fc.reduce(state, HumanSpeechStarted(t=2.0))
 
-    assert not [c for c in cmds if isinstance(c, (DuckSpeech, StopSpeech))]
+    assert not [c for c in cmds if isinstance(c, StopSpeech)]
     assert state.speaking == "wayne", "the agent is undisturbed"
-    assert state.ducked_agent is None
 
 
-def test_transcript_evidence_ducks_the_agent(fc, state):
-    """The reflex, now gated on STT rather than VAD.
+def test_transcript_evidence_stops_the_agent(fc, state):
+    """The whole interrupt rule, gated on STT rather than on endpointing.
 
     A `TranscriptUpdated` on the human channel is only ever built for a
     segment already attributed to Ricky (`panel_runtime.stt`), so the first
     one to arrive while an agent is speaking is the first moment this reducer
-    knows it is him — and that is when the duck opens.
+    knows it is him — and that is when the agent stops.
+    """
+    state = speaking_agent(fc, state)
+    state, _ = fc.reduce(state, HumanSpeechStarted(t=2.0))
+    state, cmds = fc.reduce(
+        state, TranscriptUpdated(t=2.2, speaker=HUMAN, text="so, hold on", is_final=False)
+    )
+
+    stops = [c for c in cmds if isinstance(c, StopSpeech)]
+    assert len(stops) == 1
+    assert stops[0].agent == "wayne"
+    assert stops[0].reason is StopReason.HUMAN_INTERRUPT
+    assert state.speaking is None
+    assert state.floor_holder == HUMAN
+
+
+def test_an_acknowledgement_from_ricky_also_stops_the_agent(fc, state):
+    """No backchannel classification survives. "mm-hm" stops the agent too.
+
+    This used to duck and resume. Ricky has been told not to backchannel on
+    stage, so the only thing a classifier could still do here was read a real
+    interruption as an acknowledgement — "yeah, okay" is the shape of both —
+    and leave an agent talking over the moderator.
     """
     state = speaking_agent(fc, state)
     state, _ = fc.reduce(state, HumanSpeechStarted(t=2.0))
@@ -155,50 +174,31 @@ def test_transcript_evidence_ducks_the_agent(fc, state):
         state, TranscriptUpdated(t=2.2, speaker=HUMAN, text="mm-hm", is_final=False)
     )
 
-    ducks = [c for c in cmds if isinstance(c, DuckSpeech)]
-    assert len(ducks) == 1
-    assert ducks[0].agent == "wayne"
-    assert ducks[0].gain_db < 0
-    assert not [c for c in cmds if isinstance(c, StopSpeech)], "a backchannel alone stops nothing"
-    assert state.speaking == "wayne", "the agent is quieter, not stopped"
-    assert state.ducked_agent == "wayne"
-    assert state.duck_confirmed is True, "the duck cannot open except already confirmed as Ricky"
-
-
-def test_backchannel_resumes_the_agent(fc, state):
-    """Ricky says 'mm-hm'. The agent must not stop."""
-    state = speaking_agent(fc, state)
-    state, _ = fc.reduce(state, HumanSpeechStarted(t=2.0))
-    state, _ = fc.reduce(
-        state, TranscriptUpdated(t=2.2, speaker=HUMAN, text="mm-hm", is_final=False)
-    )
-    state, cmds = fc.reduce(state, HumanSpeechEnded(t=2.3))
-
-    assert [c for c in cmds if isinstance(c, ResumeSpeech)]
-    assert not [c for c in cmds if isinstance(c, StopSpeech)]
-    assert state.speaking == "wayne", "agent keeps the floor through a backchannel"
-    assert state.ducked_agent is None
-
-
-def test_sustained_speech_commits_an_interrupt_on_duration(fc, state):
-    """Long enough is a bid for the floor, whatever the words turn out to be.
-
-    Duration is measured from `HumanSpeechStarted` (VAD) as before, but the
-    promotion in `_tick` only fires once a duck is open — which now needs one
-    confirmed word from STT first, here a backchannel that would not itself
-    have committed the interrupt.
-    """
-    state = speaking_agent(fc, state)
-    state, _ = fc.reduce(state, HumanSpeechStarted(t=2.0))
-    state, _ = fc.reduce(
-        state, TranscriptUpdated(t=2.1, speaker=HUMAN, text="mm-hm", is_final=False)
-    )
-    state, cmds = fc.reduce(state, Tick(t=2.0 + fc.config.backchannel_max_duration_s + 0.01))
-
     stops = [c for c in cmds if isinstance(c, StopSpeech)]
     assert stops and stops[0].reason is StopReason.HUMAN_INTERRUPT
     assert state.speaking is None
     assert state.floor_holder == HUMAN
+
+
+def test_duration_alone_never_stops_an_agent(fc, state):
+    """A voice going on and on is not evidence of anything.
+
+    There was a duration promotion on `Tick` and another on
+    `HumanSpeechEnded`: speech past `backchannel_max_duration_s` became a stop
+    whatever the words were. Both are gone with the duck they promoted. A
+    sustained voice with no attributed transcript behind it is the audience,
+    and the only thing a clock could measure here is how long they have been
+    talking.
+    """
+    state = speaking_agent(fc, state)
+    state, _ = fc.reduce(state, HumanSpeechStarted(t=2.0))
+
+    state, cmds = fc.reduce(state, Tick(t=5.0))
+    assert not [c for c in cmds if isinstance(c, StopSpeech)]
+    state, cmds = fc.reduce(state, HumanSpeechEnded(t=6.0))
+    assert not [c for c in cmds if isinstance(c, StopSpeech)]
+    assert state.speaking == "wayne", "the agent held the floor throughout"
+    assert state.human_speaking is False
 
 
 def test_substantive_words_commit_an_interrupt_even_when_brief(fc, state):
@@ -217,31 +217,30 @@ def test_substantive_words_commit_an_interrupt_even_when_brief(fc, state):
     assert state.floor_holder == HUMAN
 
 
-def test_late_substantive_transcript_still_interrupts_after_resume(fc, state):
+def test_a_transcript_arriving_after_the_mic_closed_still_interrupts(fc, state):
     """Safety net for the race: a burst with no words yet leaves the agent be,
     then the words arrive and stop it anyway.
 
-    No duck opened (no `TranscriptUpdated` arrived before the mic closed), so
-    there is nothing to resume — the agent was never disturbed in the first
-    place. The content-based stop below does not depend on a duck ever having
-    been open, so a transcript arriving after `HumanSpeechEnded` still wins.
+    The stop is a property of the text, not of the burst it belonged to, so it
+    does not matter that `HumanSpeechEnded` has already landed by the time STT
+    catches up.
     """
     state = speaking_agent(fc, state)
     state, _ = fc.reduce(state, HumanSpeechStarted(t=2.0))
     state, cmds = fc.reduce(state, HumanSpeechEnded(t=2.2))
-    assert not [c for c in cmds if isinstance(c, (ResumeSpeech, StopSpeech))]
-    assert state.speaking == "wayne", "nothing was ducked, so nothing needed resuming"
+    assert not [c for c in cmds if isinstance(c, StopSpeech)]
+    assert state.speaking == "wayne", "no words, so nothing to act on"
 
     state, cmds = fc.reduce(
         state, TranscriptUpdated(t=2.5, speaker=HUMAN, text="no, that is wrong", is_final=True)
     )
-    assert [c for c in cmds if isinstance(c, StopSpeech)], "content stops the agent regardless"
+    assert [c for c in cmds if isinstance(c, StopSpeech)], "his words stop the agent regardless"
     assert state.speaking is None
 
 
 def test_human_speech_with_no_agent_speaking_just_takes_the_floor(fc, state):
     state, cmds = fc.reduce(state, HumanSpeechStarted(t=1.0))
-    assert not [c for c in cmds if isinstance(c, (DuckSpeech, StopSpeech))]
+    assert not [c for c in cmds if isinstance(c, StopSpeech)]
     assert state.floor_holder == HUMAN
 
 
@@ -250,135 +249,46 @@ def test_human_speech_with_no_agent_speaking_just_takes_the_floor(fc, state):
 # Only Ricky may stop an agent. His mic is on a stage, so the audience and the
 # PA bleeding back into the room both land on it; `panel_runtime.stt` gives a
 # segment it could not attribute to the enrolled moderator no text at all and
-# reports it as `UnverifiedSpeechDetected` instead. What that buys here is
-# narrow and one-directional: it can only ever *withhold* a stop.
+# reports it as `UnverifiedSpeechDetected` instead.
 #
-# Since the duck itself now only opens on a confirmed `TranscriptUpdated`
-# (`_transcript`, and see `_human_started`'s docstring), a stranger can no
-# longer open one either — `UnverifiedSpeechDetected` reaching this reducer
-# with no duck already in progress is a no-op, not a downgrade. What remains
-# to guard is the case the identity gate was always really for: a stranger
-# talking *after* Ricky has already opened a confirmed duck must not undo his
-# confirmation and hand the promotion back to duration alone.
-#
-# The asymmetry is the whole design. Requiring positive confirmation before
-# allowing a barge-in would put a network round trip in the interrupt path,
-# which is precisely what "VAD owns stopping, STT owns understanding"
-# (CLAUDE.md) keeps out of it — so a duck already confirmed as Ricky must
-# behave exactly as before any of this existed.
+# That is now the entire gate, and it lives entirely in the runtime. The
+# reducer has no identity logic left of its own: a stranger produces no
+# `TranscriptUpdated`, the only thing that can stop an agent is a
+# `TranscriptUpdated`, so a stranger cannot stop an agent. `duck_confirmed`
+# and `_unverified_speech` were the belt to that braces, and the belt could
+# never actually fire — by the time the duck existed it was already confirmed
+# as Ricky, so the `False` the handler wrote was unreachable. Both are gone;
+# `UnverifiedSpeechDetected` still reaches this reducer and is now a plain
+# no-op, which is what the tests below pin.
 
 
-def test_a_stranger_alone_never_ducks_or_stops_an_agent(fc, state):
-    """The feature. An audience voice never even opens a duck.
-
-    `UnverifiedSpeechDetected` is bookkeeping about a duck already in
-    progress and never opens one itself (see `_unverified_speech`), and
-    nothing else on this path can either — a stranger's segment never becomes
-    a `TranscriptUpdated` in the first place (`panel_runtime.stt`). So the
-    agent talks straight through, undisturbed, for as long as only the
-    audience is heard.
-    """
+def test_a_stranger_alone_never_stops_an_agent(fc, state):
+    """The feature. An audience voice leaves the agent completely undisturbed."""
     state = speaking_agent(fc, state)
     state, _ = fc.reduce(state, HumanSpeechStarted(t=2.0))
     state, cmds = fc.reduce(state, UnverifiedSpeechDetected(t=2.1, is_final=True))
-    assert cmds == [], "bookkeeping only — this event is never a floor signal"
-    assert state.duck_confirmed is None, "there was no duck for this to be evidence about"
-    assert state.ducked_agent is None
+    assert cmds == [], "a stranger is never a floor signal"
 
-    # Well past the threshold that would otherwise have stopped the agent.
-    state, cmds = fc.reduce(state, Tick(t=2.0 + fc.config.backchannel_max_duration_s + 0.5))
-    assert not [c for c in cmds if isinstance(c, StopSpeech)], "nothing was ever ducked"
+    # Well past any threshold that used to promote a duck to a stop.
+    state, cmds = fc.reduce(state, Tick(t=5.0))
+    assert not [c for c in cmds if isinstance(c, StopSpeech)], "his words never arrived"
     assert state.speaking == "wayne"
 
-    state, cmds = fc.reduce(state, HumanSpeechEnded(t=3.0))
-    assert not [c for c in cmds if isinstance(c, (ResumeSpeech, StopSpeech))]
+    state, cmds = fc.reduce(state, HumanSpeechEnded(t=6.0))
+    assert not [c for c in cmds if isinstance(c, StopSpeech)]
     assert state.speaking == "wayne", "the agent kept the floor throughout, undisturbed"
-    assert state.ducked_agent is None
-    assert state.duck_confirmed is None
-
-
-def test_a_stranger_cannot_undo_ricky_s_confirmation_on_either_promotion_path(fc, state):
-    """There are two duration-only promotion paths, and both are gated.
-
-    `_tick` fires while the voice is still going and is the one that trips on
-    stage; `_human_ended` catches speech that stops just past the threshold.
-    Here Ricky has already opened and confirmed a duck with a backchannel;
-    a stranger heard mid-duck must not undo that on either path.
-    """
-    state = speaking_agent(fc, state)
-    state, _ = fc.reduce(state, HumanSpeechStarted(t=2.0))
-    state, _ = fc.reduce(
-        state, TranscriptUpdated(t=2.05, speaker=HUMAN, text="mm-hm", is_final=False)
-    )
-    assert state.duck_confirmed is True
-    state, _ = fc.reduce(state, UnverifiedSpeechDetected(t=2.1, is_final=True))
-    assert state.duck_confirmed is True, "a confirmation is never downgraded"
-
-    state, cmds = fc.reduce(
-        state, HumanSpeechEnded(t=2.0 + fc.config.backchannel_max_duration_s + 0.05)
-    )
-    assert [c for c in cmds if isinstance(c, StopSpeech)], "Ricky's own duration promotes normally"
-    assert state.speaking is None
-
-
-def test_a_confirmed_duck_still_stops_on_duration(fc, state):
-    """Ricky's own sustained speech is untouched by the gate.
-
-    'mm-hm' is used as the confirming segment deliberately: it is Ricky, so it
-    confirms, but it is a backchannel, so the *content* path does not fire and
-    the promotion under test really is the duration one.
-    """
-    state = speaking_agent(fc, state)
-    state, _ = fc.reduce(state, HumanSpeechStarted(t=2.0))
-    state, cmds = fc.reduce(
-        state, TranscriptUpdated(t=2.1, speaker=HUMAN, text="mm-hm", is_final=False)
-    )
-    assert not [c for c in cmds if isinstance(c, StopSpeech)], "a backchannel alone stops nothing"
-    assert state.duck_confirmed is True
-
-    state, cmds = fc.reduce(state, Tick(t=2.0 + fc.config.backchannel_max_duration_s + 0.01))
-    stops = [c for c in cmds if isinstance(c, StopSpeech)]
-    assert stops and stops[0].reason is StopReason.HUMAN_INTERRUPT
-    assert state.speaking is None
-    assert state.floor_holder == HUMAN
-
-
-def test_room_noise_after_ricky_is_confirmed_does_not_downgrade_him(fc, state):
-    """He talks, the room reacts, he keeps going. He must still be able to stop.
-
-    Both kinds of evidence arrive during one duck, and a stranger segment
-    landing second must not undo a confirmation. Without the latch, applause
-    over the top of Ricky's interruption would hand the floor back to the
-    agent he was interrupting.
-    """
-    state = speaking_agent(fc, state)
-    state, _ = fc.reduce(state, HumanSpeechStarted(t=2.0))
-    state, _ = fc.reduce(
-        state, TranscriptUpdated(t=2.1, speaker=HUMAN, text="mm-hm", is_final=False)
-    )
-    state, cmds = fc.reduce(state, UnverifiedSpeechDetected(t=2.2, is_final=True))
-    assert cmds == []
-    assert state.duck_confirmed is True, "a confirmation is never downgraded"
-
-    state, cmds = fc.reduce(state, Tick(t=2.7))
-    assert [c for c in cmds if isinstance(c, StopSpeech)]
-    assert state.speaking is None
 
 
 def test_ricky_words_stop_an_agent_even_after_stranger_evidence(fc, state):
     """The content path needs no gate, and this proves it is already safe.
 
-    Strangers produce no `TranscriptUpdated` at all after the `stt.py` change,
-    so any transcript reaching this reducer is Ricky by construction — the
-    content-based promotion is speaker-safe without a runtime check, and a
-    redundant one would only be another thing to get wrong. Here a stranger is
-    heard first (before any duck exists, so it is a no-op) and Ricky speaks
-    over them; his words win.
+    Strangers produce no `TranscriptUpdated` at all (`panel_runtime.stt`), so
+    any transcript reaching this reducer is Ricky by construction. Here a
+    stranger is heard first and Ricky speaks over them; his words win.
     """
     state = speaking_agent(fc, state)
     state, _ = fc.reduce(state, HumanSpeechStarted(t=2.0))
     state, _ = fc.reduce(state, UnverifiedSpeechDetected(t=2.1, is_final=True))
-    assert state.duck_confirmed is None, "no duck existed yet for this to be evidence about"
 
     state, cmds = fc.reduce(
         state,
@@ -390,67 +300,14 @@ def test_ricky_words_stop_an_agent_even_after_stranger_evidence(fc, state):
     assert state.floor_holder == HUMAN
 
 
-def test_a_duck_never_opens_without_being_confirmed(fc, state):
-    """The regression guard on the new reflex, restated for it.
-
-    The duck used to be able to sit at `duck_confirmed is None` — VAD had
-    opened it before anyone knew whose voice it was, and duration promoted it
-    anyway (CLAUDE.md: `None` behaves as "no evidence required", never as "not
-    Ricky"). That state is no longer reachable: the only place `ducked_agent`
-    is ever set (`_transcript`) sets `duck_confirmed=True` in the same
-    assignment, because the identity gate already ran in `panel_runtime.stt`
-    before this reducer saw the segment at all. If a duck is open, it is
-    already confirmed.
-    """
-    state = speaking_agent(fc, state)
-    state, _ = fc.reduce(state, HumanSpeechStarted(t=2.0))
-    assert state.ducked_agent is None, "VAD alone opens nothing"
-
-    state, cmds = fc.reduce(
-        state, TranscriptUpdated(t=2.1, speaker=HUMAN, text="mm-hm", is_final=False)
-    )
-    assert [c for c in cmds if isinstance(c, DuckSpeech)]
-    assert state.ducked_agent == "wayne"
-    assert state.duck_confirmed is True, "the duck cannot exist without already being confirmed"
-
-
-def test_a_fresh_duck_does_not_inherit_the_previous_duck_s_verdict(fc, state):
-    """A resumed backchannel duck must not leave state that reaches the next one."""
-    state = speaking_agent(fc, state)
-    state, _ = fc.reduce(state, HumanSpeechStarted(t=2.0))
-    state, _ = fc.reduce(
-        state, TranscriptUpdated(t=2.05, speaker=HUMAN, text="mm-hm", is_final=False)
-    )
-    state, _ = fc.reduce(state, HumanSpeechEnded(t=2.2))
-    assert state.speaking == "wayne"
-    assert state.ducked_agent is None and state.duck_confirmed is None, "the duck fully closed"
-
-    # A second duck, opened by its own evidence, is unaffected by the first.
-    state, _ = fc.reduce(state, HumanSpeechStarted(t=4.0))
-    state, cmds = fc.reduce(
-        state, TranscriptUpdated(t=4.05, speaker=HUMAN, text="mm-hm", is_final=False)
-    )
-    assert [c for c in cmds if isinstance(c, DuckSpeech)]
-    assert state.duck_confirmed is True
-    state, cmds = fc.reduce(state, Tick(t=4.0 + fc.config.backchannel_max_duration_s + 0.01))
-    assert [c for c in cmds if isinstance(c, StopSpeech)], (
-        "the second duck promotes on its own merits"
-    )
-
-
 def test_unverified_speech_with_nobody_on_the_pa_changes_nothing(fc, state):
-    """Nothing is ducked, so there is no verdict to record and nothing to do.
-
-    A stranger talking into a silent room is not a floor event of any kind:
-    this must not open a duck, take the floor, or touch state at all.
-    """
+    """A stranger talking into a silent room is not a floor event of any kind."""
     before = state
     state, cmds = fc.reduce(state, UnverifiedSpeechDetected(t=1.0, is_final=True))
     assert cmds == []
     assert state == before
-    assert state.duck_confirmed is None
-    assert state.ducked_agent is None
     assert state.floor_holder is None
+
 
 
 def test_human_turn_invalidates_speculative_proposals(fc, state):
@@ -2206,31 +2063,6 @@ def test_a_stall_leaves_an_unfinished_introduction_round_restartable(fc, state):
     state, _ = fc.reduce(state, _introduce(30.0))
     assert state.intro_queue is not None
     assert set(state.intro_queue) == set(fc.cast.ids())
-
-
-def test_a_ducked_agent_that_stalls_does_not_leave_the_duck_behind(fc, state):
-    """Defensive, and unreachable on the default config — deliberately both.
-
-    A duck cannot survive long enough to stall under these numbers:
-    `backchannel_max_duration_s` is 0.6s and the tightest stall budget is 2.0s,
-    so `_tick`'s duration branch commits the interrupt (which clears the duck
-    itself) several ticks before the watchdog could look. The state is
-    therefore built directly rather than driven through events — reaching it
-    through `HumanSpeechStarted` would pass by testing the interrupt path
-    instead, which is the trap this comment exists to stop.
-
-    Pinned anyway because the two budgets are independent dials and a
-    rehearsal is free to move them past each other, at which point a duck
-    outliving the turn it applied to is an agent permanently attenuated for
-    the rest of the show.
-    """
-    state = speaking_agent(fc, state, agent="wayne", t=1.0)
-    state = replace(state, ducked_agent="wayne")
-
-    state, cmds = fc.reduce(state, Tick(t=1.1 + fc.config.agent_first_audio_timeout_s))
-    assert [c.agent for c in cmds if isinstance(c, StopSpeech)] == ["wayne"]
-    assert state.ducked_agent is None
-    assert state.speaking is None
 
 
 # ------------------------------------------------- speculation during a turn
