@@ -28,6 +28,7 @@ Two properties matter more than the individual verdict mappings:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -86,7 +87,10 @@ def regex(cast: PanelCast) -> FloorController:
 
 @pytest.fixture
 def state(cast: PanelCast) -> PanelState:
-    return PanelState.for_agents(cast.ids())
+    """Past introductions, like the rest of this seam assumes. Tests of the
+    introduction round itself build the opposite starting point explicitly
+    with ``replace(state, intro_done=False)``."""
+    return replace(PanelState.for_agents(cast.ids()), intro_done=True)
 
 
 def run(fc: FloorController, state: PanelState, *events):
@@ -425,6 +429,7 @@ def test_an_intro_verdict_starts_the_round_exactly_once(llm, state):
     the regex intro check is gated behind the flag at all — the regex and the
     classifier each starting a round of their own for the same sentence.
     """
+    state = replace(state, intro_done=False)
     state, commands = run(
         llm,
         state,
@@ -467,6 +472,7 @@ def test_the_regex_intro_latch_does_not_fire_under_the_flag(llm, state):
     anywhere in a sentence, which is precisely the over-trigger the classifier
     exists to replace.
     """
+    state = replace(state, intro_done=False)
     state, commands = llm.reduce(state, said("She's quite introverted, actually."))
     assert not [c for c in commands if isinstance(c, StartSpeech)]
     assert state.intro_queue is None

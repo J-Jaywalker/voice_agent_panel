@@ -37,6 +37,7 @@ classifier, and `test_llm_address.py` is where it is tested.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -81,7 +82,10 @@ def fc(cast: PanelCast) -> FloorController:
 
 @pytest.fixture
 def state(cast: PanelCast) -> PanelState:
-    return PanelState.for_agents(cast.ids())
+    """Past introductions, like the rest of the corpus assumes. Tests of the
+    introduction round itself build the opposite starting point explicitly
+    with ``replace(state, intro_done=False)``."""
+    return replace(PanelState.for_agents(cast.ids()), intro_done=True)
 
 
 def run(fc: FloorController, state: PanelState, *events):
@@ -488,6 +492,7 @@ def test_a_live_exchange_does_not_age_out_mid_answer(fc, state):
 
 def test_the_introduction_round_never_expires(fc, state):
     """It is bounded by the cast size; cutting it short strands agents."""
+    state = replace(state, intro_done=False)
     state, _ = fc.reduce(state, said("Let's have all of you introduce yourselves."))
     assert state.invitation is not None
     state, _ = fc.reduce(state, Tick(t=fc.config.invitation_ttl_s * 3))

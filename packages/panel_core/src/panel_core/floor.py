@@ -714,7 +714,12 @@ class FloorController:
         # produced a silent agent on stage and that fixed text exists to
         # remove. See `_start_introductions`, `_start_closing` and
         # `_grant_introduction`/`_grant_closing`.
-        if state.intro_queue is None and state.closing_queue is None:
+        #
+        # Nor before `intro_done`: an agent has nothing to say until Ricky has
+        # taken the panel through introductions, so asking one for a proposal
+        # against a question nobody is yet allowed to answer is the same
+        # wasted round trip, just earlier in the show.
+        if state.intro_done and state.intro_queue is None and state.closing_queue is None:
             due = (
                 event.t - state.last_proposal_request_t >= self.config.speculation_interval_s
                 # Finals land on pauses, not on complete thoughts, so a turn's
@@ -1818,7 +1823,22 @@ class FloorController:
         regex path and the classifier path (`_address_detected`) so that
         switching `FloorConfig.llm_address_detection` changes who answers "who
         was addressed?" and nothing at all about what happens next.
+
+        No agent may be invited to speak until Ricky has taken the panel
+        through introductions. This is the one place that matters: every
+        other route to the floor — a named address, an open floor, a
+        colleague's handoff — installs its invitation here, and the
+        introduction round itself never does (`_start_introductions` and
+        `_grant_introduction` build state directly, paced off fixed text with
+        no arbitration in between). So gating here blocks everything except
+        the round that sets `intro_done`, without needing to touch the round
+        itself. A refused invitation leaves `state.invitation` as it was —
+        `None` the first time, which reaches `_turn_yielded` exactly like a
+        plain remark and cues the moderator with `CueReason.NO_INVITATION`.
         """
+        if not state.intro_done:
+            return state, []
+
         standing = state.invitation
         if standing is not None and standing.is_live():
             fresh = t - standing.t < self.config.invitation_supersede_window_s

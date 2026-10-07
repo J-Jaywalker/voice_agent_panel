@@ -62,7 +62,14 @@ def fc(cast: PanelCast) -> FloorController:
 
 @pytest.fixture
 def state(cast: PanelCast) -> PanelState:
-    return PanelState.for_agents(cast.ids())
+    """Steady state: past introductions, like the rest of a real show.
+
+    `intro_done=True` because that is where almost every test in this file
+    lives — mid-panel floor mechanics, not the one-shot opening. Tests of the
+    introduction round itself need the opposite starting point and build it
+    explicitly with ``replace(state, intro_done=False)``.
+    """
+    return replace(PanelState.for_agents(cast.ids()), intro_done=True)
 
 
 def run(fc: FloorController, state: PanelState, *events):
@@ -1560,6 +1567,7 @@ def _introduce(t: float = 0.0) -> TranscriptUpdated:
 
 
 def test_introduce_yourselves_invites_the_whole_panel(fc, state):
+    state = replace(state, intro_done=False)
     state, _ = fc.reduce(state, _introduce(0.0))
     assert state.invitation is not None
     assert state.invitation.agents == ()
@@ -1582,6 +1590,7 @@ def test_introduction_trigger_is_broad(fc, state, text):
     """Any variation on introduce/introduction/intro must trigger the round —
     deliberately cast wide, since the one-shot latch is what makes a stray
     hit cheap and missing the real cue on stage is the worse failure."""
+    state = replace(state, intro_done=False)
     state, _ = fc.reduce(state, TranscriptUpdated(t=0.0, speaker=HUMAN, text=text, is_final=True))
     assert state.intro_queue is not None
     assert set(state.intro_queue) == set(fc.cast.ids())
@@ -1596,8 +1605,58 @@ def test_introduction_trigger_is_broad(fc, state, text):
     ],
 )
 def test_introduction_trigger_does_not_false_positive(fc, state, text):
+    state = replace(state, intro_done=False)
     state, _ = fc.reduce(state, TranscriptUpdated(t=0.0, speaker=HUMAN, text=text, is_final=True))
     assert state.intro_queue is None
+
+
+# ----------------------------------- nothing answers before introductions
+
+
+def test_named_address_before_introductions_installs_no_invitation(fc, state):
+    """Wayne cannot be invited to speak until Ricky has walked the panel
+    through introductions — every route to the floor funnels through
+    `FloorController._install_invitation`, and that is where this is refused."""
+    state = replace(state, intro_done=False)
+    state, _ = fc.reduce(state, invite(0.0, "So Wayne, what about human oversight?"))
+    assert state.invitation is None
+
+
+def test_open_floor_before_introductions_installs_no_invitation(fc, state):
+    state = replace(state, intro_done=False)
+    state, _ = fc.reduce(state, invite(0.0, "What holds it back?"))
+    assert state.invitation is None
+
+
+def test_no_proposals_are_requested_before_introductions(fc, state):
+    """Not just "nobody is granted the floor" — nobody is even asked to
+    generate, so an un-introduced agent cannot burn a model round trip on a
+    question it will never be allowed to answer."""
+    state = replace(state, intro_done=False)
+    state, cmds = fc.reduce(state, invite(0.0, "What holds it back?"))
+    assert not [c for c in cmds if isinstance(c, RequestProposals)]
+
+
+def test_turn_yielded_before_introductions_cues_the_moderator_like_a_plain_remark(fc, state):
+    """A refused invitation leaves `state.invitation` exactly as a plain
+    remark would — `None` — so `TurnYielded` takes the same branch it always
+    has and the operator sees `NO_INVITATION`, not silence with no reason."""
+    state = replace(state, intro_done=False)
+    state, _ = fc.reduce(state, invite(0.0, "So Wayne, what about human oversight?"))
+    state, cmds = fc.reduce(state, TurnYielded(t=1.0))
+    assert not [c for c in cmds if isinstance(c, StartSpeech)]
+    assert CueModerator(reason=CueReason.NO_INVITATION) in cmds
+
+
+def test_address_works_again_once_introductions_are_done(fc, state):
+    """The gate lifts the moment `intro_done` latches — same sentence, same
+    agent, the only difference is which side of the round it lands on."""
+    state, _ = _run_introduction_round(fc, state)
+    assert state.intro_done is True
+
+    state, _ = fc.reduce(state, invite(10.0, "So Wayne, what about human oversight?"))
+    assert state.invitation is not None
+    assert state.invitation.agents == ("wayne",)
 
 
 def _intro_order(fc: FloorController) -> list[str]:
@@ -1627,6 +1686,7 @@ def _run_introduction_round(
     state and the ``(agent, utterance)`` pairs in the order they were
     granted.
     """
+    state = replace(state, intro_done=False)
     state, cmds = fc.reduce(state, _introduce(start_t))
     order: list[tuple[str, str]] = []
     t = start_t + 1.0
@@ -1651,6 +1711,7 @@ def test_introduction_phrase_immediately_grants_the_first_agent(fc, state):
     """The whole point: no model call, no waiting on a proposal. The floor
     controller already holds the text — it is on the persona — so the very
     reduce() call that detects the phrase also produces the first `StartSpeech`."""
+    state = replace(state, intro_done=False)
     state, cmds = fc.reduce(state, _introduce(0.0))
     starts = [c for c in cmds if isinstance(c, StartSpeech)]
     assert len(starts) == 1
@@ -1731,6 +1792,7 @@ def test_ricky_interrupting_the_round_allows_a_clean_retry(fc, state):
     """An abandoned round has not 'been done' — the safety latch must not
     engage, or the show is stuck with two agents introduced and no way to
     finish."""
+    state = replace(state, intro_done=False)
     state, cmds = fc.reduce(state, _introduce(0.0))
     winner = cmds[0].agent
     state, _ = fc.reduce(state, AgentSpeechStarted(t=0.2, agent=winner))
@@ -1769,6 +1831,7 @@ def test_an_introduced_agent_cannot_repeat_even_with_a_stray_proposal(fc, state)
     time. Fixed text has no score to win with: `_advance_introductions` only
     ever reads `intro_queue`, never `state.proposals`, so a stray proposal
     changes nothing."""
+    state = replace(state, intro_done=False)
     state, cmds = fc.reduce(state, _introduce(0.0))
     first = cmds[0].agent
     state, _ = fc.reduce(state, AgentSpeechStarted(t=0.2, agent=first))
@@ -2130,6 +2193,7 @@ def test_a_stall_leaves_an_unfinished_introduction_round_restartable(fc, state):
     The round has not "been done", so the one-shot latch must stay open and
     the phrase must be able to restart it cleanly.
     """
+    state = replace(state, intro_done=False)
     state, _ = fc.reduce(state, _introduce(0.0))
     first = state.intro_queue[0] if state.intro_queue else None
     assert first is not None
@@ -2288,6 +2352,7 @@ def test_the_introduction_round_never_speculates_mid_turn(fc, state):
     """Every line in that round is fixed text the model never sees, so a
     speculative candidate is a 2-4s round trip nobody reads. Same carve-out
     the human path already has."""
+    state = replace(state, intro_done=False)
     state, _ = run(fc, state, invite(0.0, "Right, let's do quick introductions."))
     assert state.intro_queue is not None
     state, _ = run(fc, state, AgentSpeechStarted(t=1.0, agent=state.speaking or "dex"))
@@ -2823,6 +2888,7 @@ def test_an_unanswered_peer_invitation_falls_open_without_cueing_ricky(agent_fc,
 
 def test_the_introduction_round_ignores_a_pending_invite(agent_fc, state):
     """Fixed text invites nobody, and nothing may cut across the round."""
+    state = replace(state, intro_done=False)
     state, cmds = agent_fc.reduce(state, _introduce(0.0))
     first = next(c for c in cmds if isinstance(c, StartSpeech)).agent
     state, _ = agent_fc.reduce(state, AgentSpeechStarted(t=1.0, agent=first))

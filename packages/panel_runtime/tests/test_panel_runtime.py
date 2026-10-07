@@ -50,6 +50,7 @@ import asyncio
 import contextlib
 import json
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Self
 
@@ -575,6 +576,10 @@ def _address_runtime(monkeypatch, classifier: StubAddressClassifier) -> PanelRun
         address_classifier=classifier,
     )
     rt.brain = StubBrain()
+    # Past introductions: this helper is for the address-detection wire, not
+    # the one-shot opening round, and no agent may be granted the floor before
+    # `intro_done` (panel_core.floor._install_invitation).
+    rt.state = replace(rt.state, intro_done=True)
     return rt
 
 
@@ -944,6 +949,10 @@ def test_a_slow_generation_does_not_block_a_fresh_one_for_the_same_agent(runtime
     slow, fast = runtime.cast.ids()[0], runtime.cast.ids()[1]
     brain = SlowBrain(slow)
     runtime.brain = brain
+    # Past introductions: this exercises speculative proposals on an ordinary
+    # partial, not the one-shot opening round, and no proposal is requested
+    # before `intro_done` (panel_core.floor._transcript).
+    runtime.state = replace(runtime.state, intro_done=True)
 
     emitted: list = []
     plain_emit = runtime.emit
