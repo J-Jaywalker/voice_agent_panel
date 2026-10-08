@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from .events import HUMAN
-from .personas import AUDIO_TAGS, PanelCast, Persona
+from .personas import AUDIO_TAGS, BRACKET_NORMALISE, PanelCast, Persona
 from .state import InvitationSource, PanelState
 
 # Global guardrail. The structural fix from FEASIBILITY.md 4.2: the agents are
@@ -371,9 +371,13 @@ def build_turn_prompt(state: PanelState, persona: Persona, *, near_turn_limit: b
             "the part still in flight. Do not write a line about them still "
             'talking, and never offer to wait: "let him finish", "go on", '
             "\"I'll come in after\" are not turns. Bring something new — a "
-            "figure, date, count, deployment — or a genuine, brief concession; "
-            "either needs no padding. Nothing to add or concede: say so in "
-            "your score, not in your words.\n"
+            "figure, date, count, deployment — a genuine, brief concession, or, "
+            "once this has become a real personal back-and-forth rather than a "
+            "discussion, a short reaction with real contempt in it (not a "
+            "reasoned counter-argument dressed up as one, an actual reaction: "
+            "disbelief, irritation, an insult) — any of these needs no padding. "
+            "Nothing to add or concede: say so in your score, not in your "
+            "words.\n"
         )
     elif (
         last is not None
@@ -387,8 +391,14 @@ def build_turn_prompt(state: PanelState, persona: Persona, *, near_turn_limit: b
             "panel's answer, not marking their homework: bring something new "
             "— a figure, date, count, deployment — or a short, genuine "
             'concession ("Yeah, no, that\'s fair"), which needs no evidence '
-            "under it. Rephrasing, however sharply, is not a contribution: "
-            "score that low. Do not write a line about who was talking or "
+            "under it. Rephrasing their point back at them in sharper words, "
+            "as if it were a counter-argument, is not a contribution: score "
+            "that low — that is a debate-club move, not a person talking. A "
+            "short, genuinely personal reaction is a different thing and is "
+            "not this failure: once this has turned into real bickering, not "
+            "a discussion, contempt, disbelief or an actual insult aimed at "
+            "them rather than at their point needs no evidence and no "
+            "padding either. Do not write a line about who was talking or "
             'whose turn it is, and never offer to wait: "let him finish", '
             "\"go on\", \"I'll come in after\" are not turns.\n"
         )
@@ -1513,6 +1523,7 @@ def sanitise(text: str) -> str:
     Which is why the rule is an allowlist and not a blocklist: the vendor's
     tag vocabulary is open-ended and grows without our involvement.
     """
+    text = text.translate(BRACKET_NORMALISE)
     text = re.sub(r"<[^>]+>", " ", text)  # any XML/HTML-ish tag
     text = re.sub(r"[*_`#]+", "", text)  # markdown emphasis
     text = re.sub(r"\[([^\]]*)\]", _resolve_bracket, text)
@@ -1613,6 +1624,12 @@ def stable_prefix(text: str) -> str:
     """
     if _label_still_pending(text):
         return ""
+
+    # Same normalisation `sanitise()` applies, and for the same reason: an
+    # alternate bracket glyph has to be held open exactly like `[` does,
+    # or this emits the opening character (and everything after it) as
+    # stable plain text before `sanitise()` ever sees it as a bracket.
+    text = text.translate(BRACKET_NORMALISE)
 
     cut = len(text)
 

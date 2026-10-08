@@ -354,10 +354,17 @@ def test_replying_to_another_agent_demands_something_they_did_not_have() -> None
     information, and it is what the whole 25 Sept revision is aimed at — the
     live failures were all in agent-to-agent exchanges, never in answers to
     Ricky's questions.
+
+    A genuinely personal reaction — contempt, disbelief, an insult aimed at
+    the speaker rather than their point — is exempted (10 Oct 2026): without
+    it this same instruction was also refusing the short, bitter retorts a
+    real on-stage argument needs, because they bring no new evidence either.
     """
     prompt = build_turn_prompt(_after("wayne", "Fix the channel."), _persona())
     assert "wayne spoke last, not Ricky" in prompt
-    assert "rephrasing, however sharply, is not a contribution" in prompt.lower()
+    lowered = prompt.lower()
+    assert "is not a contribution: score" in lowered
+    assert "a short, genuinely personal reaction is a different thing" in lowered
 
 
 def test_the_speculative_pass_is_never_treated_as_an_exchange() -> None:

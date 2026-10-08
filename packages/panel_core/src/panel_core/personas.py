@@ -46,6 +46,37 @@ AUDIO_TAGS: frozenset[str] = frozenset(
     }
 )
 
+# A stage direction only has to look like a bracket to the model for it to
+# write one — "《pause》", "【pause】", "「pause」" have all been observed
+# standing in for `[pause]` on a turn asking for a hesitation, none of them
+# on the allowlist above and none of them written in `[...]`, so neither
+# `prompts.sanitise()`'s bracket regex nor `ElevenLabsTTS._guard`'s copy of
+# it ever saw them: they reached TTS as literal text, which v3 then
+# performed as an audio tag. The allowlist is supposed to be closed; these
+# were an open side door into it. Folding every bracket-shaped character
+# pair to ASCII `[`/`]` first closes it structurally rather than by chasing
+# each new glyph a model reaches for. Shared between `prompts.py` (the main
+# strip) and `tts.py` (`_guard`'s defence-in-depth copy) so the two checks
+# cannot silently drift apart on which glyphs count as a bracket.
+BRACKET_NORMALISE: dict[int, str] = str.maketrans(
+    {
+        "《": "[",
+        "》": "]",
+        "〈": "[",
+        "〉": "]",
+        "【": "[",
+        "】": "]",
+        "「": "[",
+        "」": "]",
+        "『": "[",
+        "』": "]",
+        "〔": "[",
+        "〕": "]",
+        "⟦": "[",
+        "⟧": "]",
+    }
+)
+
 # `ACCENT_TAGS` is the subset of the above that is a standing characteristic
 # of a voice, not a performance cue — and that difference is why it is not
 # handled the way the rest of `AUDIO_TAGS` is.

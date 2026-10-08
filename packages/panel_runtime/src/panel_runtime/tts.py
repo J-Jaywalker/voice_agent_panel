@@ -100,7 +100,7 @@ from dataclasses import dataclass, field, replace
 from typing import Protocol
 
 import websockets
-from panel_core.personas import AUDIO_TAGS
+from panel_core.personas import AUDIO_TAGS, BRACKET_NORMALISE
 
 # ElevenLabs streams raw little-endian 16-bit PCM for any pcm_* format. 16kHz
 # matches the VAD and mixer rate, so agent audio is never resampled.
@@ -733,7 +733,16 @@ class ElevenLabsTTS:
         # An allowlisted tag is expected here; anything else means sanitise()
         # did not run, and on v3 that is a tag the model may *act on* — an
         # `[applause]` or an accent — not merely a word read aloud.
-        unknown = [t for t in re.findall(r"\[([^\]]*)\]", text) if t not in AUDIO_TAGS]
+        # Normalised the same way `sanitise()` is (`BRACKET_NORMALISE`):
+        # a stage direction written in some other bracket-shaped glyph
+        # ("《pause》") is not plain text that happens to have punctuation in
+        # it, it is the same hazard this check exists to catch, spelled
+        # differently — see `BRACKET_NORMALISE`'s comment in panel_core.
+        unknown = [
+            t
+            for t in re.findall(r"\[([^\]]*)\]", text.translate(BRACKET_NORMALISE))
+            if t not in AUDIO_TAGS
+        ]
         if unknown:
             raise ValueError(f"refusing to synthesise unallowed audio tag: {unknown!r}")
         return text
