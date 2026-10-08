@@ -695,6 +695,17 @@ class PanelRuntime:
             self.state, commands = self.fc.reduce(self.state, event)
             for command in commands:
                 await self._execute(command)
+            if isinstance(event, OperatorCommand) and event.action in (
+                OperatorAction.HAND_TO_MODERATOR,
+                OperatorAction.KILL_ALL,
+            ):
+                # Both bump `PanelState.turn_id` in the reducer for exactly
+                # this reason: an emergency interrupt must stop agents
+                # thinking on the spot, not leave their generations running
+                # against pre-interrupt text until some later round happens
+                # to open and retires them as a side effect. `speaking` is
+                # already None by now, so nothing is exempted.
+                self._retire_stale_turns(self.state.turn_id, self.state.speaking)
             if isinstance(event, AgentSpeechStarted):
                 # The floor is genuinely occupied now — safe to consider a
                 # fresh re-arbitration once this agent's turn ends.

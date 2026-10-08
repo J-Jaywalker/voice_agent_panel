@@ -61,6 +61,8 @@ from panel_core import (
     AgentProposal,
     AgentSpeechEnded,
     FloorConfig,
+    OperatorAction,
+    OperatorCommand,
     PanelCast,
     PanelState,
     Signals,
@@ -277,6 +279,53 @@ def test_fixed_utterance_beats_a_speculative_candidate(runtime: PanelRuntime):
     assert stale_task.cancelled(), "stale speculation was left running"
     assert not [k for k in runtime._proposal_tasks if k[0] == agent]
     assert not [k for k in runtime._proposal_turn if k[0] == agent]
+
+
+def test_emergency_interrupt_cancels_in_flight_generations_immediately(runtime: PanelRuntime):
+    """`j` must not leave a background generation running against old text.
+
+    `panel_core.floor._operator`'s `HAND_TO_MODERATOR` branch bumps
+    `PanelState.turn_id` for exactly this reason — it is the only signal
+    `_retire_stale_turns` (the same machinery `_request_proposals` already
+    uses at the top of every round) has to go on. Without the runtime acting
+    on that bump the moment it happens, a stale task would just keep running
+    until whatever round opens next happened to retire it — seconds later on
+    stage, not "immediately".
+    """
+    agent = runtime.cast.ids()[0]
+    stale_turn = runtime.state.turn_id
+    epoch = runtime.state.speculation_epoch
+    key = (agent, epoch)
+
+    async def body():
+        stale_task = asyncio.create_task(asyncio.sleep(30), name="stale-propose")
+        runtime._proposal_tasks[key] = stale_task
+        runtime._proposal_turn[key] = stale_turn
+
+        drain_task = asyncio.create_task(runtime._drain_events())
+        try:
+            runtime.emit(
+                OperatorCommand(t=time.monotonic(), action=OperatorAction.HAND_TO_MODERATOR)
+            )
+            await asyncio.wait_for(_wait_for_empty_queue(runtime), timeout=1.0)
+        finally:
+            drain_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await drain_task
+        return stale_task
+
+    stale_task = asyncio.run(body())
+
+    assert stale_task.cancelled(), "a pre-interrupt generation was left running"
+    assert key not in runtime._proposal_tasks
+
+
+async def _wait_for_empty_queue(runtime: PanelRuntime) -> None:
+    while not runtime.events.empty():
+        await asyncio.sleep(0)
+    # One more tick so `_drain_events` has processed the item it already
+    # pulled off the queue before the check above saw it empty.
+    await asyncio.sleep(0)
 
 
 # --------------------------------------------------------------------------

@@ -1589,6 +1589,13 @@ class FloorController:
                     )
                 state = replace(
                     state,
+                    # New turn id: the only signal the runtime has to retire
+                    # every in-flight generation task immediately rather than
+                    # at the next round it happens to open — see
+                    # `PanelRuntime._retire_stale_turns`. Nothing was granted,
+                    # but "silence everything" means nothing still running
+                    # gets to finish either.
+                    turn_id=state.turn_id + 1,
                     killed=True,
                     speaking=None,
                     floor_holder=None,
@@ -1598,6 +1605,11 @@ class FloorController:
                     address_conflict=(),
                     intro_queue=None,  # abandoned, not spent — safe to retry later
                     closing_queue=None,
+                    # Whatever Ricky or the cut-off agent was mid-word on is
+                    # not part of the record and must not haunt the next
+                    # prompt — see `PanelState.partial`/`agent_partial`.
+                    partial="",
+                    agent_partial="",
                 )
                 return state, commands + [self._paint(state)]
 
@@ -1634,6 +1646,12 @@ class FloorController:
                     )
                 state = replace(
                     state,
+                    # New turn id so the runtime retires every in-flight
+                    # generation task now, not whenever a round next happens
+                    # to open — see `PanelRuntime._retire_stale_turns`. `j` is
+                    # the emergency interrupt: an agent mid-generation against
+                    # the pre-interrupt transcript must not land a turn later.
+                    turn_id=state.turn_id + 1,
                     speaking=None,
                     floor_holder=HUMAN,
                     consecutive_agent_turns=0,
@@ -1641,6 +1659,12 @@ class FloorController:
                     invitation=None,
                     pending_invite=None,
                     address_conflict=(),
+                    # Whatever Ricky was mid-word on, and whatever the agent
+                    # he cut off had half-said, are not part of the record —
+                    # see `PanelState.partial`/`agent_partial` — and must not
+                    # leak into the next prompt as if still live.
+                    partial="",
+                    agent_partial="",
                     intro_queue=None,  # abandoned, not spent — safe to retry later
                     closing_queue=None,
                 )

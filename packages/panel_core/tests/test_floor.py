@@ -1218,6 +1218,36 @@ def test_kill_switch_silences_everything_and_blocks_new_turns(fc, state):
     assert not [c for c in cmds if isinstance(c, StartSpeech)], "killed panel stays silent"
 
 
+def test_emergency_interrupt_clears_partials_so_the_next_prompt_cannot_see_them(fc, state):
+    """`j` must not leave pre-interrupt words for the next round to inherit.
+
+    Ricky mid-sentence (`state.partial`) and the agent cut off mid-sentence
+    (`state.agent_partial`) are both live, not-yet-committed text that
+    `PanelState.recent_text()` would otherwise fold into the next prompt —
+    the emergency interrupt is supposed to mean "forget what was happening",
+    not "stop the audio but keep thinking about it".
+    """
+    state, _ = run(
+        fc,
+        state,
+        invite(0.0),
+        AgentProposal(t=0.0, agent="wayne", utterance="...", signals=strong()),
+        TurnYielded(t=1.0),
+        AgentSpeechStarted(t=1.1, agent="wayne"),
+        AgentUtteranceProgress(t=1.5, agent="wayne", text="So the way I'd put it"),
+        ricky_partial(1.6, "no wait hang on"),
+    )
+    assert state.agent_partial and state.partial
+
+    state, cmds = fc.reduce(
+        state, OperatorCommand(t=2.0, action=OperatorAction.HAND_TO_MODERATOR)
+    )
+    assert [c for c in cmds if isinstance(c, StopSpeech) and c.reason is StopReason.OPERATOR]
+    assert state.partial == ""
+    assert state.agent_partial == ""
+    assert state.recent_text() == f"{HUMAN}: {invite(0.0).text}"
+
+
 def test_muted_agent_never_wins_the_floor(fc, state):
     state, _ = fc.reduce(
         state, OperatorCommand(t=0.0, action=OperatorAction.MUTE_AGENT, agent="wayne")
