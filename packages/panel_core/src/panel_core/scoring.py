@@ -446,6 +446,70 @@ def is_wait_narration(text: str, *, names: Iterable[str] = (), complete: bool = 
     return not [t for t in _WAIT_WORD_RE.findall(residue) if t not in filler]
 
 
+_CLAUSE_BOUNDARY_RE = re.compile(r"[.!?]+")
+
+
+def is_degenerate_repetition(
+    text: str,
+    *,
+    min_clauses: int = 6,
+    max_long_clauses: int = 1,
+    long_clause_words: int = 8,
+    max_repeat_ratio: float = 0.6,
+) -> bool:
+    """Is this utterance a run of many near-duplicate short clauses?
+
+    Observed on stage: a generation that owed the floor a line and had
+    nothing to say, but was barred by the prompt from saying so
+    (`is_wait_narration` exists for exactly that gap), instead looped —
+    "Let's hear it.Go on, Dex.None yet.Nothing from me." — a dozen-odd
+    restatements of the same non-answer run together. `is_wait_narration`
+    does not catch this: enough distinct residue words survive (names,
+    "number", "comment") that the line reads as content to that predicate.
+
+    A clause count rather than a phrase list, because the model's words for
+    the loop vary and a blocklist only ever bans the ones already seen.
+    Split on `.`/`!`/`?` directly rather than relying on whitespace after
+    them, because the chunker that produced this text only treats a boundary
+    as real when it is followed by a space (`SentenceChunker._BOUNDARY`) — a
+    run like this one typically arrives with the inter-clause spaces missing,
+    which is what glued the fragments into one chunk in the first place.
+
+    Gated on `max_long_clauses` so a real multi-sentence turn with one or two
+    longer sentences among shorter reactions is never caught here — the
+    failure mode this guards against is *many* short clauses, not a short
+    one anywhere in the text.
+
+    Args:
+        text: The utterance (or utterance-so-far, mid-stream) to check.
+        min_clauses: Below this many clauses, there is nothing to call a
+            repetition — a short turn is just short.
+        max_long_clauses: How many clauses may exceed `long_clause_words`
+            before this stops being "many short clauses" and becomes an
+            ordinary turn that happens to be made of several sentences.
+        long_clause_words: The word count above which a clause no longer
+            counts as "short".
+        max_repeat_ratio: The vocabulary must be at least this repetitive
+            (unique words / total words at or below this) to flag — a long
+            turn with a wide vocabulary is not this failure, however many
+            clauses it has.
+
+    Returns:
+        True if the text looks like the same non-answer restated many times
+        rather than a turn.
+    """
+    clauses = [c.strip() for c in _CLAUSE_BOUNDARY_RE.split(text) if c.strip()]
+    if len(clauses) < min_clauses:
+        return False
+    long_clauses = sum(1 for c in clauses if len(c.split()) > long_clause_words)
+    if long_clauses > max_long_clauses:
+        return False
+    tokens = _WORD_RE.findall(text.lower())
+    if not tokens:
+        return False
+    return len(set(tokens)) / len(tokens) <= max_repeat_ratio
+
+
 def floor_priority(
     signals: Signals,
     persona: Persona,

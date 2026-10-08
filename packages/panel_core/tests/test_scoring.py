@@ -9,7 +9,7 @@ the lines are the test data, so they get their own file.
 from __future__ import annotations
 
 import pytest
-from panel_core import is_wait_narration
+from panel_core import is_degenerate_repetition, is_wait_narration
 
 # Ids and display names from `personas/*.yaml`, the way
 # `StreamingClaudeBrain` assembles them. Ricky is not a persona and is
@@ -137,3 +137,53 @@ def test_a_thin_honest_line_is_held_while_streaming_and_released_when_whole():
     """
     assert is_wait_narration("Come on, Dexter", names=NAMES, complete=False)
     assert not is_wait_narration("Come on, Dexter", names=NAMES)
+
+
+# Melia, rehearsal, 8 Oct 2026: forbidden from narrating a wait and required to
+# say something anyway (`build_turn_prompt`), she looped the same non-answer —
+# enough distinct residue words (names, "number", "comment") that
+# `is_wait_narration` passes every clause of it.
+MELIA_LOOP = (
+    "Mm. Let him get to it before I decide whether to argue with it. "
+    "actually — nothing yet. "
+    "Nothing to add.Waiting to hear the number, Dex. "
+    "Let's see it.No, go on.I'll let him finish that one. "
+    "Let's hear it.Go on, Dex.None yet.Nothing from me. "
+    "No comment yet.Let's hear the thing. "
+    "Go ahead.I've got nothing to add to that yet. "
+    "Still waiting on the number.None. "
+    "Let's hear it, Dex.Nothing yet. "
+    "Let's see where this goes."
+)
+
+
+def test_a_looped_non_answer_is_flagged_as_degenerate():
+    assert is_degenerate_repetition(MELIA_LOOP)
+    # Not wait-narration's job — this is the gap it leaves, not a duplicate
+    # of what it already catches.
+    assert not is_wait_narration(MELIA_LOOP, names=NAMES)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "",
+        "No. Wait. That is not quite right.",
+        "Come on, Dexter",
+        (
+            "Honestly the handshake protocol matters more than people think. "
+            "Identity, authority, where the instruction came from, where the "
+            "limits sit. Get any one of those wrong and the whole chain is "
+            "unverifiable."
+        ),
+        # A couple of short asides alongside real content must not trip this —
+        # the failure mode is *many* short clauses, not any short clause.
+        (
+            "Honestly the handshake protocol matters more than people think. "
+            "Identity, authority, where the instruction came from, where the "
+            "limits sit. Mm. Go on. Nothing more from me."
+        ),
+    ],
+)
+def test_an_ordinary_turn_is_never_flagged(line: str):
+    assert not is_degenerate_repetition(line)

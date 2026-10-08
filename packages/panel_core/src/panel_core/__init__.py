@@ -45,6 +45,7 @@ from .prompts import (
 from .scoring import (
     FloorConfig,
     floor_priority,
+    is_degenerate_repetition,
     is_wait_narration,
 )
 from .state import (
@@ -102,6 +103,7 @@ __all__ = [
     "build_system_prompt",
     "build_turn_prompt",
     "floor_priority",
+    "is_degenerate_repetition",
     "is_wait_narration",
     "sanitise",
     "stable_prefix",

@@ -66,6 +66,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import re
 import time
@@ -81,6 +82,7 @@ from panel_core import (
     Signals,
     build_system_prompt,
     build_turn_prompt,
+    is_degenerate_repetition,
     is_wait_narration,
     sanitise,
     stable_prefix,
@@ -88,6 +90,8 @@ from panel_core import (
 
 from .chunking import SentenceChunker
 from .config import anthropic_base_url
+
+log = logging.getLogger(__name__)
 
 SIGNAL_FIELDS = (
     "relevance",
@@ -385,6 +389,11 @@ class StreamingClaudeBrain:
         signals_sent = False
         emitted_utterance = ""
         index = 0
+        # Set once `is_degenerate_repetition` trips and the stream is
+        # abandoned mid-generation — see the check inside the loop below.
+        # Guards the end-of-stream resolution block from re-deriving and
+        # emitting the exact tail this was built to drop.
+        truncated = False
 
         def ms() -> float:
             return 1000.0 * (time.monotonic() - started)
@@ -496,8 +505,26 @@ class StreamingClaudeBrain:
                         "already emitted to TTS, never rewrite it. See "
                         "stable_prefix()'s docstring in panel_core.prompts."
                     )
-                    fresh = full[len(emitted_utterance) :]
-                    if fresh:
+                    candidate_fresh = full[len(emitted_utterance) :]
+                    if candidate_fresh and is_degenerate_repetition(full):
+                        # Checked against the prospective `full`, not the
+                        # already-accepted `emitted_utterance`: the loop that
+                        # triggers this only becomes visible a clause or two
+                        # in, and the point is to stop before any of the
+                        # repeated clauses are spoken, not after. Leaving
+                        # `emitted_utterance` where it was keeps whatever came
+                        # before the loop — often a real, complete line — and
+                        # discards only the tail.
+                        log.warning(
+                            "brain[%s]: degenerate repetition detected after "
+                            "%d chars — truncating generation",
+                            persona.id,
+                            len(emitted_utterance),
+                        )
+                        truncated = True
+                        break
+                    if candidate_fresh:
+                        fresh = candidate_fresh
                         emitted_utterance = full
 
                 # Asked on every chunk, against a prefix: the gate holds the
@@ -524,7 +551,12 @@ class StreamingClaudeBrain:
         # would silently swallow a turn's last few words any time it ended
         # mid-construct. That would trade the corruption bug for a dropped-
         # audio bug, which is not a trade this fix is allowed to make.
-        match = _UTTERANCE_OPEN.search(buffer)
+        #
+        # Skipped when `truncated`: `buffer` still holds the degenerate tail
+        # the loop broke on, and this block exists to release exactly the
+        # text the loop above could not — re-running it here would emit the
+        # very clauses the loop just refused.
+        match = _UTTERANCE_OPEN.search(buffer) if not truncated else None
         if match:
             full = sanitise(_unescape(match.group(1)))
             assert full.startswith(emitted_utterance), (
@@ -560,6 +592,15 @@ class StreamingClaudeBrain:
             if on_event:
                 on_event(event)
             yield event
+
+        # Debug-only and off the hot path's console entirely (`panel.py` never
+        # touches `logging`): a rehearsal can turn this on to see exactly what
+        # a generation wrote, raw JSON included, rather than reconstructing it
+        # from what made it to the stage — the gap between the two is the
+        # whole reason the degeneracy check above exists.
+        log.debug(
+            "brain[%s]: utterance=%r buffer=%r", persona.id, emitted_utterance.strip(), buffer
+        )
 
         yield ProposalComplete(
             agent=persona.id, utterance=emitted_utterance.strip(), elapsed_ms=ms()
