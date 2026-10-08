@@ -233,13 +233,12 @@ beats:
         "Well, actually, it's not so much what was said now so much as how,
         or who said it, and what context they were saying it in. For example
         — we want to know if someone's thinking aloud to themselves or giving
-        an instruction. And then, was that an interruption? Are they finished
-        speaking? It's tough stuff to figure out. Great thing about you guys —
-        humans, I mean — is that even you get it wrong sometimes, so the bar
-        is only as low as you can go. As long as we hit that, people seem
-        pretty happy to talk to us. But it's changed a lot — gone from a pure
-        transcription layer to informing so much of the decision, the
-        orchestration and the control of an agent."
+        an instruction. And then, knowing if something is an interruption, or 
+        whether they've finished speaking. It's tough stuff to figure out, 
+        even for you guys - humans I mean - who still get this wrong Sometimes.
+        But it's changed a lot — ASR's gone from pure transcription layer to 
+        being a crucial part of the decision making and orchestration process
+        for an agent.
       - >-
         You lead this one alone — Wayne and Melia haven't spoken on it yet, so
         there's nothing to react to and nobody to name. Pick two or three of
