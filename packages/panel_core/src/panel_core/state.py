@@ -272,6 +272,21 @@ class PanelState:
     address_conflict: tuple[str, ...] = ()
     human_speaking: bool = False
 
+    # A voice has been heard on the mic and nothing has been written down for
+    # it yet. Armed by `FloorController._human_started`, spent by `_transcript`
+    # on the first segment STT attributes to Ricky with nothing on the PA —
+    # which is the moment he actually takes the floor off the panel. (With an
+    # agent speaking, `_commit_human_interrupt` spends it instead, as part of
+    # the stop.)
+    #
+    # It exists because endpointing cannot say whose voice it heard: it fires
+    # on audience noise, a breath, PA bleed. Acting on the onset alone revoked
+    # a live invitation 230ms after Ricky named two agents, with both answers
+    # still being written. Deliberately *not* cleared by `_human_ended`: STT
+    # routinely finalises a segment after the mic has closed, and that late
+    # text is still Ricky taking the floor.
+    human_onset_pending: bool = False
+
     # Consecutive partials attributed to Ricky that have landed over the agent
     # currently on the PA. Counted up in `FloorController._transcript` and read
     # against `FloorConfig.interrupt_confirm_partials`; reset to zero wherever

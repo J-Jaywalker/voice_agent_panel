@@ -225,7 +225,7 @@ class FloorConfig:
     # --- safety valve ---
     # After this many agent turns in a row, hand back to the moderator so the
     # panel cannot drift into an unbounded machine-to-machine conversation.
-    max_consecutive_agent_turns: int = 5
+    max_consecutive_agent_turns: int = 6
 
     # --- agents inviting agents ---
     # On by default. A winning proposal may name the colleague who speaks next

@@ -390,11 +390,18 @@ def test_the_last_line_of_a_turn_arrives_after_the_turn_ends(wall: WallState):
     assert wall.snapshot()["lines"] == [line("wayne", "…and that is the point.")]
 
 
-def test_a_straggler_is_dropped_once_another_agent_is_on_air(wall: WallState):
-    """What the guard actually exists to prevent: misattribution.
+def test_a_straggler_still_lands_once_another_agent_is_on_air(wall: WallState):
+    """The race this exists for: a handover that beats the previous speaker's
+    own STT session to its last sentence.
 
-    A late final from the previous speaker appearing underneath the current
-    one's lines would read as the wrong agent saying it, in the wrong order.
+    Agent-to-agent handover can be sub-millisecond (a speculative proposal
+    already parked), while an agent's own display-only STT session only
+    finalises a segment after the audio has played *and* the endpointer has
+    seen trailing silence — hundreds of ms behind. `AgentSpeechStarted` for
+    the next agent routinely beats that final back. Each agent has its own
+    dedicated session, so a late segment is still unambiguously that agent's
+    own words, never the new speaker's — it is real, not a misattribution,
+    and dropping it was losing speech that was actually said.
     """
     wall.apply_event(AgentSpeechStarted(t=1.0, agent="wayne"))
     wall.apply_event(AgentSpeechEnded(t=2.0, agent="wayne", completed=False))
@@ -402,12 +409,17 @@ def test_a_straggler_is_dropped_once_another_agent_is_on_air(wall: WallState):
     wall.apply_event(
         TranscriptUpdated(t=2.3, speaker="wayne", text="Cut off mid-thought.", is_final=True)
     )
-    assert wall.snapshot()["lines"] == []
+    assert wall.snapshot()["lines"] == [line("wayne", "Cut off mid-thought.")]
 
 
-def test_a_handover_clears_the_previous_speakers_partial(wall: WallState):
-    """A socket that drops mid-sentence would otherwise leave its half-line
-    under the band for the rest of the show."""
+def test_a_handover_leaves_the_previous_speakers_partial_in_place(wall: WallState):
+    """A handover is no longer the thing that bounds a partial's life.
+
+    The previous speaker is still owed either a final or `PARTIAL_TTL_S`
+    (`server.py`) — ending it outright at the moment of handover was
+    indistinguishable from a socket that genuinely dropped mid-sentence, and
+    discarded sentences that were simply still arriving.
+    """
     wall.apply_event(AgentSpeechStarted(t=1.0, agent="wayne"))
     wall.apply_event(
         TranscriptUpdated(t=1.1, speaker="wayne", text="never finished", is_final=False)
@@ -415,7 +427,13 @@ def test_a_handover_clears_the_previous_speakers_partial(wall: WallState):
     assert wall.snapshot()["partials"] == [partial("wayne", "never finished")]
 
     wall.apply_event(AgentSpeechStarted(t=2.0, agent="dex"))
+    assert wall.snapshot()["partials"] == [partial("wayne", "never finished")]
+
+    wall.apply_event(
+        TranscriptUpdated(t=2.3, speaker="wayne", text="Never finished, after all.", is_final=True)
+    )
     assert wall.snapshot()["partials"] == []
+    assert wall.snapshot()["lines"] == [line("wayne", "Never finished, after all.")]
 
 
 def test_a_stranger_on_the_mic_closes_ricky_unfinished_line(wall: WallState):

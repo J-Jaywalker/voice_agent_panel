@@ -378,6 +378,10 @@ def test_a_resolved_conflict_does_not_haunt_later_turns(llm, state):
     state, _ = run(llm, state, said("Which of you?", t=2.0), verdict(AMBIGUOUS_VERDICT, t=2.1))
     assert state.address_conflict
     state, _ = llm.reduce(state, HumanSpeechStarted(t=3.0))
+    assert state.address_conflict, "a bare onset resolves nothing; it is not him yet"
+    state, _ = llm.reduce(
+        state, TranscriptUpdated(t=3.1, speaker=HUMAN, text="never mind", is_final=False)
+    )
     assert state.address_conflict == ()
 
     state, _ = run(

@@ -31,6 +31,7 @@ from panel_core import (
     RequestProposals,
     Signals,
     StartSpeech,
+    StateChanged,
     StopReason,
     StopSpeech,
     Tick,
@@ -381,10 +382,189 @@ def test_a_transcript_arriving_after_the_mic_closed_still_interrupts(fc, state):
     assert state.speaking is None
 
 
-def test_human_speech_with_no_agent_speaking_just_takes_the_floor(fc, state):
+def test_human_speech_with_no_agent_speaking_takes_the_floor_on_his_words(fc, state):
+    """The onset says the mic is hot. The segment says the floor has moved."""
     state, cmds = fc.reduce(state, HumanSpeechStarted(t=1.0))
     assert not [c for c in cmds if isinstance(c, StopSpeech)]
+    assert state.human_speaking is True
+    assert state.floor_holder is None, "a voice in the room is not a floor claim"
+
+    state, _ = fc.reduce(state, ricky_partial(1.2))
     assert state.floor_holder == HUMAN
+
+
+# --------------------------------------------- an onset is not a floor claim
+#
+# `HumanSpeechStarted` is endpointing, with no speaker and no words on it: the
+# audience, a breath and the PA bleeding back into the stage mic all fire it.
+# It used to revoke the standing invitation on its own, and on 8 Oct 2026 that
+# closed the floor 230ms after Ricky asked two agents a question — inside the
+# beat `invited_agent_grace_s` exists to hold, and before either answer had
+# finished generating. The claim now waits for a segment `panel_runtime.stt`
+# has attributed to him, which is the same evidence the interrupt path uses.
+
+
+def test_a_bare_onset_does_not_revoke_a_live_invitation(fc, state):
+    """The rehearsal failure, in four events."""
+    state, _ = run(
+        fc,
+        state,
+        invite(20.0, "Melia, Wayne, what are your thoughts?"),
+        TurnYielded(t=20.01),
+    )
+    assert set(state.invitation.agents) == {"melia", "wayne"}
+    assert state.awaiting_agents, "the beat is being held for the pair of them"
+
+    # A noise on the mic, 230ms in, while both answers are still generating.
+    state, cmds = fc.reduce(state, HumanSpeechStarted(t=20.24))
+    assert cmds == [], "nothing on the floor moved, so there is nothing to repaint"
+    assert set(state.invitation.agents) == {"melia", "wayne"}, "the question still stands"
+    assert state.awaiting_agents, "and the beat is still being held"
+
+    # ...and the answer that was being written still gets the floor.
+    state, _ = fc.reduce(state, HumanSpeechEnded(t=20.5))
+    state, _ = fc.reduce(
+        state,
+        AgentProposal(
+            t=20.9, input_t=20.0, agent="melia", utterance="Two things.", signals=strong()
+        ),
+    )
+    _, cmds = fc.reduce(state, TurnYielded(t=21.0))
+    assert [c.agent for c in cmds if isinstance(c, StartSpeech)] == ["melia"]
+
+
+def test_a_bare_onset_that_never_produces_words_leaves_nothing_behind(fc, state):
+    """Noise, then silence. The floor is exactly where it started.
+
+    The one surviving difference is the armed claim, which `_human_ended`
+    deliberately does not disarm — see the late-final test below. It changes
+    nothing on its own: only a segment attributed to Ricky can spend it.
+    """
+    state, _ = run(fc, state, invite(20.0, "So Wayne, where are we on the curve?"))
+    before = state
+
+    state, _ = run(fc, state, HumanSpeechStarted(t=20.3), HumanSpeechEnded(t=20.5))
+    assert replace(state, human_onset_pending=False) == before, (
+        "an onset with nothing behind it is not a floor event"
+    )
+
+
+def test_his_words_after_the_onset_revoke_the_invitation(fc, state):
+    """Deferred, not dropped. The first segment does everything the onset did."""
+    state, _ = run(
+        fc,
+        state,
+        invite(20.0, "So Wayne, where are we on the adoption curve?"),
+        # Dex answering a question put to Wayne wins nothing, so the floor
+        # stays idle with the invitation live and a proposal in hand.
+        AgentProposal(
+            t=20.1, input_t=20.0, agent="dex", utterance="Historically...", signals=strong()
+        ),
+        TurnYielded(t=20.2),
+        HumanSpeechStarted(t=20.3),
+    )
+    assert state.invitation is not None and state.proposals
+
+    state, cmds = fc.reduce(state, ricky_partial(20.4, "actually, let me rephrase"))
+    assert state.invitation is None, "he is talking; the question he asked is withdrawn"
+    assert not state.proposals, "and the lines written against it go with it"
+    assert state.floor_holder == HUMAN
+    assert state.awaiting_agents == ()
+    assert [c for c in cmds if isinstance(c, StateChanged)], "the console sees the floor move"
+
+
+def test_a_final_can_be_the_first_segment_of_the_burst(fc, state):
+    """Short utterances are finalised with no partial ahead of them.
+
+    The claim is made by whichever segment arrives first, and must not sit
+    waiting for a partial that is never coming.
+    """
+    state, _ = run(
+        fc,
+        state,
+        invite(20.0, "So Wayne, where are we on the adoption curve?"),
+        HumanSpeechStarted(t=20.3),
+    )
+    assert state.invitation is not None
+
+    state, _ = fc.reduce(
+        state, TranscriptUpdated(t=20.4, speaker=HUMAN, text="Sorry, one second.", is_final=True)
+    )
+    assert state.invitation is None
+    assert state.floor_holder == HUMAN
+
+
+def test_a_final_arriving_after_the_mic_closed_still_takes_the_floor(fc, state):
+    """STT routinely finalises a segment after `HumanSpeechEnded`.
+
+    The idle-floor counterpart of
+    `test_a_transcript_arriving_after_the_mic_closed_still_interrupts`: the
+    claim is a property of the words, not of the burst that carried them, so
+    the end of the burst must not disarm it.
+    """
+    state, _ = run(
+        fc,
+        state,
+        invite(20.0, "So Wayne, where are we on the adoption curve?"),
+        HumanSpeechStarted(t=20.3),
+        HumanSpeechEnded(t=20.5),
+    )
+    assert state.invitation is not None, "no words yet, so nothing has been claimed"
+
+    state, _ = fc.reduce(
+        state,
+        TranscriptUpdated(t=20.7, speaker=HUMAN, text="Let me come back to that.", is_final=True),
+    )
+    assert state.invitation is None
+    assert state.floor_holder == HUMAN
+
+
+def test_one_burst_is_one_claim(fc, state):
+    """A second segment must not wipe an invitation the first one installed.
+
+    "Melia, can you continue? ... is that okay?" arrives as two segments of one
+    burst. If every segment re-claimed the floor, the second would clear
+    Melia's invitation and the vaguer reading would install unopposed — the
+    collision `_INVITATION_PRECEDENCE` and the supersede window exist to
+    settle. The claim is armed once per onset and spent once.
+    """
+    state, _ = run(
+        fc,
+        state,
+        HumanSpeechStarted(t=10.0),
+        TranscriptUpdated(t=10.4, speaker=HUMAN, text="Melia, can you continue?", is_final=True),
+    )
+    assert state.invitation is not None and state.invitation.agent == "melia"
+
+    state, _ = fc.reduce(
+        state, TranscriptUpdated(t=10.9, speaker=HUMAN, text="Is that okay?", is_final=True)
+    )
+    assert state.invitation is not None, "still the same burst, still Melia's question"
+    assert state.invitation.agent == "melia", "a vaguer second reading must not displace it"
+
+
+def test_an_onset_over_a_speaking_agent_still_arms_the_claim(fc, state):
+    """He starts over the agent, the turn ends before his words land.
+
+    The onset goes to the agent-speaking branch, which stops nothing (only a
+    transcript may). By the time STT catches up the floor is idle, and that
+    segment is still Ricky taking it.
+    """
+    state, _ = run(
+        fc,
+        state,
+        invite(0.0, "What holds it back?"),
+        AgentProposal(t=0.1, input_t=0.0, agent="wayne", utterance="Cost.", signals=strong()),
+        TurnYielded(t=0.5),
+        AgentSpeechStarted(t=0.6, agent="wayne"),
+        HumanSpeechStarted(t=5.0),
+    )
+    state, _ = fc.reduce(state, AgentSpeechEnded(t=5.1, agent="wayne", completed=True))
+    assert state.speaking is None
+
+    state, _ = fc.reduce(state, ricky_partial(5.2, "right, so"))
+    assert state.floor_holder == HUMAN
+    assert state.invitation is None
 
 
 # ------------------------------------------------- identity-gated interrupts
@@ -459,6 +639,8 @@ def test_human_turn_invalidates_speculative_proposals(fc, state):
     )
     assert state.proposals
     state, _ = fc.reduce(state, HumanSpeechStarted(t=0.5))
+    assert state.proposals, "a voice in the room is not yet a human turn"
+    state, _ = fc.reduce(state, ricky_partial(0.6))
     assert not state.proposals
 
 
@@ -1953,6 +2135,11 @@ def test_ricky_speaking_during_the_beat_stands_the_cue_down(fc, state):
     assert state.awaiting_agents == ("wayne",)
 
     state, _ = fc.reduce(state, HumanSpeechStarted(t=20.3))
+    assert state.awaiting_agents == ("wayne",), (
+        "a voice on the mic is not him filling the gap — the beat is short "
+        "enough that a cough would otherwise end it"
+    )
+    state, _ = fc.reduce(state, ricky_partial(20.4, "right, let me put it another way"))
     assert state.awaiting_agents == ()
 
     _, cmds = fc.reduce(state, Tick(t=25.0))

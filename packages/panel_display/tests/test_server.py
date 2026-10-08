@@ -314,14 +314,15 @@ def test_a_partial_still_arriving_is_left_alone(
     assert asyncio.run(body()) == {HUMAN: SENTENCE_A}
 
 
-def test_a_straggler_after_the_next_speaker_never_reaches_the_band(cast: PanelCast):
-    """A cut-off turn's tail must not land under the agent that replaced it.
+def test_a_straggler_after_the_next_speaker_still_reaches_the_band(cast: PanelCast):
+    """A cut-off turn's tail still lands, even under the agent that replaced it.
 
     `AgentSpeechEnded` fires on every real ending — completion, interruption,
     and the exception-recovery arm in `speak()` — but a transcription session
-    finalises a few hundred milliseconds behind the audio either way, so the
-    guard cannot be "the turn has ended". It is "somebody else is on air now",
-    and this is the case it protects.
+    finalises a few hundred milliseconds behind the audio either way, so
+    "somebody else is on air now" is the routine case, not the exception. Each
+    agent has its own dedicated session, so a late segment is still
+    unambiguously that agent's own words and belongs on the band.
     """
 
     async def body():
@@ -342,7 +343,7 @@ def test_a_straggler_after_the_next_speaker_never_reaches_the_band(cast: PanelCa
         finally:
             await server.close()
 
-    assert asyncio.run(body()) == [("dex", SENTENCE_A)]
+    assert asyncio.run(body()) == [("dex", SENTENCE_A), ("dex", SENTENCE_B)]
 
 
 def test_the_page_and_its_assets_are_served(cast: PanelCast):

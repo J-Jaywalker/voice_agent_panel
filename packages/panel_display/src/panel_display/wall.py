@@ -189,18 +189,22 @@ class WallState:
     # Monotonically increasing, sent with every snapshot. A client that has
     # reconnected can tell a stale frame from a fresh one without a clock.
     revision: int = 0
-    # The last agent handed the PA, or None before the first turn. This is the
-    # attribution guard for agent transcripts and it replaces the old
+    # Every agent that has ever been handed the PA. This is the attribution
+    # guard for agent transcripts and it replaces the old
     # `state in (SPEAKING, DUCKED)` test, which cannot be used here: an
     # agent's STT session finalises its last sentence *after* the audio has
     # finished, so `AgentSpeechEnded` always beats the final that carries the
     # end of the turn, and a state test would drop the closing line of every
-    # single turn. What actually has to be prevented is *misattribution* — a
-    # straggler landing under a later speaker's lines — and the agent last put
-    # on air is exactly that test, with no clock and no timeout: the moment
-    # another agent starts, the previous one's stragglers stop counting.
-    # Never painted on its own, so deliberately absent from `_fingerprint`.
-    last_on_air: str | None = None
+    # single turn. What actually has to be prevented is a line from an agent
+    # that has produced no sound at all — there is no audio it could have come
+    # from. A straggler from a turn or two back, landing after the next
+    # speaker is already on air, is a *real* sentence that was really said;
+    # the band now shows it alongside whoever has since started, same as
+    # Ricky barging in over an agent already does for `partials` (see its
+    # docstring). Once an agent has held the floor, it stays trusted for the
+    # rest of the show. Never painted on its own, so deliberately absent from
+    # `_fingerprint`.
+    ever_on_air: set[str] = field(default_factory=set)
 
     @classmethod
     def for_cast(cls, cast: PanelCast) -> WallState:
@@ -255,23 +259,17 @@ class WallState:
                 if view is not None:
                     view.state = SPEAKING
                     view.hand = None
-                    # Whoever was last on air is no longer, so their in-flight
-                    # words stop counting from here: see `last_on_air`.
-                    self.last_on_air = agent
+                    self.ever_on_air.add(agent)
                 # Only one agent is ever on the PA. Anyone else still showing
                 # as speaking is a dropped `AgentSpeechEnded`, and on a wall
-                # that reads as two agents talking at once.
+                # that reads as two agents talking at once. Their partial is
+                # left alone — it is still owed a final (or, failing that,
+                # `PARTIAL_TTL_S` in `server.py`), and a straggler is now
+                # welcome to land under the new speaker's lines rather than
+                # being destroyed by the handover: see `ever_on_air`.
                 for other_id, other in self.agents.items():
                     if other_id != agent and other.state in (SPEAKING, DUCKED):
                         other.state = IDLE
-                    if other_id != agent:
-                        # And a partial the previous speaker never finalised —
-                        # a socket that dropped mid-sentence — would otherwise
-                        # sit under the band for the rest of the show. The
-                        # handover is the natural place to bound its life:
-                        # nothing that agent still owes the band can be
-                        # accepted after this point anyway.
-                        self.partials.pop(other_id, None)
 
             case AgentSpeechEnded(agent=agent):
                 view = self.agents.get(agent)
@@ -288,17 +286,20 @@ class WallState:
         One path for all four voices, because they are all now real STT. The
         only difference is the attribution guard: Ricky's mic is authoritative
         about Ricky unconditionally, whereas an agent's session is only
-        believed for the agent last put on air (see `last_on_air`). A
-        `TranscriptUpdated` naming an agent that has never held the floor is
-        not a real line — there is no audio it could have come from — and is
-        dropped rather than painted.
+        believed once that agent has held the floor at least once (see
+        `ever_on_air`). A `TranscriptUpdated` naming an agent that has never
+        held the floor is not a real line — there is no audio it could have
+        come from — and is dropped rather than painted. One that has is real
+        audio regardless of who has since been put on air: each agent has its
+        own dedicated session, so a late segment cannot be anyone else's
+        words, only a later-arriving one of this agent's own.
 
         Args:
             speaker: `HUMAN`, or the agent id the session is wired to.
             text: The segment. Partials replace, finals append.
             is_final: Whether Speechmatics called this segment done.
         """
-        if speaker != HUMAN and speaker != self.last_on_air:
+        if speaker != HUMAN and speaker not in self.ever_on_air:
             return
         if speaker != HUMAN and speaker not in self.agents:
             return

@@ -500,33 +500,38 @@ class FloorController:
         already-attributed-to-Ricky (see `_transcript`). Acting here, before
         that arrives, would act for the audience and the PA bleeding back into
         the stage mic exactly as readily as for Ricky. So this handler only
-        records that the human holds the floor; the stop itself happens in
+        records that a voice is on the mic; the stop itself happens in
         `_transcript`, on the first confirmed word.
+
+        The same reasoning now covers the idle floor, where there is no agent
+        to stop but there may be a live invitation the panel is mid-way through
+        answering. Revoking one on a bare onset closed the floor 230ms after
+        Ricky asked "Melia, Wayne, what are your thoughts?" — inside the beat
+        `invited_agent_grace_s` exists to hold, and before either answer had
+        finished generating. So the onset only *arms* the claim; `_transcript`
+        makes it when a segment attributed to him arrives.
         """
         if state.speaking is None:
-            state = replace(
-                state,
-                human_speaking=True,
-                floor_holder=HUMAN,
-                consecutive_agent_turns=0,
-                proposals={},  # a human turn invalidates speculative candidates
-                invitation=None,  # ...and revokes the standing invitation
-                address_conflict=(),  # ...and any unresolved tie with it
-                moderator_cued=False,  # ...and the cue latch, with the question
-                pending_invite=None,  # ...and any handoff the panel had lined up
-            )
-            # Ricky filling the gap himself is the thing the beat was waiting to
-            # avoid, and it has now happened. Cueing him to do what he is
-            # already doing would print a stale instruction over live speech.
-            state = state.not_awaiting()
-            return state, [self._paint(state)]
+            # Nothing has changed hands. `human_speaking` is still true — the
+            # mic is hot, which is reason enough to hold off reaping the
+            # invitation on the TTL (`_expire_invitation`) — but the floor
+            # itself stays where it was, so a cough cannot latch
+            # `floor_holder` to Ricky for the rest of the exchange.
+            return replace(state, human_speaking=True, human_onset_pending=True), []
 
         # An agent is on the PA. Ricky's voice over it cancels the handoff that
         # turn had lined up: the floor is his to give once he has started
         # talking.
+        #
+        # The onset is recorded here too. If the words behind it land while the
+        # agent is still speaking they go through `_commit_human_interrupt`,
+        # which spends the flag along with everything else; if the turn ends
+        # first they land on an idle floor, and that segment should claim it
+        # rather than be ignored for having started a moment too early.
         state = replace(
             state,
             human_speaking=True,
+            human_onset_pending=True,
             pending_invite=None,
         )
         return state, []
@@ -548,6 +553,34 @@ class FloorController:
         """
         del event  # only `t`, and nothing here is timed
         return replace(state, human_speaking=False, human_interrupt_streak=0), []
+
+    def _human_claim(self, state: PanelState) -> PanelState:
+        """Ricky has the floor, with nothing on the PA to stop.
+
+        The bookkeeping that used to run on `HumanSpeechStarted` itself. It is
+        the same set of fields `_commit_human_interrupt` clears, minus the stop
+        — he is taking the floor back, so the panel's speculative candidates,
+        standing invitation, unresolved tie and lined-up handoff all go with
+        it. Only ever called with a segment in hand, so "a voice" has already
+        become "his words".
+        """
+        return replace(
+            state,
+            human_speaking=True,
+            floor_holder=HUMAN,
+            consecutive_agent_turns=0,
+            proposals={},  # a human turn invalidates speculative candidates
+            invitation=None,  # ...and revokes the standing invitation
+            address_conflict=(),  # ...and any unresolved tie with it
+            moderator_cued=False,  # ...and the cue latch, with the question
+            pending_invite=None,  # ...and any handoff the panel had lined up
+            # Spent: the rest of this burst is one turn, not a fresh claim per
+            # segment. Two segments of one question ("Melia, can you continue?
+            # ... is that okay?") must still reach `_install_invitation` with
+            # the first one's invitation standing, or the supersede window has
+            # nothing to compare against.
+            human_onset_pending=False,
+        ).not_awaiting()  # he filled the gap the beat was hedging against
 
     def _commit_human_interrupt(
         self, state: PanelState, *, t: float
@@ -577,6 +610,9 @@ class FloorController:
             # The streak has done its job; the next agent to reach the PA must
             # be confirmed afresh rather than inherit this one's evidence.
             human_interrupt_streak=0,
+            # The claim has been made the hard way; an onset still waiting on
+            # words has nothing left to arm.
+            human_onset_pending=False,
             # An incomplete introduction round is abandoned, not spent — it
             # has not "been done", so the safety latch does not engage and
             # the phrase can be said again to restart it cleanly. Same for
@@ -621,6 +657,27 @@ class FloorController:
         else:
             state = replace(state, partial=event.text)
             text = event.text
+
+        # The floor is idle and a voice was heard a moment ago: this is the
+        # segment that says the voice was Ricky's, so now he takes the floor.
+        #
+        # Whichever kind of segment gets here first makes the claim. Usually
+        # that is a partial, but a short utterance can be finalised before any
+        # partial is sent, and a segment finalised after the mic closed can
+        # arrive with `HumanSpeechEnded` already reduced — which is also why
+        # `_human_ended` leaves the flag armed. Both are his words; neither
+        # waits for the other.
+        #
+        # A partial is enough, and the streak that guards the *interrupt* path
+        # is a different trade: there the cost of one mislabelled segment is an
+        # agent cut off mid-sentence, here it is a speculative proposal
+        # regenerated.
+        #
+        # Armed by `_human_started` and spent here, rather than fired on every
+        # segment, because a burst is one claim: see `_human_claim`.
+        if event.speaker == HUMAN and state.speaking is None and state.human_onset_pending:
+            state = self._human_claim(state)
+            commands.append(self._paint(state))
 
         # Words on the human channel *are* the identification evidence, and
         # this is the whole reason the gate lives in `panel_runtime.stt` and

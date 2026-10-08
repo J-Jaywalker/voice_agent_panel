@@ -149,7 +149,7 @@ class STTConfig:
     diarization: str = "speaker"
     speaker_diarization_config: dict[str, Any] | None = None
     # How readily the engine splits audio into distinct speakers, 0-1, server
-    speaker_sensitivity: float = 0.66
+    speaker_sensitivity: float = 0.6
     # Bias re-attribution toward whoever was just talking rather than
     # splitting off a new speaker — the audience/PA bleed this mic exists
     # alongside is the exact case this guards against.

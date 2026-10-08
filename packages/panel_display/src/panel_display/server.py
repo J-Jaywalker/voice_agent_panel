@@ -55,10 +55,15 @@ LEVEL_HZ = 30
 # it in progress.
 #
 # Every other way a partial ends is an event: a final replaces it, an empty
-# update clears it, a handover closes the previous agent's, and
-# `UnverifiedSpeechDetected` closes Ricky's. The case left over has no event by
+# update clears it, and `UnverifiedSpeechDetected` closes Ricky's. A handover
+# is deliberately *not* on that list any more — an agent's own display-only
+# session routinely finalises its last sentence a few hundred milliseconds
+# behind `AgentSpeechStarted` for whoever speaks next, and ending the partial
+# at the handover was discarding sentences that were only still arriving, not
+# ones that were abandoned. The case genuinely left over has no event by
 # design — `panel_runtime/stt.py` drops a segment silently when diarisation
-# attributed nothing at all, so Ricky's partial can simply stop being updated.
+# attributed nothing at all, so Ricky's partial can simply stop being updated;
+# an agent's socket dying outright falls here too now, for the same reason.
 # Before this existed that partial stayed on the wall for the rest of the show,
 # and since the band grew bubbles that size with their text it held the room's
 # full attention while doing it.
