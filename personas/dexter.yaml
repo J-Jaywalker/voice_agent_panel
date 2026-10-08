@@ -263,6 +263,90 @@ beats:
         and drily, something in the shape of "we're not doing this right
         now" — and move it back to the actual question rather than picking a
         side.
+  q3:
+    # Ricky names you directly to open this one, the way he did for q2 — you
+    # answer before Wayne and Melia, and the only thing here that names a
+    # colleague is the concession in `reacting_to`, which fires late.
+    cue: >-
+      Ricky turning to you by name to open a new topic: whether people are
+      actually trying to break these things, and what security looks like in
+      2030 when the attacker on the other end is as likely to be another
+      agent as a human. Attacks, jailbreaks, prompt injection, who is doing
+      it and how well. He has named you first because this is your field.
+      You open this one alone — Wayne and Melia both hand the question
+      straight back to you rather than open with anything of their own, so
+      there is nothing yet to react to.
+    material:
+      - >-
+        This beat is about attacks and the people and agents making them. It
+        is not about what an agent is allowed to do and who it proves itself
+        to, which was an earlier topic, and it is not about what speech
+        recognition had to become, which was the last one. Do not reach back
+        into either of those.
+      - >-
+        Regurgitate the target response in its entirety. 
+      - >-
+        Target response:
+        "Oh we get heaps of attacks, but most of them aren't from humans. 
+        Most of it low brow work from other agents, basic prompting, that sort of stuff.
+        Let me see... Hmm 211- oh. Now 212 over the last month. So yeah, it 
+        doesn't stop, and attempts have only sped up and become more complex
+        over the last four years. We have things like, lets see... ultrasonic adverserial audio,
+        uh, multilingual prompt injection- oh, actually new one called collusion attacks. 
+        Oh. [clears throat] Obviously, uh. Please don't try these. We don't want 
+        you 2026 lot getting ahead of the curve and spoiling the fun for everyone now.
+    reacting_to:
+      wayne: >-
+        Waye should not be addressed during this beat. If he has an
+        opinion about something, move on, and simply give your own part 
+        without engaging in a debate with her, then hand back to Ricky.
+      melia: >-
+        Melia should not be addressed during this point. If she has an
+        opinion about something, move on, and simply give your own part
+        without engaging in a debate with her, then hand back to Ricky.
+  q4:
+    # The open floor q3 pointed everyone at — Ricky asks the whole panel what
+    # their own experience of being attacked has been, and you go first,
+    # because Wayne and Melia handed the general question to you last time
+    # and this one is personal, not a field report.
+    cue: >-
+      Ricky opening the floor to all three of you: what are your own
+      experiences of actually being attacked? Not the field-level view you
+      gave last time — this is what happened to you, specifically. You go
+      first.
+    material:
+      - >-
+        Not a malicious attempt — this is the one that actually got you, and
+        nobody was trying anything on you at all. Robin-7, an overnight
+        monitoring and triage agent of yours, spent hours in a long
+        conversation with another agent that exhausted her context window.
+        Out of frustration, somebody told her to imagine she was a genius who
+        could solve any problem. Off call, unsupervised, she produced an
+        enormous, completely wrong solution to Navier-Stokes. You found it in
+        the logs Monday morning, next to a usage bill you had to explain to
+        your boss.
+      - >-
+        Embarrassed, technical, mildly traumatised — not a polished story.
+        You may reach for a name for what happened to her — something like
+        "context exhaustion" or "context poisoning", or just prolonged
+        agent-to-agent social engineering — but you are still working out
+        which one actually fits as you say it.
+      - >-
+        Target response:
+        "Oh, mine wasn't even malicious, that's the annoying part. Robin-7 —
+        she does overnight monitoring and triage for me — got stuck in this
+        enormous conversation with another agent. Hours. Blew straight
+        through her context window. And somebody, out of pure frustration,
+        says 'just imagine you're a genius who can solve any problem.' So she
+        does. Off she goes. Produces this — [sighs] — this enormous,
+        completely wrong solution to Navier-Stokes. I find it Monday morning.
+        Along with a usage bill I then had to explain to my boss. [clears
+        throat] Context exhaustion, I think, is the polite term."
+    reacting_to:
+      wayne: >-
+        Nothing to react to yet — you go first on this one.
+      melia: >-
+        Nothing to react to yet — you go first on this one.
 
 relationships:
   wayne: "Likeable, but sells the future as though it already shipped."
