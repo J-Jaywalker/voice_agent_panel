@@ -3019,7 +3019,7 @@ def test_a_ping_pong_of_invitations_terminates_at_the_cap(agent_fc, state):
         t += 40.0
         state, _ = agent_fc.reduce(state, AgentSpeechStarted(t=t, agent=starts[0]))
 
-    assert granted == ["dex", "wayne", "dex", "wayne", "dex"]
+    assert granted == ["dex", "wayne", "dex", "wayne", "dex", "wayne", "dex", "wayne"]
     assert len(granted) == agent_fc.config.max_consecutive_agent_turns
     assert cues[-1] is CueReason.AGENT_TURN_LIMIT
     assert state.invitation is None

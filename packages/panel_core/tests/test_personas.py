@@ -160,22 +160,24 @@ def test_dexters_reaction_to_wayne_is_additive_not_corrective(cast: PanelCast) -
     ("actually", "no, no") is a separate, established part of his character
     (`communication_style`, `delivery`) and is untouched here. What this pins
     is narrower: his stated *relationship to Wayne's point* has to read as
-    "in addition to", never as "but, actually, that's wrong"."""
+    additive, never as "but, actually, that's wrong"."""
     reaction = cast["dex"].beats["q1"].reacting_to["wayne"].lower()
     assert "rebuttal" in reaction, "additive-not-rebuttal framing got lost"
-    assert any(kw in reaction for kw in ("on top of", "alongside", "in addition"))
+    assert "additive" in reaction
 
 
-def test_melias_wayne_friction_in_q1_stays_sharp(cast: PanelCast) -> None:
-    """The one deliberate disagreement the beat keeps (CLAUDE.md / the script's
-    PANEL DYNAMIC note: "some room for bickering") is Melia going after Wayne's
-    own word "latency" from his introduction, and him not conceding. Retuning
-    the rest of q1 toward addition must not soften this one exchange."""
-    beat = cast["melia"].beats["q1"]
-    assert "latency" in " ".join(beat.material).lower()
-    reaction = beat.reacting_to["wayne"].lower()
-    assert "not concede" in reaction or "will not concede" in reaction
-    assert "soften" in reaction
+def test_melias_reaction_to_wayne_is_additive_not_corrective_too(cast: PanelCast) -> None:
+    """Same retune as Dexter's. An earlier version of this beat kept one
+    deliberate on-mic disagreement here — Melia going after Wayne's own word
+    "latency" and him not conceding — but that friction is gone now that q1
+    was retuned toward addition across all three panellists: the character
+    stays (she privately can't stand his opinion and reads him as someone who
+    won't concede), but the instruction is explicitly not to engage with it,
+    only to add her own point and move on."""
+    reaction = cast["melia"].beats["q1"].reacting_to["wayne"].lower()
+    assert "can't stand" in reaction
+    assert "concede" in reaction
+    assert "do not engage" in reaction
 
 
 def test_dexters_q2_frames_asr_as_moving_into_the_control_layer(cast: PanelCast) -> None:

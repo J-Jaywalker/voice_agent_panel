@@ -51,11 +51,11 @@ def test_a_question_split_across_several_finals_comes_back_whole(state, cast):
     ]
 
 
-def test_the_last_agents_own_last_two_turns_are_surfaced_first(state, cast):
-    """Melia spoke, Ricky cuts across her mid-sentence: her own last two turns
-    come first (what is being re-addressed), then Ricky's reaction — not a
-    strict timestamp merge, because her cut-short `Utterance` is only written
-    at `AgentSpeechEnded`, after the words that interrupted it."""
+def test_the_last_two_agent_messages_are_surfaced_first(state, cast):
+    """Melia spoke, Ricky cuts across her mid-sentence: her own last two
+    messages come first (what is being re-addressed), then Ricky's reaction.
+    An older, unrelated Dexter turn further back must not be pulled in —
+    only the two most recent agent messages count."""
     state = replace(
         state,
         transcript=(
@@ -74,9 +74,31 @@ def test_the_last_agents_own_last_two_turns_are_surfaced_first(state, cast):
     ]
 
 
+def test_the_last_two_agent_messages_can_be_two_different_panellists(state, cast):
+    """The panel passes turns to each other without Ricky — a hand-off from
+    Dexter to Melia is exactly the kind of context the classifier needs to
+    tell "the panel is mid-exchange" apart from one agent talking at length,
+    and to judge whether Ricky is now opening to everyone, to whoever just
+    spoke, or to the one who has gone quiet."""
+    state = replace(
+        state,
+        transcript=(
+            Utterance(speaker="dex", text="so I'll hand to Melia on this one", t=1.0),
+            Utterance(speaker="melia", text="right, and the way I'd put it is", t=2.0),
+        ),
+    )
+    recent = build_address_recent(state, cast, current="what does Wayne make of that?")
+    assert recent == [
+        {"from": "Dexter", "text": "so I'll hand to Melia on this one"},
+        {"from": "Melia", "text": "right, and the way I'd put it is"},
+        {"from": "Ricky", "text": "what does Wayne make of that?"},
+    ]
+
+
 def test_a_mid_turn_agent_contributes_their_live_partial(state, cast):
     """An agent still speaking has no `Utterance` yet for the line in
-    progress — `state.speaking`/`state.agent_partial` stand in for it."""
+    progress — `state.speaking`/`state.agent_partial` stand in for it, and
+    count as the most recent of the last two agent messages."""
     state = replace(
         state,
         transcript=(Utterance(speaker="melia", text="the key number here is", t=1.0),),
@@ -127,3 +149,25 @@ def test_the_agent_half_is_suppressed_under_a_standing_introduction_invitation(s
 
 def test_nothing_before_the_current_segment_is_empty_not_a_crash(state, cast):
     assert build_address_recent(state, cast, current="") == []
+
+
+def test_a_sentence_split_across_six_finals_is_not_truncated(state, cast):
+    """The motivating case: a real sentence split across several STT finals,
+    following the last two agent messages, must come back whole rather than
+    clipped to an arbitrary handful of the most recent fragments."""
+    words = ["Sorry", "Melia", "can", "you", "just"]
+    state = replace(
+        state,
+        transcript=(
+            Utterance(speaker="dex", text="so over to Melia", t=0.5),
+            Utterance(speaker="melia", text="the last budget was tight", t=1.0),
+            *(Utterance(speaker=HUMAN, text=w, t=2.0 + i) for i, w in enumerate(words)),
+        ),
+    )
+    recent = build_address_recent(state, cast, current="go again please?")
+    assert recent == [
+        {"from": "Dexter", "text": "so over to Melia"},
+        {"from": "Melia", "text": "the last budget was tight"},
+        *({"from": "Ricky", "text": w} for w in words),
+        {"from": "Ricky", "text": "go again please?"},
+    ]

@@ -669,11 +669,20 @@ def build_address_context(state: PanelState, cast: PanelCast) -> str:
     return line
 
 
-# How many of Ricky's own trailing segments / the last agent's own turns to
-# surface as actual words, not just names. Separate from `_CONTEXT_UTTERANCES`
-# above, which bounds a name-only summary shared with the Haiku/regex path;
-# this feeds the richer, TypeSafe-only `recent_messages` list below.
-_RECENT_RICKY_MESSAGES = 4
+# Safety cap on Ricky's trailing run, in actual words rather than just names
+# (see `build_address_recent`). Not the thing that normally bounds this — the
+# last agent message already does, since the run stops the moment it reaches
+# one — this only protects against a genuinely long agent-free stretch (e.g.
+# the very start of the show). Six STT finals for one sentence is the case
+# this whole feature exists for, so the cap sits comfortably above that
+# rather than against it.
+_RECENT_RICKY_MESSAGES = 10
+# How many of the most recent agent messages to surface — not necessarily the
+# same agent twice: the panel passes turns to each other without Ricky, so
+# the last two can be two different panellists, and the classifier needs that
+# to tell "Dexter handed to Melia, then Ricky spoke" apart from one agent
+# talking at length. Two, not one, because the single-message version missed
+# exactly this: the case that sent this feature back for a second pass.
 _RECENT_AGENT_MESSAGES = 2
 _RECENT_MESSAGE_MAX_CHARS = 240
 
@@ -698,24 +707,29 @@ def build_address_recent(
 
     Two halves:
 
-    - Ricky's own trailing run: everything he has said since the last agent
-      turn (capped at `_RECENT_RICKY_MESSAGES`), recovering a question split
-      across several STT finals. `current` — the segment just heard, not yet
-      in `state.transcript` because the reducer runs on its own task — is
-      always appended last.
-    - The last agent to speak's own last `_RECENT_AGENT_MESSAGES` turns, never
-      blended with another agent's. `state.speaking`/`state.agent_partial`
-      stand in for an agent still mid-turn, whose own `Utterance` has not
-      landed yet (it is only written at `AgentSpeechEnded`).
+    - The last `_RECENT_AGENT_MESSAGES` agent messages — not necessarily the
+      same agent, since the panel passes turns to each other without Ricky —
+      giving the classifier who has actually been speaking, not just a name
+      summary, to tell a hand-off apart from one agent talking at length and
+      to help it judge whether Ricky is opening the floor to everyone, to the
+      one who just spoke, or to someone who has gone quiet. `state.speaking`/
+      `state.agent_partial` stand in for an agent still mid-turn, whose own
+      `Utterance` has not landed yet (only written at `AgentSpeechEnded`) —
+      including the interrupt case this feature is mainly for, where that
+      line never completes at all.
+    - Ricky's own trailing run since: everything he has said since the last
+      agent message, however many STT finals that took, up to and including
+      `current`, which is always last. Recovers a question split across
+      several finals rather than classified one fragment at a time.
 
-    The agent half is suppressed during a live introduction or closing round
-    — `state.intro_queue`/`state.closing_queue`, or a standing
+    The agent half is omitted during a live introduction or closing round —
+    `state.intro_queue`/`state.closing_queue`, or a standing
     `InvitationSource.INTRODUCTION` — because those are fixed, scripted lines
     ("We discussed this.") rather than conversation, and CLAUDE.md records
     that this classifier's `INTRODUCTIONS` mode is a measured, fragile prompt
-    surface not to be fed noise it was never scored against. Ricky's half is
-    never suppressed: it is just as true during an introduction round as any
-    other turn.
+    surface not to be fed noise it was never scored against. Ricky's own
+    words are never omitted: they are just as real during an introduction
+    round as any other turn.
 
     Args:
         state: Current panel state.
@@ -724,9 +738,10 @@ def build_address_recent(
             does not yet contain it (see the module's call sites).
 
     Returns:
-        `[{"from": "Ricky" | persona name, "text": ...}, ...]`, oldest first.
-        Empty once nothing survives (e.g. `current` alone, with no prior
-        turns) — callers treat that the same as "no context yet".
+        `[{"from": persona name, "text": ...}, ..., {"from": "Ricky", ...},
+        ...]`, oldest first. Empty once nothing survives (e.g. `current`
+        alone, with no prior turns) — callers treat that the same as "no
+        context yet".
     """
     ricky: list[str] = []
     for utterance in reversed(state.transcript):
@@ -746,30 +761,20 @@ def build_address_recent(
     if introducing:
         return messages
 
-    last_agent = state.speaking if state.speaking in cast.personas else None
-    if last_agent is None:
-        for utterance in reversed(state.transcript):
-            if utterance.speaker in cast.personas:
-                last_agent = utterance.speaker
-                break
-    if last_agent is None:
-        return messages
+    agent_entries = [
+        (utterance.speaker, utterance.text)
+        for utterance in state.transcript
+        if utterance.speaker in cast.personas
+    ]
+    if state.speaking in cast.personas and state.agent_partial.strip():
+        agent_entries.append((state.speaking, state.agent_partial))
+    agent_entries = agent_entries[-_RECENT_AGENT_MESSAGES:]
 
-    agent_texts = [u.text for u in state.transcript if u.speaker == last_agent]
-    if state.speaking == last_agent and state.agent_partial:
-        agent_texts.append(state.agent_partial)
-    agent_texts = agent_texts[-_RECENT_AGENT_MESSAGES:]
-
-    name = cast.personas[last_agent].name
-    agent_messages = [{"from": name, "text": _truncate(text)} for text in agent_texts if text.strip()]
-
-    # Agent words first, then Ricky's reaction to them — the shape of "Melia
-    # said X" -> "sorry, go again". This is deliberately not a strict
-    # chronological merge: on an interrupt, the agent's own `Utterance` is
-    # only appended once `AgentSpeechEnded` lands, *after* the Ricky words
-    # that cut it off, so sorting by `t` would still put it last. Presenting
-    # it first regardless is what the re-address case actually needs — the
-    # last thing said, surfaced as the thing being asked about again.
+    agent_messages = [
+        {"from": cast.personas[agent_id].name, "text": _truncate(text)}
+        for agent_id, text in agent_entries
+        if text.strip()
+    ]
     return agent_messages + messages
 
 
@@ -875,11 +880,13 @@ def _addressed_instructions(agent_id: str, cast: PanelCast) -> dict:
             f"most recent speaker. Each picks out a subset, so {name} is yes "
             "whenever the reference includes them. Given no such line, no. "
             "`recent_messages`, when present, is the actual words just said, "
-            "oldest first — Ricky's own trailing remarks plus the last "
-            "panellist's own last turns. A bare request to continue or "
-            "repeat ('sorry, can you go again?', 'say that again?') with no "
-            f"name is a request to whichever panellist's words it follows, "
-            f"so {name} is yes when their turn is the one shown there."
+            "oldest first — the last two agent messages (which may be two "
+            "different panellists handing off to each other, not always the "
+            "same one twice), then Ricky's own trailing remarks since. A "
+            "bare request to continue or repeat ('sorry, can you go again?', "
+            f"'say that again?') with no name is a request to whichever "
+            f"panellist's words it immediately follows, so {name} is yes "
+            "when their turn is the one shown last there."
         ),
     }
 
@@ -906,16 +913,18 @@ def build_address_questions(cast: PanelCast) -> dict[str, dict]:
                 "authority. `panel_activity`, when present, lists who has "
                 "spoken recently, most recent first, and who has not been "
                 "heard from. `recent_messages`, when present, is the actual "
-                "words just said, oldest first — treat `ricky_said` as the "
-                "continuation of his own messages there, not an isolated "
-                "line: an announcement that he is about to ask something "
-                "('I'd like to put a couple of questions to the panel') is "
-                "still NOBODY even once it names the panel, because nothing "
-                "has been asked yet — only a request actually put to someone "
-                "is SPECIFIC_PANELLISTS. A bare request to continue or "
-                "repeat with no name ('sorry, can you go again?') names "
-                "whichever panellist's own turn is shown in "
-                "`recent_messages`."
+                "words just said, oldest first — up to the last two agent "
+                "messages (who was actually speaking, including a hand-off "
+                "between two different panellists) followed by Ricky's own "
+                "trailing remarks. Treat `ricky_said` as the continuation of "
+                "those trailing remarks, not an isolated line: an "
+                "announcement that he is about to ask something ('I'd like "
+                "to put a couple of questions to the panel') is still "
+                "NOBODY even once it names the panel, because nothing has "
+                "been asked yet — only a request actually put to someone is "
+                "SPECIFIC_PANELLISTS. A bare request to continue or repeat "
+                "with no name ('sorry, can you go again?') names whichever "
+                "panellist's own turn is shown last in `recent_messages`."
             ),
         },
         "criteria": {
