@@ -124,6 +124,7 @@ class TypeSafeAddressClassifier(BaseAddressClassifier):
         key: str,
         source: VerdictSource,
         store: bool,
+        recent: tuple[dict[str, str], ...] = (),
     ) -> AddressVerdict:
         """Run one TypeSafe call and recompose its answers into a verdict.
 
@@ -131,9 +132,12 @@ class TypeSafeAddressClassifier(BaseAddressClassifier):
             text: The segment to classify.
             context: `prompts.build_address_context` output for the moment it
                 was said in, which is what resolves "the other two".
-            key: The cache key for `(text, context)`.
+            key: The cache key for `(text, context, recent)`.
             source: Provenance to stamp on the returned verdict.
             store: Whether to cache the result. True for speculation only.
+            recent: `prompts.build_address_recent`'s output — the actual
+                words of Ricky's trailing run and the last agent's own last
+                turns, which is what resolves a bare "sorry, go again?".
 
         Returns:
             An `AddressVerdict`, fail-closed on timeout or error.
@@ -141,7 +145,7 @@ class TypeSafeAddressClassifier(BaseAddressClassifier):
         started = time.perf_counter()
         try:
             response = await self._client.system_one(
-                state=build_address_state(text, context, self._cast),
+                state=build_address_state(text, context, self._cast, recent=recent),
                 questions=self._questions,
                 model=self._model,
                 retry=_RETRY,

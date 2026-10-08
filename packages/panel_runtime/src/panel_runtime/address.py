@@ -188,14 +188,30 @@ def _normalise(text: str) -> str:
     return _WHITESPACE_RE.sub(" ", lowered).strip()
 
 
-def _cache_key(text: str, context: str) -> str:
-    """The cache key: the utterance *and* the conversation it was asked in.
+def _recent_digest(recent: tuple[dict[str, str], ...]) -> str:
+    """Normalise `prompts.build_address_recent`'s output for the cache key.
 
-    Keyed on both halves because the verdict depends on both. "I'd like to hear
+    Folded in because it changes what a verdict means: a speculation made
+    before an agent's cut-short turn had landed in `recent_messages` must not
+    be served after it has, and vice versa. Normalised the same way the text
+    and context halves are, for the same reason — a cosmetic difference must
+    not fork the cache.
+    """
+    if not recent:
+        return ""
+    return "|".join(f"{_normalise(m.get('from', ''))}:{_normalise(m.get('text', ''))}" for m in recent)
+
+
+def _cache_key(text: str, context: str, recent: tuple[dict[str, str], ...] = ()) -> str:
+    """The cache key: the utterance, the conversation, and who said what recently.
+
+    Keyed on all three because the verdict depends on all three. "I'd like to hear
     from the other two" resolves to a different pair after Dexter's turn than
     after Melia's, and a key over the words alone would serve the first answer
     to the second question — silently, and with the one panellist Ricky just
-    heard from back on the PA.
+    heard from back on the PA. `recent` is the TypeSafe-only richer context
+    (`prompts.build_address_recent`); empty on the Haiku/regex path, where it
+    changes nothing.
 
     Returns "" when the utterance normalises away, which callers treat as
     nothing to classify.
@@ -203,7 +219,8 @@ def _cache_key(text: str, context: str) -> str:
     normalised = _normalise(text)
     if not normalised:
         return ""
-    return f"{_normalise(context)}|{normalised}" if context else normalised
+    parts = [p for p in (_normalise(context), _recent_digest(recent)) if p]
+    return "|".join((*parts, normalised)) if parts else normalised
 
 
 def _user_turn(text: str, context: str = "") -> str:
@@ -296,7 +313,9 @@ class BaseAddressClassifier(ABC):
 
     # -- public API ---------------------------------------------------
 
-    def speculate(self, partial_text: str, *, context: str = "") -> None:
+    def speculate(
+        self, partial_text: str, *, context: str = "", recent: tuple[dict[str, str], ...] = ()
+    ) -> None:
         """Fire-and-forget speculative classification of an interim result.
 
         Called from the STT pump, so it must never block and never raise.
@@ -308,13 +327,17 @@ class BaseAddressClassifier(ABC):
             context: `prompts.build_address_context` for the moment this
                 partial was heard in. Part of the cache key, so a speculation
                 is only ever reused against the exchange it was made in.
+            recent: `prompts.build_address_recent`'s output for the same
+                moment. TypeSafe-only; the Haiku/regex path ignores it.
         """
         try:
-            self._speculate(partial_text, context)
+            self._speculate(partial_text, context, recent)
         except Exception as exc:  # noqa: BLE001 — the hot path must not raise
             log.debug("address: speculation suppressed: %r", exc)
 
-    async def classify(self, text: str, *, context: str = "") -> AddressVerdict:
+    async def classify(
+        self, text: str, *, context: str = "", recent: tuple[dict[str, str], ...] = ()
+    ) -> AddressVerdict:
         """Classify a finalised utterance, returning at the verdict.
 
         Returns as soon as the leading verdict is decodable — see
@@ -327,6 +350,9 @@ class BaseAddressClassifier(ABC):
             text: The finalised transcript segment.
             context: `prompts.build_address_context` for the moment it was
                 said in, which is what resolves "the other two".
+            recent: `prompts.build_address_recent`'s output for the same
+                moment — actual recent words, not just names. TypeSafe-only;
+                the Haiku/regex path ignores it.
 
         Returns:
             An `AddressVerdict`. On empty input, timeout, API failure or a
@@ -335,7 +361,7 @@ class BaseAddressClassifier(ABC):
             reducer to fall back to the regex.
         """
         entered = time.perf_counter()
-        key = _cache_key(text, context)
+        key = _cache_key(text, context, recent)
         if not key:
             return _unavailable()
 
@@ -372,7 +398,9 @@ class BaseAddressClassifier(ABC):
         # Anything still running is for text that has since been revised.
         self._cancel_inflight()
         source: VerdictSource = "recomputed" if self._spec_attempted else "fresh"
-        return await self._classify_once(text, context, key=key, source=source, store=False)
+        return await self._classify_once(
+            text, context, key=key, source=source, store=False, recent=recent
+        )
 
     def reset(self) -> None:
         """Clear the cache and the speculation gates. Call on turn boundaries.
@@ -410,9 +438,11 @@ class BaseAddressClassifier(ABC):
 
     # -- speculation --------------------------------------------------
 
-    def _speculate(self, partial_text: str, context: str) -> None:
+    def _speculate(
+        self, partial_text: str, context: str, recent: tuple[dict[str, str], ...]
+    ) -> None:
         """Apply the speculation gates and launch a call if they all pass."""
-        key = _cache_key(partial_text, context)
+        key = _cache_key(partial_text, context, recent)
         if not key:
             return
         if key in self._cache:
@@ -442,14 +472,16 @@ class BaseAddressClassifier(ABC):
         self._spec_attempted = True
         self._inflight_key = key
         self._inflight = asyncio.get_running_loop().create_task(
-            self._run_speculation(partial_text, context, key), name="address-speculate"
+            self._run_speculation(partial_text, context, recent, key), name="address-speculate"
         )
 
-    async def _run_speculation(self, text: str, context: str, key: str) -> None:
+    async def _run_speculation(
+        self, text: str, context: str, recent: tuple[dict[str, str], ...], key: str
+    ) -> None:
         """Classify an interim result and cache it if it succeeds."""
         try:
             verdict = await self._classify_once(
-                text, context, key=key, source="speculative_hit", store=True
+                text, context, key=key, source="speculative_hit", store=True, recent=recent
             )
         except asyncio.CancelledError:
             raise
@@ -486,18 +518,22 @@ class BaseAddressClassifier(ABC):
         key: str,
         source: VerdictSource,
         store: bool,
+        recent: tuple[dict[str, str], ...] = (),
     ) -> AddressVerdict:
         """Run one classification against the backend and return the verdict.
 
         Args:
             text: The segment to classify.
             context: The conversation context.
-            key: The cache key for `(text, context)`.
+            key: The cache key for `(text, context, recent)`.
             source: Provenance to stamp on the returned verdict.
             store: Whether to cache the result. True for speculation only: a
                 *fresh* verdict must not be cached, or a repeat call would be
                 reported as a `speculative_hit` at zero latency and the hit
                 rate this whole design is judged on would flatter itself.
+            recent: `prompts.build_address_recent`'s output. TypeSafe-only —
+                `AddressClassifier` (Haiku) accepts and ignores it, since its
+                prompt is a fixed, separately-measured budget (CLAUDE.md).
 
         Returns:
             An `AddressVerdict`, fail-closed on timeout or error.
@@ -559,8 +595,15 @@ class AddressClassifier(BaseAddressClassifier):
         key: str,
         source: VerdictSource,
         store: bool,
+        recent: tuple[dict[str, str], ...] = (),
     ) -> AddressVerdict:
         """Run one streamed classification and return at the verdict.
+
+        `recent` is accepted and ignored: the Haiku prompt is a single
+        streamed-token budget already measured against the regression corpus
+        (CLAUDE.md "The address prompt is a fixed budget"), and this path is
+        shared with the regex via `_cache_key`'s same signature, not a place
+        to grow without a fresh accuracy run.
 
         Args:
             text: The segment to classify.

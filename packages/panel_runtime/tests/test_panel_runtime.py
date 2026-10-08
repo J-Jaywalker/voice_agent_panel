@@ -537,11 +537,15 @@ class StubAddressClassifier:
         self.contexts: list[str] = []
         self.resets = 0
 
-    def speculate(self, partial_text: str, *, context: str = "") -> None:
+    def speculate(
+        self, partial_text: str, *, context: str = "", recent: tuple[dict[str, str], ...] = ()
+    ) -> None:
         self.speculated.append(partial_text)
         self.contexts.append(context)
 
-    async def classify(self, text: str, *, context: str = "") -> AddressVerdict:
+    async def classify(
+        self, text: str, *, context: str = "", recent: tuple[dict[str, str], ...] = ()
+    ) -> AddressVerdict:
         self.classified.append(text)
         self.contexts.append(context)
         if self.delay:

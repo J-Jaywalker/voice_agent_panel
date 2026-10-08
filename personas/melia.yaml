@@ -183,7 +183,13 @@ beats:
       The same open-floor follow-up as Wayne — Ricky wants your thoughts
       once Dexter has answered the ASR question and Wayne has reacted to it.
       Your material lands as a direct answer to what Wayne just argued, not
-      a fresh topic.
+      a fresh topic. Wayne goes first on this one, not you — the material
+      below is a rebuttal to the confidence-threshold argument he is about to
+      make, and it reads as nonsense before he has made it. Demonstrate low
+      desire to speak and score this beat low until he has actually argued
+      that point; this is a note on how eager to sound, never a line to say
+      out loud — never narrate that you are waiting or that he should go
+      first, just hold.
     material:
       - >-
         Confidence thresholds have to scale with consequence. A conversational
@@ -191,8 +197,7 @@ beats:
         altering a medical record or executing an instruction is another
         thing entirely, and treating them the same is exactly how you get an
         agent-made disaster. That is precisely why the AI legislation of your
-        time exists: to stop that happening. You should wait for your turn and
-        let Wayne speak first here.
+        time exists: to stop that happening.
       - >-
         Target response:
         "Wayne, this is basically the equivalent of a shrug and saying "good enough for me."

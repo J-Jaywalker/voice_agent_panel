@@ -106,7 +106,7 @@ from panel_core import (
     TranscriptUpdated,
     TurnYielded,
 )
-from panel_core.prompts import AMBIGUOUS_VERDICT, build_address_context
+from panel_core.prompts import AMBIGUOUS_VERDICT, build_address_context, build_address_recent
 from panel_display import DISPLAY_PORT, DisplayServer
 from rich.console import Console
 from rich.live import Live
@@ -1553,8 +1553,12 @@ class PanelRuntime:
         if classifier is None or event.speaker != HUMAN:
             return
         context = build_address_context(self.state, self.cast)
+        # `state.transcript` does not yet contain this segment — the reducer
+        # runs on its own task, after `emit()` — so `event.text` is passed as
+        # `current` rather than read back off state.
+        recent = tuple(build_address_recent(self.state, self.cast, current=event.text))
         if not event.is_final:
-            classifier.speculate(event.text, context=context)
+            classifier.speculate(event.text, context=context, recent=recent)
             return
 
         # One classification outstanding at a time. A turn arrives as several
@@ -1562,7 +1566,7 @@ class PanelRuntime:
         # is answering text that has since been extended.
         previous = self._address_task
         self._address_task = asyncio.create_task(
-            self._classify_address(classifier, event.text, context=context, t=event.t),
+            self._classify_address(classifier, event.text, context=context, recent=recent, t=event.t),
             name="address-classify",
         )
         if previous is not None and not previous.done():
@@ -1574,7 +1578,13 @@ class PanelRuntime:
             previous.cancel()
 
     async def _classify_address(
-        self, classifier: BaseAddressClassifier, text: str, *, context: str, t: float
+        self,
+        classifier: BaseAddressClassifier,
+        text: str,
+        *,
+        context: str,
+        recent: tuple[dict[str, str], ...] = (),
+        t: float,
     ) -> None:
         """Classify one human final and emit the verdict as an event.
 
@@ -1591,7 +1601,8 @@ class PanelRuntime:
         try:
             try:
                 outcome = await asyncio.wait_for(
-                    classifier.classify(text, context=context), ADDRESS_HOLD_TIMEOUT_S
+                    classifier.classify(text, context=context, recent=recent),
+                    ADDRESS_HOLD_TIMEOUT_S,
                 )
             except TimeoutError:
                 outcome = AddressVerdict(

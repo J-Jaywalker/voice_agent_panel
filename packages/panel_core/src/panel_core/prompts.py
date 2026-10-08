@@ -669,6 +669,110 @@ def build_address_context(state: PanelState, cast: PanelCast) -> str:
     return line
 
 
+# How many of Ricky's own trailing segments / the last agent's own turns to
+# surface as actual words, not just names. Separate from `_CONTEXT_UTTERANCES`
+# above, which bounds a name-only summary shared with the Haiku/regex path;
+# this feeds the richer, TypeSafe-only `recent_messages` list below.
+_RECENT_RICKY_MESSAGES = 4
+_RECENT_AGENT_MESSAGES = 2
+_RECENT_MESSAGE_MAX_CHARS = 240
+
+
+def _truncate(text: str) -> str:
+    text = text.strip()
+    if len(text) <= _RECENT_MESSAGE_MAX_CHARS:
+        return text
+    return text[: _RECENT_MESSAGE_MAX_CHARS].rstrip() + "…"
+
+
+def build_address_recent(
+    state: PanelState, cast: PanelCast, *, current: str
+) -> list[dict[str, str]]:
+    """Actual recent words, oldest first, for the TypeSafe classifier only.
+
+    `build_address_context` above gives the Haiku/regex path names only
+    ("spoken recently: Melia, Wayne"); this gives TypeSafe the words
+    themselves, because "Sorry, can you go again please?" is only resolvable
+    against what Melia was actually saying when Ricky cut across her — a name
+    alone does not carry that.
+
+    Two halves:
+
+    - Ricky's own trailing run: everything he has said since the last agent
+      turn (capped at `_RECENT_RICKY_MESSAGES`), recovering a question split
+      across several STT finals. `current` — the segment just heard, not yet
+      in `state.transcript` because the reducer runs on its own task — is
+      always appended last.
+    - The last agent to speak's own last `_RECENT_AGENT_MESSAGES` turns, never
+      blended with another agent's. `state.speaking`/`state.agent_partial`
+      stand in for an agent still mid-turn, whose own `Utterance` has not
+      landed yet (it is only written at `AgentSpeechEnded`).
+
+    The agent half is suppressed during a live introduction or closing round
+    — `state.intro_queue`/`state.closing_queue`, or a standing
+    `InvitationSource.INTRODUCTION` — because those are fixed, scripted lines
+    ("We discussed this.") rather than conversation, and CLAUDE.md records
+    that this classifier's `INTRODUCTIONS` mode is a measured, fragile prompt
+    surface not to be fed noise it was never scored against. Ricky's half is
+    never suppressed: it is just as true during an introduction round as any
+    other turn.
+
+    Args:
+        state: Current panel state.
+        cast: The panel, for turning agent ids into display names.
+        current: The segment just heard — included because `state.transcript`
+            does not yet contain it (see the module's call sites).
+
+    Returns:
+        `[{"from": "Ricky" | persona name, "text": ...}, ...]`, oldest first.
+        Empty once nothing survives (e.g. `current` alone, with no prior
+        turns) — callers treat that the same as "no context yet".
+    """
+    ricky: list[str] = []
+    for utterance in reversed(state.transcript):
+        if utterance.speaker != HUMAN:
+            break
+        ricky.append(utterance.text)
+    ricky.reverse()
+    ricky.append(current)
+    ricky = ricky[-_RECENT_RICKY_MESSAGES:]
+    messages = [{"from": "Ricky", "text": _truncate(text)} for text in ricky if text.strip()]
+
+    introducing = (
+        state.intro_queue is not None
+        or state.closing_queue is not None
+        or (state.invitation is not None and state.invitation.source is InvitationSource.INTRODUCTION)
+    )
+    if introducing:
+        return messages
+
+    last_agent = state.speaking if state.speaking in cast.personas else None
+    if last_agent is None:
+        for utterance in reversed(state.transcript):
+            if utterance.speaker in cast.personas:
+                last_agent = utterance.speaker
+                break
+    if last_agent is None:
+        return messages
+
+    agent_texts = [u.text for u in state.transcript if u.speaker == last_agent]
+    if state.speaking == last_agent and state.agent_partial:
+        agent_texts.append(state.agent_partial)
+    agent_texts = agent_texts[-_RECENT_AGENT_MESSAGES:]
+
+    name = cast.personas[last_agent].name
+    agent_messages = [{"from": name, "text": _truncate(text)} for text in agent_texts if text.strip()]
+
+    # Agent words first, then Ricky's reaction to them — the shape of "Melia
+    # said X" -> "sorry, go again". This is deliberately not a strict
+    # chronological merge: on an interrupt, the agent's own `Utterance` is
+    # only appended once `AgentSpeechEnded` lands, *after* the Ricky words
+    # that cut it off, so sorting by `t` would still put it last. Presenting
+    # it first regardless is what the re-address case actually needs — the
+    # last thing said, surfaced as the thing being asked about again.
+    return agent_messages + messages
+
+
 # --------------------------------------------------------------------------
 # Address classification — TypeSafe (Jev) spike
 # --------------------------------------------------------------------------
@@ -769,7 +873,13 @@ def _addressed_instructions(agent_id: str, cast: PanelCast) -> dict:
             'recent speaker; "the one we haven\'t heard from" is the '
             'panellist with no recent turn; "carry on" with no name is the '
             f"most recent speaker. Each picks out a subset, so {name} is yes "
-            "whenever the reference includes them. Given no such line, no."
+            "whenever the reference includes them. Given no such line, no. "
+            "`recent_messages`, when present, is the actual words just said, "
+            "oldest first — Ricky's own trailing remarks plus the last "
+            "panellist's own last turns. A bare request to continue or "
+            "repeat ('sorry, can you go again?', 'say that again?') with no "
+            f"name is a request to whichever panellist's words it follows, "
+            f"so {name} is yes when their turn is the one shown there."
         ),
     }
 
@@ -795,7 +905,17 @@ def build_address_questions(cast: PanelCast) -> dict[str, dict]:
                 "`panel` lists the panellists and what each speaks on with "
                 "authority. `panel_activity`, when present, lists who has "
                 "spoken recently, most recent first, and who has not been "
-                "heard from."
+                "heard from. `recent_messages`, when present, is the actual "
+                "words just said, oldest first — treat `ricky_said` as the "
+                "continuation of his own messages there, not an isolated "
+                "line: an announcement that he is about to ask something "
+                "('I'd like to put a couple of questions to the panel') is "
+                "still NOBODY even once it names the panel, because nothing "
+                "has been asked yet — only a request actually put to someone "
+                "is SPECIFIC_PANELLISTS. A bare request to continue or "
+                "repeat with no name ('sorry, can you go again?') names "
+                "whichever panellist's own turn is shown in "
+                "`recent_messages`."
             ),
         },
         "criteria": {
@@ -922,7 +1042,13 @@ def build_address_questions(cast: PanelCast) -> dict[str, dict]:
     return {"mode": mode, **addressed, **joint, **unidentifiable}
 
 
-def build_address_state(utterance: str, context: str, cast: PanelCast) -> dict:
+def build_address_state(
+    utterance: str,
+    context: str,
+    cast: PanelCast,
+    *,
+    recent: tuple[dict[str, str], ...] | list[dict[str, str]] = (),
+) -> dict:
     """The per-call TypeSafe `state` — panel description and the utterance.
 
     `build_address_prompt`'s panel description sits in a cached system prompt
@@ -936,6 +1062,10 @@ def build_address_state(utterance: str, context: str, cast: PanelCast) -> dict:
             not spoken yet.
         cast: The panel, for the same reason every renderer here needs it —
             personas are the source of truth.
+        recent: `build_address_recent`'s output, or empty when there is
+            nothing beyond `utterance` to show — kept separate from
+            `panel_activity` (names only) because the two answer different
+            questions: who has spoken, versus what they actually said.
     """
     panel = [
         {
@@ -951,6 +1081,8 @@ def build_address_state(utterance: str, context: str, cast: PanelCast) -> dict:
     state: dict = {"panel": panel, "ricky_said": utterance}
     if context:
         state["panel_activity"] = context
+    if recent:
+        state["recent_messages"] = list(recent)
     return state
 
 
