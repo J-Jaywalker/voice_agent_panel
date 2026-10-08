@@ -368,7 +368,9 @@ body {
    than centred — this lane holds a feed, not a face, and its header is an
    attribution rather than a status. Untinted, like its card. */
 .lane--transcript .lane__eyebrow {
+  justify-content: center;
   width: fit-content;
+  margin-inline: auto;
   padding-inline: 26px;
   border-radius: var(--radius-pill);
   background: var(--glass-fill);

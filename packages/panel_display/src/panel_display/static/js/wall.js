@@ -306,7 +306,7 @@ function applyState(message) {
   stage.dataset.killed = String(Boolean(message.killed));
 
   humanDot.dataset.live = String(Boolean(message.human_speaking));
-  transcriptLabel.textContent = message.human_speaking ? "Moderator — live" : "Moderator";
+  transcriptLabel.textContent = message.human_speaking ? "Ricky — live" : "Ricky";
 
   renderLines(message.lines, message.line_seq - message.lines.length);
   renderPartials(message.partials || []);
