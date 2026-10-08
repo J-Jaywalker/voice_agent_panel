@@ -53,7 +53,14 @@ instead of to the floor's transcription; afterwards it routes them back and
 never looks again. See `enrolment.py` for the two-session capture and
 verification, and `stt.py` for what the identifiers then buy per segment.
 `--no-speaker-lock` skips the phase outright and runs the mic ungated, which is
-the same mode a *failed* enrolment already falls back to.
+the same mode a *failed* enrolment already falls back to. `--mute-while-agents-
+speak` goes one step further for a venue where even that is not good enough:
+it implies `--no-speaker-lock` and gates the mic for as long as any agent is
+on the PA (`AgentSpeechStarted`/`AgentSpeechEnded`), so there is nothing for
+the PA's bleed to reach even unfiltered. The emergency mute key (`m`) is
+disabled while it is on, because a manual mute stacked on an automatic one is
+a second thing to track mid-show for no gain; the emergency interrupt (`j`)
+is untouched, since it reaches the reducer from the keypress, never the mic.
 """
 
 from __future__ import annotations
@@ -301,6 +308,7 @@ class PanelRuntime:
         speakers_path: Path | None = None,
         re_enrol: bool = False,
         speaker_lock: bool = True,
+        mute_while_agents_speak: bool = False,
     ) -> None:
         self.cast = cast
         self.fc = FloorController(cast, floor_config or FloorConfig())
@@ -332,7 +340,12 @@ class PanelRuntime:
         # convention is safe-by-default with an explicit opt-out.
         self._store = SpeakerStore(speakers_path)
         self._re_enrol = re_enrol
-        self._speaker_lock = speaker_lock
+        # `mute_while_agents_speak` is the last-resort feedback guard: it
+        # forces the ungated mode regardless of what was passed, because its
+        # whole premise is that enrolment cannot be trusted to tell Ricky's
+        # voice apart from the agents' PA bleed, and the automatic mute below
+        # is meant to stand in for that distinction, not sit alongside it.
+        self._speaker_lock = speaker_lock and not mute_while_agents_speak
         # The enrolment in progress, or None. Read once per audio block by
         # `_callback` to decide where mic audio goes, and set only while the
         # floor's own tasks do not yet exist — see `run()`.
@@ -435,6 +448,18 @@ class PanelRuntime:
         # audio is withheld from STT entirely while set, same as `_muted`.
         # `j` still works — it reaches the reducer from the keypress, not the mic.
         self._intro_active = False
+        # Feedback guard for a venue where enrolment cannot be trusted: with
+        # no speaker lock, nothing downstream can tell Ricky's voice apart
+        # from the PA bleeding an agent's own speech back into his mic, so
+        # instead of guessing we gate the mic for the whole time an agent is
+        # on it. Set from CLI; `_agent_on_floor` is flipped by
+        # `AgentSpeechStarted`/`AgentSpeechEnded` in `_drain_events` and read
+        # here by `_callback`, the same cross-thread pattern as `_muted`.
+        # `j` is unaffected either way — it reaches the reducer from the
+        # keypress, not the mic — and `m` is disabled in `_watch_console_keys`
+        # while this is on, so there is only ever one thing gating the mic.
+        self._mute_while_agents_speak = mute_while_agents_speak
+        self._agent_on_floor = False
 
         self.events: asyncio.Queue = asyncio.Queue()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -539,9 +564,13 @@ class PanelRuntime:
         # not exist yet — `self.stt` has not been started. Feeding it here would
         # grow a queue nobody reads.
         enrolling = self._enrolling
+        # The feedback guard's own gate — see `self._mute_while_agents_speak`
+        # above — collapsed into one flag so the branches below stay the same
+        # shape they always were.
+        agent_feedback_muted = self._mute_while_agents_speak and self._agent_on_floor
         if enrolling is not None:
             enrolling.feed(pcm.tobytes())
-        elif not self._muted and not self._intro_active:
+        elif not self._muted and not self._intro_active and not agent_feedback_muted:
             # Mic audio goes to the STT that feeds the floor — both the words
             # and, via `SpeechStarted`, the barge-in reflex. Agent audio never
             # goes here.
@@ -562,7 +591,12 @@ class PanelRuntime:
         # never see it, so there is nothing for them to react to and nothing
         # for the wall's mic meter to show — see `self._muted`/`self._intro_active`.
 
-        if self._display is not None and not self._muted and not self._intro_active:
+        if (
+            self._display is not None
+            and not self._muted
+            and not self._intro_active
+            and not agent_feedback_muted
+        ):
             self._mic_level = max(self._mic_level, float(np.sqrt(np.mean(np.square(mono)))))
 
         # `render` also drives `Mixer.on_played`, which with `--display` hands
@@ -585,7 +619,11 @@ class PanelRuntime:
         Runs on its own thread, blocked in `read(1)` between presses — cheap,
         and keeps the audio callback above untouched by anything stdin-shaped.
         `m` toggles `self._muted`, which `_callback` is the only other reader
-        of. `j` is the emergency interrupt: it posts an `OperatorCommand`
+        of. Disabled outright while `self._mute_while_agents_speak` is on —
+        that mode already gates the mic automatically off `_agent_on_floor`,
+        and a manual mute stacked on top of it is a second, independent thing
+        for an operator to track mid-show for no gain. `j` is the emergency
+        interrupt: it posts an `OperatorCommand`
         (`HAND_TO_MODERATOR`) onto the same event queue a real barge-in would
         land on, via `call_soon_threadsafe` since this thread is not the event
         loop's — `panel_core` already stops whoever is speaking and hands the
@@ -610,11 +648,17 @@ class PanelRuntime:
             while self._running:
                 ch = sys.stdin.read(1).lower()
                 if ch == "m":
-                    self._muted = not self._muted
-                    if self._muted:
-                        self._print("[bold red]MIC MUTED[/] (press m to unmute)")
+                    if self._mute_while_agents_speak:
+                        self._print(
+                            "[dim]m is disabled: --mute-while-agents-speak already "
+                            "gates the mic[/]"
+                        )
                     else:
-                        self._print("[bold green]mic live[/]")
+                        self._muted = not self._muted
+                        if self._muted:
+                            self._print("[bold red]MIC MUTED[/] (press m to unmute)")
+                        else:
+                            self._print("[bold green]mic live[/]")
                 elif ch == "j":
                     self._print("[bold red]EMERGENCY INTERRUPT[/] (j) — floor to Ricky")
                     if self._loop is not None:
@@ -634,6 +678,13 @@ class PanelRuntime:
     async def _drain_events(self) -> None:
         while self._running:
             event = await self.events.get()
+            if self._mute_while_agents_speak:
+                # Read by `_callback` on the audio thread — a plain bool
+                # assignment, same cross-thread contract as `_muted`.
+                if isinstance(event, AgentSpeechStarted):
+                    self._agent_on_floor = True
+                elif isinstance(event, AgentSpeechEnded):
+                    self._agent_on_floor = False
             self._record(event)
             if self._display is not None:
                 # Before the reducer, so the wall sees cause then effect in
@@ -1908,6 +1959,15 @@ class PanelRuntime:
                 threading.Thread(target=self._watch_console_keys, daemon=True).start()
 
                 gated = "" if speaker is None else f" [dim]mic gated to {speaker.label}.[/]"
+                mute_line = (
+                    "[dim]Mic auto-mutes while an agent is on the PA (m disabled). "
+                    "Press j for an emergency interrupt (stops the floor, hands it to "
+                    "Ricky).[/]\n"
+                    if self._mute_while_agents_speak
+                    else "[dim]Press m to mute the mic (emergency), m again to unmute. "
+                    "Press j for an emergency interrupt (stops the floor, hands it to "
+                    "Ricky).[/]\n"
+                )
                 console.print(
                     f"[bold]Panel live.[/] "
                     f"{', '.join(p.name for p in self.cast.personas.values())}"
@@ -1915,9 +1975,7 @@ class PanelRuntime:
                     "[dim]Ask a question to open the floor. A statement invites "
                     "nobody. Ctrl-C to stop.[/]\n"
                     "[dim]Left columns: seconds since start, +gap since the line "
-                    "above.[/]\n"
-                    "[dim]Press m to mute the mic (emergency), m again to unmute. "
-                    "Press j for an emergency interrupt (stops the floor, hands it to Ricky).[/]\n"
+                    "above.[/]\n" + mute_line
                 )
 
                 await asyncio.gather(*tasks)
@@ -1997,6 +2055,16 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--mute-while-agents-speak",
+        action="store_true",
+        help=(
+            "last resort when enrolment can't be trusted: skip it entirely "
+            "(implies --no-speaker-lock) and gate the mic for as long as an "
+            "agent is on the PA, so its own bleed can never reach the floor. "
+            "Disables the m emergency-mute key; j still works"
+        ),
+    )
+    parser.add_argument(
         "--aec",
         action="store_true",
         help=(
@@ -2033,6 +2101,7 @@ def main() -> None:
         speakers_path=args.speakers,
         re_enrol=args.re_enrol,
         speaker_lock=not args.no_speaker_lock,
+        mute_while_agents_speak=args.mute_while_agents_speak,
         aec=AECConfig(enabled=args.aec, delay_ms=args.aec_delay_ms),
     )
 

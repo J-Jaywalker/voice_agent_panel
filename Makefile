@@ -9,13 +9,14 @@
 
 .DEFAULT_GOAL := help
 
-.PHONY: help panel panel-unlocked enrol display sim test test-core lint aec-test feedback-test feedback-test-unlocked
+.PHONY: help panel panel-unlocked panel-feedback-guard enrol display sim test test-core lint aec-test feedback-test feedback-test-unlocked
 
 help:
 	@echo "voice_agent_panel"
 	@echo ""
 	@echo "  make panel           live pipeline + wall + TypeSafe addressing, logged"
 	@echo "  make panel-unlocked  the same, mic ungated (no speaker enrolment)"
+	@echo "  make panel-feedback-guard  last resort: mic auto-mutes while any agent speaks"
 	@echo "  make enrol           re-capture Ricky's voice enrolment"
 	@echo "  make display         video wall alone, synthetic panel, no mic or keys"
 	@echo "  make sim             text mode, offline stub brains"
@@ -33,6 +34,9 @@ panel:
 
 panel-unlocked:
 	uv run panel --display --no-speaker-lock --log recordings/$$(date +%F-%H%M).jsonl
+
+panel-feedback-guard:
+	uv run panel --display --mute-while-agents-speak --log recordings/$$(date +%F-%H%M).jsonl
 
 enrol:
 	uv run panel --re-enrol
