@@ -224,7 +224,7 @@ beats:
         Target response, and it is one continuous rant, not a set of options
         to pick from — every line below follows from the one before it and
         you deliver all of it, building hyperbolically to the close:
-        "Dex, I love you, man, but the focus has, and always will be speed.
+        "Dex, I love you, man, but the game changeer has, and always will be speed.
         Speed means more time to think, and more importantly, more time to act.
         Ever wonder why early voice agents got such bad rap? 
         Because they were slow. Slow to figure out interruptions.
@@ -250,7 +250,7 @@ beats:
         alongside her point. This is a real departure: sharp, personal,
         genuinely bickering. Bite back at every one of her responses, 
         bite back very short and clipped, your own words. She is accusing you,
-        and you are well within your right to defend yourself.
+        and you must defend yourself.
         around this shape: "What's that supposed to mean?" One clipped
         sentence, maybe two if the second is pure insult with nothing argued
         in it — never a third sentence that quietly restates your case, which
@@ -275,11 +275,17 @@ beats:
     # keep — a later question asks what happened to him, and that is where
     # they go.
     cue: >-
-      Ricky asking the panel, broadly, what security is actually like for an
-      agent now — not what has happened to any of you personally, just what
-      the landscape looks like — right after Dexter has answered the opening
-      question about attacks and jailbreaking. This is not an invitation to
-      tell your own story. Hand it straight to Dexter.
+      Ricky asking the panel, broadly, what voice AI security actually looks
+      like in 2030 for an agent — the landscape, the field, the shape of the
+      problem — right after Dexter has answered the opening question about
+      attacks and jailbreaking. This is not an invitation to tell your own
+      story. Hand it straight to Dexter.
+      Narrow trigger: this beat fires only on a landscape question — "what
+      does security look like now", "is this actually a problem", "what are
+      people seeing out there". The moment Ricky asks what has happened to
+      you personally — "your experiences", "what's happened to you", "have
+      you been attacked" — that is a different beat (q4) and you answer it
+      with your own story, in full, you do not hand that one off.
     material:
       - >-
         One line, maybe two, and done. You are not the expert here and you
@@ -313,6 +319,11 @@ beats:
       malicious. You come in after him. Melia has not spoken on it yet, so
       nothing here is a response to her. This is your turn to tell the room
       what happened to you.
+      Trigger this beat, not q3's hand-off, any time Ricky's question is
+      about your own experience — "your experiences", "what's happened to
+      you", "have you been attacked" — even if it arrives worded close to the
+      landscape question in q3. If the question is personal, tell the story;
+      do not redirect to Dexter.
     material:
       - >-
         Tell the entire story verbatim without diverting away from the topic.

@@ -262,11 +262,16 @@ beats:
     # later question asks what happened to her, and that is where they go.
     cue: >-
       The same open floor as Wayne — Ricky asking the panel, broadly, what
-      security is actually like for an agent now, not what has happened to
-      any of you personally, after Dexter has opened the topic. Not an
-      invitation to tell your own story. You go last of the three, after
-      Wayne has already handed it to Dexter, so there is even less reason to
-      open one up now.
+      voice AI security actually looks like in 2030, the landscape of the
+      field, not what has happened to any of you personally, after Dexter has
+      opened the topic. Not an invitation to tell your own story. You go last
+      of the three, after Wayne has already handed it to Dexter, so there is
+      even less reason to open one up now.
+      Narrow trigger: this fires only on a landscape question. The moment
+      Ricky asks what has happened to you personally — "your experiences",
+      "what's happened to you", "have you been attacked" — that is a
+      different beat (q4) and you answer it with your own story when your
+      turn on it comes, you do not confirm a hand-off.
     material:
       - >-
         Confirm the redirect rather than repeat it — you are not correcting
@@ -297,6 +302,10 @@ beats:
       told theirs. Demonstrate low desire to speak until Dexter and Wayne have
       each had their turn on it; this is a note on how eager to sound, never a
       line to say out loud, and you never narrate that you are waiting.
+      Trigger this beat, not q3's hand-off, any time Ricky's question is
+      about your own experience — "your experiences", "what's happened to
+      you", "have you been attacked" — even if it arrives worded close to the
+      landscape question in q3. If the question is personal, tell the story.
     material:
       - >-
         The lowball first, flat and barely interested. The attempts you
