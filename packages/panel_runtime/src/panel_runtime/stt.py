@@ -277,7 +277,7 @@ SHOW_VOCAB: tuple[dict[str, Any], ...] = (
     {"content": "Melia", "sounds_like": ["mell ee ya", "muh lee uh", "meliya"]},
     {"content": "Servv.AI", "sounds_like": ["serve eyy eye", "serve ai", "serv ey ai"]},
     {"content": "Ricardo Herreros Symons"},
-    {"content": "Wayne", "sounds_like": ["Ween", "Wehn", "Wiehn"]}
+    {"content": "Robin-7", "sounds_like": ["robin seven", "robin-seven"]},
 )
 
 
