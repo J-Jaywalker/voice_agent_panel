@@ -56,11 +56,28 @@ verification, and `stt.py` for what the identifiers then buy per segment.
 the same mode a *failed* enrolment already falls back to. `--mute-while-agents-
 speak` goes one step further for a venue where even that is not good enough:
 it implies `--no-speaker-lock` and gates the mic for as long as any agent is
-on the PA (`AgentSpeechStarted`/`AgentSpeechEnded`), so there is nothing for
-the PA's bleed to reach even unfiltered. The emergency mute key (`m`) is
-disabled while it is on, because a manual mute stacked on an automatic one is
-a second thing to track mid-show for no gain; the emergency interrupt (`j`)
-is untouched, since it reaches the reducer from the keypress, never the mic.
+on the PA (`PanelState.speaking`), so there is nothing for the PA's bleed to
+reach even unfiltered. The emergency mute key (`m`) is disabled while it is
+on, because a manual mute stacked on an automatic one is a second thing to
+track mid-show for no gain; the console's other keys are untouched, since
+they reach the reducer from the keypress, never the mic.
+
+**The console keys are the in-flight control surface.** `m` and `j` are the
+mic and the emergency stop; `1`, `2`, `3` put the floor where the operator
+says it goes, and chord — `1`+`2` names a pair, all three names the room (see
+`_watch_console_keys` and `FloorController._force`). `i` skips the
+introduction round and lets the panel answer, which is the only way past the
+`intro_done` gate that does not involve Ricky being heard saying the cue. They
+exist because the floor closes by default and every way of opening it is a
+guess about language that can be wrong in front of 400 people. None of them is new floor logic:
+each posts one `OperatorCommand` onto the same queue every other event
+arrives on, so the log still replays and `panel_core` still decides what
+happens.
+
+`PanelSTT` reports its sockets going down and coming back (`_stt_status`).
+Nothing acts on that — the sessions already reconnect by themselves — but a
+dropped mic socket and a closed floor are the same silence from the stalls,
+and only one of them is fixed by asking the question again.
 """
 
 from __future__ import annotations
@@ -69,7 +86,9 @@ import argparse
 import asyncio
 import contextlib
 import json
+import os
 import re
+import select
 import sys
 import threading
 import time
@@ -187,6 +206,49 @@ ADDRESS_HOLD_TIMEOUT_S = 0.9
 # consequence of the sample rate; it only puts more work on the loop that the
 # audio path shares.
 DISPLAY_LEVEL_INTERVAL_S = 1 / 30
+
+# How close together two number keys have to be to count as one force command.
+#
+# `1` is "Dexter takes it now"; `1`+`2` is "Dexter and Melia take it between
+# them". Both are one `OperatorCommand` naming a set — see
+# `FloorController._force` — so the only question here is where one command
+# ends and the next begins.
+#
+# 50ms is tight for two fingers, which is why the window is restarted by each
+# *new* key rather than measured from the first (`_watch_console_keys`): a
+# three-key chord has 50ms per key to land, not 50ms in total. Erring long
+# costs a few milliseconds before an agent is granted the floor; erring short
+# fires a command the operator did not ask for, on the PA, in front of the
+# room.
+CHORD_WINDOW_S = 0.05
+
+# How often the key thread wakes to notice the show has ended. It is otherwise
+# blocked in `select`, so this is only about shutdown, never about latency —
+# a keypress wakes it immediately at any point in the interval.
+KEY_POLL_S = 0.2
+
+# How much of the terminal's buffer the key thread drains per wake. Only
+# ever a handful of bytes in practice — it is sized to swallow a whole
+# chord plus an escape sequence or a leaned-on key, so that nothing is
+# left behind the descriptor that `select` would then not report.
+_KEY_READ_BYTES = 64
+
+# How long the same force chord is ignored after it has just been sent.
+#
+# Not debouncing the keyboard — the chord window already does that — but the
+# operator. A force takes 2-4s to become audible when the agent has nothing
+# parked (the generation has to happen), and nothing on the console says
+# "working on it", so the natural thing to do when the stage stays quiet is to
+# press it again. That second press is not free: `_force` stops whoever is
+# speaking, and `_grant` has already consumed the proposal the first one used,
+# so a re-force cuts the agent off mid-sentence and sends him back for a fresh
+# generation. On stage that is a stutter and three more seconds of silence,
+# caused by the key pressed to end the silence.
+#
+# Only an *identical* set is held off. Changing his mind — `1` then `2` — is
+# instant, because that is a different decision and the one being overruled is
+# the panel, not the operator.
+FORCE_REPEAT_COOLDOWN_S = 1.0
 
 # How `AddressVerdict.source` reads on the console. Whether a verdict was
 # already decided before Ricky stopped talking is the open question about this
@@ -329,7 +391,20 @@ class PanelRuntime:
         # enrolment has identifiers for Ricky — see `_enrol` and
         # `PanelSTT.identify`. The diarization default is not moved, because
         # `self.agent_stt` below shares `STTConfig` and must stay undiarized.
-        self.stt = PanelSTT({"ricky": "human"}, config=STTConfig.from_cast(cast))
+        self.stt = PanelSTT(
+            {"ricky": "human"},
+            config=STTConfig.from_cast(cast),
+            on_status=self._stt_status,
+        )
+        # Which STT channels are currently carrying transcripts, and when each
+        # went down. Written only from `_stt_status`, which runs on the event
+        # loop like everything else that prints.
+        self._stt_up: dict[str, bool] = {}
+        self._stt_down_since: dict[str, float] = {}
+        # The last force chord sent, and when — see `FORCE_REPEAT_COOLDOWN_S`.
+        # Written only on the key thread, read only there.
+        self._last_force: tuple[str, ...] = ()
+        self._last_force_t = 0.0
 
         # Speaker enrolment: where Ricky's voiceprint is kept between runs,
         # and whether to capture a fresh one regardless.
@@ -376,6 +451,11 @@ class PanelRuntime:
             PanelSTT(
                 {agent_id: agent_id for agent_id in cast.ids()},
                 config=STTConfig.from_cast(cast),
+                # Reported too, but quietly: one of these dropping costs the
+                # wall's transcript band for that voice and nothing else, so
+                # it is a note rather than the alarm the mic's own socket is.
+                # `_stt_status` is what tells them apart.
+                on_status=self._stt_status,
             )
             if display is not None
             else None
@@ -539,6 +619,62 @@ class PanelRuntime:
         """Every console line in the runtime goes through here, stamped."""
         console.print(f"{self._stamp()} {markup}")
 
+    # ------------------------------------------------------------ stt health
+
+    def _stt_status(self, channel: str, up: bool, detail: str) -> None:
+        """Say out loud when a transcription socket starts or stops working.
+
+        The sockets recover on their own — `_AgentSTTSession.run` reconnects
+        for as long as the show is running, capped at `reconnect_max_s` — so
+        this changes no behaviour at all. What it changes is whether anyone
+        can tell. A dropped mic socket looks exactly like a closed floor from
+        the stalls: Ricky asks a question, nothing happens, and asking again
+        does not help, because `EndOfTurn` is what opens the floor and it is
+        arriving nowhere. That is the single most likely way this show goes
+        quiet and it was, until now, invisible: nothing configures logging, so
+        the failure is one unstyled line on stderr and the recovery is a
+        `log.info` that never prints.
+
+        Printed on *change* only. A socket flapping through a backoff would
+        otherwise paint a line per attempt, which is noise at exactly the
+        moment the console needs to be readable.
+
+        Ricky's mic is loud — red going down, green coming back with the
+        length of the outage, because that number is what says whether the
+        gap the audience just sat through was this. The agents' display-only
+        sockets are dim: losing one costs that voice's lane on the video wall
+        and nothing the panel knows (see `_run_agent_stt`).
+        """
+        if self._stt_up.get(channel) == up:
+            return
+        first_report = channel not in self._stt_up
+        self._stt_up[channel] = up
+        mic = self.agent_stt is None or channel not in self.agent_stt.channels
+        name = "mic" if mic else f"{self.cast[channel].name}'s audio"
+
+        if not up:
+            self._stt_down_since[channel] = time.monotonic()
+            why = f" [dim]({detail})[/]" if detail else ""
+            if mic:
+                self._print(f"[bold red]STT DOWN — {name}[/]{why} [dim]reconnecting…[/]")
+            else:
+                self._print(f"  [yellow]stt down:[/] [dim]{name}{why} — reconnecting…[/]")
+            return
+
+        since = self._stt_down_since.pop(channel, None)
+        outage = "" if since is None else f" [dim]after {time.monotonic() - since:.1f}s[/]"
+        extra = f" [dim]({detail})[/]" if detail else ""
+        if first_report:
+            # Positive confirmation at the top of the show. Worth a line on its
+            # own: "no news" and "the socket never came up" read identically,
+            # and the first of the two is something the operator should be
+            # able to see before the room fills.
+            self._print(f"[green]STT up — {name}[/]{extra}")
+        elif mic:
+            self._print(f"[bold green]STT BACK — {name}[/]{outage}{extra}")
+        else:
+            self._print(f"  [dim]stt back: {name}{outage}[/]")
+
     # ------------------------------------------------------------ audio thread
 
     def _callback(self, indata, outdata, frames, timeinfo, status) -> None:
@@ -614,24 +750,49 @@ class PanelRuntime:
         outdata[:, 0] = rendered
 
     def _watch_console_keys(self) -> None:
-        """Console-only `m`/`j` key watcher.
+        """Console key watcher: `m`, `j`, and the force chord `1`-`3`.
 
-        Runs on its own thread, blocked in `read(1)` between presses — cheap,
-        and keeps the audio callback above untouched by anything stdin-shaped.
+        Runs on its own thread so the audio callback stays untouched by
+        anything stdin-shaped. No key's *press* reaches the wall, the log or
+        any event by itself; only the commands they produce do, exactly as a
+        spoken interrupt's would.
+
         `m` toggles `self._muted`, which `_callback` is the only other reader
         of. Disabled outright while `self._mute_while_agents_speak` is on —
         that mode already gates the mic automatically off `_agent_on_floor`,
         and a manual mute stacked on top of it is a second, independent thing
-        for an operator to track mid-show for no gain. `j` is the emergency
-        interrupt: it posts an `OperatorCommand`
+        for an operator to track mid-show for no gain.
+
+        `j` is the emergency interrupt: it posts an `OperatorCommand`
         (`HAND_TO_MODERATOR`) onto the same event queue a real barge-in would
         land on, via `call_soon_threadsafe` since this thread is not the event
         loop's — `panel_core` already stops whoever is speaking and hands the
         floor to Ricky for that action, so there is no new floor logic here,
-        only the keypress. Neither key's *press* reaches the wall, the log or
-        any event by itself; only `j`'s resulting `StopSpeech`/state change
-        does, exactly as a spoken interrupt's would. Silently does nothing if
-        stdin is not a real terminal (e.g. piped input, a test harness).
+        only the keypress.
+
+        `1`, `2`, `3` name panellists in cast order and **chord**: keys
+        pressed within `CHORD_WINDOW_S` of each other are one command. `1`
+        forces Dexter alone; `1`+`2` puts the floor on Dexter and Melia as a
+        pair; `1`+`2`+`3` opens it to the room. Every one of those is a single
+        `OperatorCommand` naming a set, so what a set *means* is decided in
+        `panel_core` (`FloorController._force`) rather than here, and the
+        rehearsal log replays it.
+
+        The window is restarted by each **new** agent in the chord rather than
+        measured from the first key, and that is the difference between "all
+        three" and "those two, and then that one". A third key landing 60ms
+        after the first would otherwise open a second chord and put Wayne on
+        the PA immediately after granting the floor to Dexter and Melia.
+        Extending can only make a command fire later than the operator meant;
+        not extending can make it fire as something he never asked for, out
+        loud, in front of the room. Only an id not already in the chord
+        restarts it, so a key held down on autorepeat cannot hold the window
+        open indefinitely — the chord is bounded at one window per panellist.
+
+        `read(1)` is wrapped in a `select` with that deadline for the same
+        reason: a chord cannot be recognised by a thread blocked forever
+        waiting for a key that is not coming. Silently does nothing if stdin
+        is not a real terminal (e.g. piped input, a test harness).
         """
         try:
             import termios
@@ -643,31 +804,125 @@ class PanelRuntime:
             old = termios.tcgetattr(fd)
         except (OSError, ValueError, termios.error):
             return
+
+        agent_ids = self.cast.ids()
+        chord: set[str] = set()
+        deadline: float | None = None
+
         try:
             tty.setcbreak(fd)
             while self._running:
-                ch = sys.stdin.read(1).lower()
-                if ch == "m":
-                    if self._mute_while_agents_speak:
-                        self._print(
-                            "[dim]m is disabled: --mute-while-agents-speak already "
-                            "gates the mic[/]"
-                        )
-                    else:
-                        self._muted = not self._muted
-                        if self._muted:
-                            self._print("[bold red]MIC MUTED[/] (press m to unmute)")
+                if deadline is not None and time.monotonic() >= deadline:
+                    self._force_agents(chord)
+                    chord, deadline = set(), None
+                    continue
+
+                timeout = KEY_POLL_S if deadline is None else deadline - time.monotonic()
+                try:
+                    ready, _, _ = select.select([fd], [], [], max(0.0, timeout))
+                except (OSError, ValueError):
+                    return
+                if not ready:
+                    continue
+
+                # `os.read` on the raw descriptor, never `sys.stdin.read(1)`,
+                # and the whole burst rather than one character. Buffered
+                # reads and `select` do not mix: two keys struck 20ms apart
+                # arrive in one kernel read, `read(1)` returns the first and
+                # holds the second in Python's own buffer where `select` on
+                # the descriptor cannot see it — so the chord would close on
+                # one key and its partner would sit in the buffer until some
+                # unrelated keypress flushed it. Draining what is there and
+                # walking it character by character makes a burst and a
+                # dribble the same input, which is what a chord has to be.
+                try:
+                    data = os.read(fd, _KEY_READ_BYTES)
+                except OSError:
+                    return
+                if not data:
+                    return  # stdin closed — nothing further is coming
+
+                for ch in data.decode("utf-8", "replace").lower():
+                    if ch.isdigit() and 1 <= int(ch) <= len(agent_ids):
+                        agent_id = agent_ids[int(ch) - 1]
+                        if agent_id not in chord:
+                            chord.add(agent_id)
+                            deadline = time.monotonic() + CHORD_WINDOW_S
+                        continue
+
+                    if chord:
+                        # A chord is open and something that is not part of it
+                        # arrived. Fire it before acting on the new key, so the
+                        # two reach the reducer in the order they were typed.
+                        self._force_agents(chord)
+                        chord, deadline = set(), None
+
+                    if ch == "m":
+                        if self._mute_while_agents_speak:
+                            self._print(
+                                "[dim]m is disabled: --mute-while-agents-speak already "
+                                "gates the mic[/]"
+                            )
                         else:
-                            self._print("[bold green]mic live[/]")
-                elif ch == "j":
-                    self._print("[bold red]EMERGENCY INTERRUPT[/] (j) — floor to Ricky")
-                    if self._loop is not None:
-                        self._loop.call_soon_threadsafe(
-                            self.emit,
-                            OperatorCommand(t=time.monotonic(), action=OperatorAction.HAND_TO_MODERATOR),
+                            self._muted = not self._muted
+                            if self._muted:
+                                self._print("[bold red]MIC MUTED[/] (press m to unmute)")
+                            else:
+                                self._print("[bold green]mic live[/]")
+                    elif ch == "j":
+                        self._print("[bold red]EMERGENCY INTERRUPT[/] (j) — floor to Ricky")
+                        self._operator(OperatorAction.HAND_TO_MODERATOR)
+                    elif ch == "i":
+                        # One-way, and the console says so, because nothing
+                        # un-latches `intro_done` — see
+                        # `FloorController._skip_introductions`. Worth a key
+                        # anyway: the alternative to pressing it by mistake is
+                        # a panel that cannot answer anything for the rest of
+                        # the night, and that one has no key at all.
+                        self._print(
+                            "[bold yellow]▶ SKIP INTROS[/] (i) — the panel may now "
+                            "answer; the scripted opening will not run"
                         )
+                        self._operator(OperatorAction.SKIP_INTRODUCTIONS)
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+    def _force_agents(self, agents: set[str]) -> None:
+        """Send one resolved chord to the reducer as a single command.
+
+        Ordered into cast order on the way out, so `2`+`1` and `1`+`2` are the
+        same command and the console line reads left to right like the panel
+        is seated. `panel_core` normalises further — a chord naming everybody
+        is an open floor, not a group of three (`_named_scope`).
+        """
+        if not agents:
+            return
+        ordered = tuple(a for a in self.cast.ids() if a in agents)
+        now = time.monotonic()
+        if ordered == self._last_force and now - self._last_force_t < FORCE_REPEAT_COOLDOWN_S:
+            # See `FORCE_REPEAT_COOLDOWN_S`. Said out loud rather than dropped
+            # silently: an operator who thinks the key did nothing presses it
+            # harder, and the line is what tells him it landed the first time.
+            self._print(f"  [dim]… {self._names(ordered)} already forced — ignoring the repeat[/]")
+            return
+        self._last_force, self._last_force_t = ordered, now
+        self._print(f"[bold yellow]▶ FORCE[/] [bold]{self._names(ordered)}[/] [dim](operator)[/]")
+        self._operator(OperatorAction.FORCE_AGENT, agents=ordered)
+
+    def _operator(self, action: OperatorAction, *, agents: tuple[str, ...] = ()) -> None:
+        """Post one operator command from the key thread onto the event loop.
+
+        `call_soon_threadsafe` because this thread is not the loop's. Every
+        console key goes through here so there is one place that knows that,
+        and one place where a keypress becomes an ordinary event like any
+        other — which is what keeps the log replayable.
+        """
+        if self._loop is None:
+            return
+        self._loop.call_soon_threadsafe(
+            self.emit,
+            OperatorCommand(t=time.monotonic(), action=action, agents=agents),
+        )
 
     # ------------------------------------------------------------- event path
 
@@ -678,13 +933,6 @@ class PanelRuntime:
     async def _drain_events(self) -> None:
         while self._running:
             event = await self.events.get()
-            if self._mute_while_agents_speak:
-                # Read by `_callback` on the audio thread — a plain bool
-                # assignment, same cross-thread contract as `_muted`.
-                if isinstance(event, AgentSpeechStarted):
-                    self._agent_on_floor = True
-                elif isinstance(event, AgentSpeechEnded):
-                    self._agent_on_floor = False
             self._record(event)
             if self._display is not None:
                 # Before the reducer, so the wall sees cause then effect in
@@ -693,6 +941,22 @@ class PanelRuntime:
                 # only works with `--log` is a trap.
                 self._display.on_event(event)
             self.state, commands = self.fc.reduce(self.state, event)
+            if self._mute_while_agents_speak:
+                # Read by `_callback` on the audio thread — a plain bool
+                # assignment, same cross-thread contract as `_muted`.
+                #
+                # Derived from the reducer's answer to "is anyone on the PA",
+                # not from the event types that normally move it. Those two
+                # agree right up until the floor changes hands without passing
+                # through idle: an operator force stops one agent and grants
+                # another inside a single `reduce()`, so the cut-off agent's
+                # `AgentSpeechEnded` arrives *after* its replacement's
+                # `AgentSpeechStarted`, and a handler keyed on event type alone
+                # would open the mic under a live PA — the one thing this mode
+                # exists to prevent. `state.speaking` cannot get that wrong:
+                # `_agent_ended` ignores an end from anyone who is not the
+                # current speaker.
+                self._agent_on_floor = self.state.speaking is not None
             for command in commands:
                 await self._execute(command)
             if isinstance(event, OperatorCommand) and event.action in (
@@ -1990,6 +2254,12 @@ class PanelRuntime:
                     "Press j for an emergency interrupt (stops the floor, hands it to "
                     "Ricky).[/]\n"
                 )
+                # Numbered in cast order, which is also the order the wall
+                # seats them, so the key and the lane the audience is looking
+                # at are the same number.
+                force_line = "[dim]Force the floor: " + "  ".join(
+                    f"{i} {p.name}" for i, p in enumerate(self.cast.personas.values(), start=1)
+                ) + " [/][dim]— press together for a pair (1+2), all for the room.[/]\n"
                 console.print(
                     f"[bold]Panel live.[/] "
                     f"{', '.join(p.name for p in self.cast.personas.values())}"
@@ -1997,7 +2267,7 @@ class PanelRuntime:
                     "[dim]Ask a question to open the floor. A statement invites "
                     "nobody. Ctrl-C to stop.[/]\n"
                     "[dim]Left columns: seconds since start, +gap since the line "
-                    "above.[/]\n" + mute_line
+                    "above.[/]\n" + mute_line + force_line
                 )
 
                 await asyncio.gather(*tasks)

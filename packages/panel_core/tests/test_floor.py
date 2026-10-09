@@ -1008,7 +1008,7 @@ def test_operator_can_open_a_floor_the_patterns_missed(fc, state):
     assert state.invitation is None
 
     state, _ = fc.reduce(
-        state, OperatorCommand(t=0.9, action=OperatorAction.OPEN_FLOOR, agent=None, turns=1)
+        state, OperatorCommand(t=0.9, action=OperatorAction.OPEN_FLOOR, turns=1)
     )
     _, cmds = fc.reduce(state, TurnYielded(t=1.0))
     assert [c.agent for c in cmds if isinstance(c, StartSpeech)] == ["dex"]
@@ -1250,7 +1250,7 @@ def test_emergency_interrupt_clears_partials_so_the_next_prompt_cannot_see_them(
 
 def test_muted_agent_never_wins_the_floor(fc, state):
     state, _ = fc.reduce(
-        state, OperatorCommand(t=0.0, action=OperatorAction.MUTE_AGENT, agent="wayne")
+        state, OperatorCommand(t=0.0, action=OperatorAction.MUTE_AGENT, agents=("wayne",))
     )
     state, _ = run(
         fc,
@@ -1436,7 +1436,7 @@ def test_every_proposal_request_stamps_its_input_time_and_takes_a_label(fc, stat
     # A granted turn ending, with the open invitation still worth another one.
     state = record(state, AgentSpeechEnded(t=18.0, agent="dex", completed=True, utterance="Trust."))
     # ...and the operator backstop, forcing an agent with nothing queued.
-    state = record(state, OperatorCommand(t=20.0, action=OperatorAction.FORCE_AGENT, agent="melia"))
+    state = record(state, OperatorCommand(t=20.0, action=OperatorAction.FORCE_AGENT, agents=("melia",)))
 
     assert [reason for reason, _, _ in seen] == [
         "speculation",
@@ -1871,6 +1871,90 @@ def test_address_works_again_once_introductions_are_done(fc, state):
     assert state.invitation.agents == ("wayne",)
 
 
+# ------------------------------------------ the operator skips the opening
+
+
+def _skip(t: float = 0.0) -> OperatorCommand:
+    return OperatorCommand(t=t, action=OperatorAction.SKIP_INTRODUCTIONS)
+
+
+def test_skip_lifts_the_gate_without_running_the_round(fc, state):
+    """The whole reason the key exists: the cue was never heard, and the
+    panel would otherwise be unable to answer anything for the rest of the
+    night. Nobody speaks a fixed line — the round is skipped, not run fast."""
+    state = replace(state, intro_done=False)
+    state, cmds = fc.reduce(state, _skip(0.0))
+    assert state.intro_done is True
+    assert not [c for c in cmds if isinstance(c, StartSpeech)]
+
+    state, _ = fc.reduce(state, invite(1.0, "So Wayne, what about human oversight?"))
+    assert state.invitation is not None
+    assert state.invitation.agents == ("wayne",)
+
+
+def test_skip_cues_the_moderator_the_same_way_the_round_does(fc, state):
+    """Ricky needs the same thing told to him either way — the panel is live,
+    ask the first question — so it is the same cue."""
+    state = replace(state, intro_done=False)
+    _, cmds = fc.reduce(state, _skip(0.0))
+    assert CueModerator(reason=CueReason.INTRODUCTIONS_COMPLETE) in cmds
+
+
+def test_skip_mid_round_stops_the_line_on_the_pa(fc, state):
+    """A skip that lets the current introduction play out is not a skip."""
+    state = replace(state, intro_done=False)
+    state, cmds = fc.reduce(state, _introduce(0.0))
+    speaking = next(c for c in cmds if isinstance(c, StartSpeech)).agent
+    state, _ = fc.reduce(state, AgentSpeechStarted(t=1.0, agent=speaking))
+
+    state, cmds = fc.reduce(state, _skip(2.0))
+    assert StopSpeech(agent=speaking, reason=StopReason.OPERATOR) in cmds
+    assert state.speaking is None
+    assert state.intro_queue is None
+    assert state.intro_done is True
+
+
+def test_the_rest_of_a_skipped_round_never_arrives(fc, state):
+    """The stopped agent's `AgentSpeechEnded` is the event that would
+    normally hand the round on to the next fixed line (`_agent_ended` ->
+    `_advance_introductions`). With the queue gone there is nothing to
+    advance, so the two agents who had not spoken yet stay silent."""
+    state = replace(state, intro_done=False)
+    state, cmds = fc.reduce(state, _introduce(0.0))
+    speaking = next(c for c in cmds if isinstance(c, StartSpeech)).agent
+    state, _ = fc.reduce(state, AgentSpeechStarted(t=1.0, agent=speaking))
+    state, _ = fc.reduce(state, _skip(2.0))
+
+    state, cmds = fc.reduce(
+        state, AgentSpeechEnded(t=2.1, agent=speaking, completed=False, utterance="Hello, I")
+    )
+    assert not [c for c in cmds if isinstance(c, StartSpeech)]
+    assert state.closing_queue is None
+
+
+def test_a_skipped_round_cannot_be_asked_for_again(fc, state):
+    """One-way, exactly like the round latching `intro_done` itself. There is
+    no event that un-latches it, and the operator who pressed this has
+    already decided the show is going on without the scripted opening."""
+    state = replace(state, intro_done=False)
+    state, _ = fc.reduce(state, _skip(0.0))
+    state, cmds = fc.reduce(state, _introduce(1.0))
+    assert state.intro_queue is None
+    assert not [c for c in cmds if isinstance(c, StartSpeech)]
+
+
+def test_skipping_after_the_round_leaves_a_standing_invitation_alone(fc, state):
+    """A stray second press mid-show must not revoke the question Ricky has
+    just asked. Once the gate is open this command has nothing left to do."""
+    state, _ = _run_introduction_round(fc, state)
+    state, _ = fc.reduce(state, invite(10.0, "So Wayne, what about human oversight?"))
+    standing = state.invitation
+
+    state, cmds = fc.reduce(state, _skip(10.5))
+    assert state.invitation is standing
+    assert cmds == []
+
+
 def _intro_order(fc: FloorController) -> list[str]:
     """`Persona.intro_position` order — Dexter, Wayne, Melia — independent of
     `fc.cast.ids()` (alphabetical, shared with the video wall's lane order)."""
@@ -2029,7 +2113,7 @@ def test_muted_agent_is_skipped_not_granted_during_introductions(fc, state):
     floor. Fixed text has no proposal for a muted agent's turn to fail to
     produce, so the introduction round has to enforce the mute itself."""
     state, _ = fc.reduce(
-        state, OperatorCommand(t=0.0, action=OperatorAction.MUTE_AGENT, agent="dex")
+        state, OperatorCommand(t=0.0, action=OperatorAction.MUTE_AGENT, agents=("dex",))
     )
     state, order = _run_introduction_round(fc, state)
     spoken = [agent for agent, _ in order]
@@ -2920,7 +3004,7 @@ def test_an_unusable_invite_is_dropped_at_the_grant(agent_fc, state, target):
 
 def test_an_invite_to_a_muted_agent_is_dropped_at_the_grant(agent_fc, state):
     state, _ = agent_fc.reduce(
-        state, OperatorCommand(t=-0.5, action=OperatorAction.MUTE_AGENT, agent="wayne")
+        state, OperatorCommand(t=-0.5, action=OperatorAction.MUTE_AGENT, agents=("wayne",))
     )
     state, _ = _turn_with_invite(agent_fc, state)
     assert state.pending_invite is None
@@ -2944,7 +3028,7 @@ def test_an_agent_muted_mid_turn_does_not_get_the_handoff(agent_fc, state):
 def test_the_operator_muting_the_target_clears_the_pending_invite(agent_fc, state):
     state, _ = _turn_with_invite(agent_fc, state)
     state, _ = agent_fc.reduce(
-        state, OperatorCommand(t=5.0, action=OperatorAction.MUTE_AGENT, agent="wayne")
+        state, OperatorCommand(t=5.0, action=OperatorAction.MUTE_AGENT, agents=("wayne",))
     )
     assert state.pending_invite is None
 
@@ -3146,3 +3230,163 @@ def test_agent_invitations_can_be_disabled(cast: PanelCast, state):
     assert state.pending_invite is None
     assert state.invitation is not None
     assert state.invitation.source is InvitationSource.OPEN
+
+
+# -------------------------------------------------- the operator force chord
+
+
+def force(*agents: str, t: float = 20.0) -> OperatorCommand:
+    """The console putting the floor where it says it goes.
+
+    One name is a key; several is a chord — `1`+`2` on the live console, which
+    arrives here as a single command naming both (`PanelRuntime._force_agents`).
+    """
+    return OperatorCommand(t=t, action=OperatorAction.FORCE_AGENT, agents=agents)
+
+
+def parked(fc, state, agent: str, *, t: float = 19.0) -> PanelState:
+    """Give `agent` a proposal to be granted off, without opening the floor."""
+    state, _ = fc.reduce(
+        state,
+        AgentProposal(t=t, input_t=t, agent=agent, utterance="", signals=strong()),
+    )
+    return state
+
+
+def test_forcing_one_agent_grants_the_floor(fc, state):
+    state = parked(fc, state, "melia")
+    state, cmds = fc.reduce(state, force("melia"))
+    assert [c.agent for c in cmds if isinstance(c, StartSpeech)] == ["melia"]
+
+
+def test_forcing_an_agent_stops_whoever_is_already_speaking(fc, state):
+    """Two voices on the PA at once is the one thing an override may not cause.
+
+    The original force cleared `speaking` in the reducer and emitted no
+    `StopSpeech`, so the runtime never cancelled the outgoing agent's TTS
+    stream or its place in the mixer — it kept playing underneath its
+    replacement.
+    """
+    state = speaking_agent(fc, state, agent="wayne")
+    state = parked(fc, state, "melia")
+    state, cmds = fc.reduce(state, force("melia"))
+
+    stops = [c for c in cmds if isinstance(c, StopSpeech)]
+    assert [c.agent for c in stops] == ["wayne"]
+    assert stops[0].reason is StopReason.OPERATOR
+    assert [c.agent for c in cmds if isinstance(c, StartSpeech)] == ["melia"]
+
+
+def test_forcing_an_agent_with_nothing_parked_leaves_something_to_land_in(fc, state):
+    """The backstop may not quietly do nothing.
+
+    Forcing an agent that has no proposal asks for one — but a request with no
+    invitation behind it had nowhere to land: nothing re-opens arbitration, so
+    the line arrived and sat there. The invitation is what the runtime's
+    `_maybe_rearbitrate` needs to see to grant it.
+    """
+    state, cmds = fc.reduce(state, force("melia"))
+
+    assert [c for c in cmds if isinstance(c, RequestProposals)], "no generation asked for"
+    assert state.invitation is not None
+    assert state.invitation.source is InvitationSource.OPERATOR
+    assert state.invitation.is_live()
+    assert state.invitation.agents == ("melia",)
+
+    # ...and the line, when it lands, is grantable against that invitation.
+    state, _ = fc.reduce(
+        state,
+        AgentProposal(t=20.5, input_t=20.0, agent="melia", utterance="", signals=strong()),
+    )
+    state, cmds = fc.reduce(state, TurnYielded(t=20.6))
+    assert [c.agent for c in cmds if isinstance(c, StartSpeech)] == ["melia"]
+
+
+def test_a_forced_agent_does_not_run_on_into_a_second_turn(fc, state):
+    """A one-name force is one answer, the same as a direct question."""
+    state = parked(fc, state, "melia")
+    state, _ = fc.reduce(state, force("melia"))
+    state, _ = fc.reduce(state, AgentSpeechStarted(t=20.1, agent="melia"))
+    state, _ = fc.reduce(
+        state, AgentSpeechEnded(t=30.0, agent="melia", completed=True, utterance="Said.")
+    )
+    assert state.invitation is None or not state.invitation.is_live()
+
+
+def test_a_chord_invites_exactly_those_named(fc, state):
+    """`1`+`2` is the group invitation Ricky would have opened by name."""
+    state = parked(fc, state, "dex")
+    state = parked(fc, state, "melia")
+    state = parked(fc, state, "wayne")
+    state, cmds = fc.reduce(state, force("dex", "melia"))
+
+    assert state.invitation.agents == ("dex", "melia")
+    assert state.invitation.is_group
+    assert state.invitation.source is InvitationSource.OPERATOR
+    started = [c.agent for c in cmds if isinstance(c, StartSpeech)]
+    assert len(started) == 1, "exactly one agent goes first; only one PA"
+    assert started[0] in ("dex", "melia")
+    # The third is barred, not merely out-scored — Ricky drew a boundary.
+    assert not state.invitation.admits("wayne")
+
+
+def test_a_chord_keeps_the_floor_inside_the_group(fc, state):
+    """The point of naming two is that they take it between them."""
+    state = parked(fc, state, "dex")
+    state = parked(fc, state, "melia")
+    state, _ = fc.reduce(state, force("dex", "melia"))
+    assert state.invitation.admits("dex") and state.invitation.admits("melia")
+
+
+def test_chording_the_whole_panel_is_an_open_floor(fc, state):
+    """Naming everybody leaves nobody to bar, so it is not a group of three.
+
+    `_named_scope` normalises it, exactly as it does a spoken invitation that
+    names the whole cast — which is what preserves the once-each guarantee
+    `Invitation.admits` gives an open floor.
+    """
+    state = parked(fc, state, "dex")
+    state, _ = fc.reduce(state, force(*state.agents))
+    assert state.invitation.agents == ()
+    assert not state.invitation.is_group
+    assert state.invitation.admits("wayne"), "an open floor admits everyone, once"
+
+
+def test_a_chord_order_does_not_matter(fc, state):
+    """`2`+`1` and `1`+`2` are the same command."""
+    state = parked(fc, state, "dex")
+    state = parked(fc, state, "melia")
+    one, _ = fc.reduce(state, force("melia", "dex"))
+    two, _ = fc.reduce(state, force("dex", "melia"))
+    assert one.invitation.agents == two.invitation.agents == ("dex", "melia")
+
+
+def test_forcing_nobody_on_this_panel_is_a_no_op(fc, state):
+    before = state
+    state, cmds = fc.reduce(state, force("nobody"))
+    assert cmds == []
+    assert state == before
+
+
+def test_a_force_overrules_the_consecutive_turn_cap(fc, state):
+    """The key that exists to overrule the floor may not be refused by it."""
+    state = replace(state, consecutive_agent_turns=fc.config.max_consecutive_agent_turns)
+    state = parked(fc, state, "dex")
+    state = parked(fc, state, "melia")
+    state, cmds = fc.reduce(state, force("dex", "melia"))
+    assert [c.agent for c in cmds if isinstance(c, StartSpeech)], "the cap refused the operator"
+    assert not [c for c in cmds if isinstance(c, CueModerator)]
+
+
+def test_a_force_abandons_an_introduction_round(fc, state):
+    """Abandoned, not spent — the round is safe to retry later."""
+    state = replace(state, intro_done=False)
+    state, _ = fc.reduce(
+        state, TranscriptUpdated(t=1.0, speaker=HUMAN, text="Let's do some introductions.",
+                                 is_final=True)
+    )
+    assert state.intro_queue is not None
+    state = parked(fc, state, "melia", t=2.0)
+    state, _ = fc.reduce(state, force("melia", t=2.5))
+    assert state.intro_queue is None
+    assert not state.intro_done, "the round was abandoned, so it has not happened"

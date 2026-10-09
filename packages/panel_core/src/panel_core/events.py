@@ -329,12 +329,15 @@ class Tick:
 
 
 class OperatorAction(str, Enum):
-    FORCE_AGENT = "force_agent"  # give this agent the floor now
+    FORCE_AGENT = "force_agent"  # put the floor on these agents now
     MUTE_AGENT = "mute_agent"
     UNMUTE_AGENT = "unmute_agent"
     KILL_ALL = "kill_all"  # emergency: silence everything
     RELEASE_KILL = "release_kill"
     ADVANCE_BEAT = "advance_beat"
+    # Declare the opening sequence over without running it — the one way past
+    # the `intro_done` gate that does not involve Ricky saying the cue.
+    SKIP_INTRODUCTIONS = "skip_introductions"
     HAND_TO_MODERATOR = "hand_to_moderator"
     OPEN_FLOOR = "open_floor"  # invite an agent, or the panel if agent is None
     CLOSE_FLOOR = "close_floor"  # revoke a live invitation
@@ -344,8 +347,28 @@ class OperatorAction(str, Enum):
 class OperatorCommand:
     t: float
     action: OperatorAction
-    agent: str | None = None
+    # Who the action names, in any order. Empty means "nobody in particular",
+    # which each action reads its own way: the whole panel for OPEN_FLOOR, and
+    # a no-op for the ones that need a target.
+    #
+    # A tuple rather than one id because FORCE_AGENT is chorded — the console
+    # sends `1+2` as a single command naming both. `Invitation.agents` has
+    # carried a set since an invitation could name several panellists, so one
+    # id here would make this the only place in the floor that cannot say what
+    # an invitation can. Same shape and the same `agent` convenience as
+    # `Invitation`, for the same reason.
+    agents: tuple[str, ...] = ()
     turns: int = 1  # OPEN_FLOOR only: how many turns the invitation is good for
+
+    @property
+    def agent(self) -> str | None:
+        """The sole target, or None — including when several were named.
+
+        Mirrors `Invitation.agent`: None covers both "nobody" and "more than
+        one", so an action that can only act on a single agent reads this and
+        no-ops on either, and one that understands a set reads `agents`.
+        """
+        return self.agents[0] if len(self.agents) == 1 else None
 
 
 Event = (

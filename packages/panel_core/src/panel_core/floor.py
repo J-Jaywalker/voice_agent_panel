@@ -1629,13 +1629,8 @@ class FloorController:
                 state = state.with_agent(event.agent, muted=False, state=AgentState.IDLE)
                 return state, [self._paint(state)]
 
-            case OperatorAction.FORCE_AGENT if event.agent:
-                if state.speaking:
-                    state = state.with_agent(
-                        state.speaking, state=AgentState.IDLE, speaking_since=None
-                    )
-                    state = replace(state, speaking=None)
-                return self._grant(state, event.agent, now=event.t, forced=True)
+            case OperatorAction.FORCE_AGENT if event.agents:
+                return self._force(state, event)
 
             case OperatorAction.HAND_TO_MODERATOR:
                 cmds: list[Command] = []
@@ -1676,9 +1671,10 @@ class FloorController:
                 state = replace(
                     state,
                     invitation=Invitation(
-                        # `OperatorCommand.agent` is one id or None — the
-                        # console opens the floor for one panellist or for the
-                        # room. There is no multi-select to carry across.
+                        # `agent` rather than `agents`: this action opens the
+                        # floor for one panellist or for the room, and reads a
+                        # chord naming several as the room. FORCE_AGENT is
+                        # where a named group is expressible — see `_force`.
                         agents=(event.agent,) if event.agent else (),
                         turns_remaining=max(1, event.turns),
                         source=InvitationSource.OPERATOR,
@@ -1706,8 +1702,171 @@ class FloorController:
                 state = replace(state, beat_index=state.beat_index + 1, proposals={})
                 return state, [self._paint(state)]
 
+            case OperatorAction.SKIP_INTRODUCTIONS:
+                return self._skip_introductions(state, t=event.t)
+
             case _:
                 return state, []
+
+    def _skip_introductions(
+        self, state: PanelState, *, t: float
+    ) -> tuple[PanelState, list[Command]]:
+        """Declare the opening sequence over, wherever the show has got to.
+
+        The console's answer to the one gate nothing downstream can talk its
+        way round. `_install_invitation` refuses every invitation until
+        `intro_done` latches, and only the round itself latches it — so if the
+        cue is never heard, the panel is mute for the rest of the night and no
+        rephrasing by Ricky will change it. The ways that happens are all
+        upstream of arbitration (a dropped mic socket over the one sentence
+        that mattered, a classifier reading the cue as NONE, a round abandoned
+        by an interrupt), which is why the recovery is a key and not a better
+        rule.
+
+        It skips the fixed lines rather than deferring them: `intro_done` is
+        latched by hand, exactly as one-way as when `_advance_closing` does it,
+        so the scripted opening is gone for the life of the process. That is
+        the point — an operator reaching for this has already decided the show
+        is going on without it.
+
+        A fixed line already on the PA is stopped, since "skip" that lets the
+        current introduction finish is not a skip. Nothing is granted in its
+        place: this lifts the gate, it does not choose who speaks. That is
+        still Ricky's question, or the force chord.
+        """
+        if state.intro_done and state.intro_queue is None and state.closing_queue is None:
+            # Already through, by this key or by the round. A no-op rather
+            # than a re-run of the teardown below, because by now
+            # `state.invitation` is an ordinary standing one and a stray
+            # second press must not revoke the question Ricky just asked.
+            return state, []
+
+        commands: list[Command] = []
+        if state.speaking is not None:
+            commands.append(StopSpeech(agent=state.speaking, reason=StopReason.OPERATOR))
+            state = state.with_agent(
+                state.speaking, state=AgentState.IDLE, speaking_since=None
+            )
+        state = replace(
+            state,
+            intro_done=True,
+            intro_queue=None,
+            closing_queue=None,
+            speaking=None,
+            floor_holder=HUMAN,
+            consecutive_agent_turns=0,
+            # The round's own invitation goes with the round. Nothing else can
+            # be standing here: every other source installs through
+            # `_install_invitation`, which has been refusing them all along.
+            invitation=None,
+            pending_invite=None,
+            proposals={},
+            address_conflict=(),
+            # Half of a fixed line that will never be finished is not part of
+            # the record — see `PanelState.agent_partial`.
+            agent_partial="",
+        )
+        return state, commands + [
+            # The same cue the round itself ends on. What Ricky needs to know
+            # is identical either way: the panel is live, ask the first
+            # question.
+            CueModerator(reason=CueReason.INTRODUCTIONS_COMPLETE),
+            self._paint(state),
+        ]
+
+    def _force(
+        self, state: PanelState, event: OperatorCommand
+    ) -> tuple[PanelState, list[Command]]:
+        """Put the floor where the operator says it goes, now.
+
+        The console's backstop for anything upstream of arbitration getting it
+        wrong on stage: a question read as a statement, a classifier that named
+        the wrong panellist, a round that simply went quiet. It never asks
+        scoring *whether* to open the floor — a human watching the room has
+        already decided that.
+
+        One name is a direct grant, and `_grant(forced=True)` is what makes it
+        direct: no score floor, no freshness test, no competing candidates.
+
+        Several names is the chord — `1+2` on the console — and it is not two
+        forces in a row, because only one agent can be on the PA at a time. It
+        is the group invitation Ricky would have opened by naming them both
+        ("you two take this between you"), installed by hand and arbitrated at
+        once: scoring picks who opens, and `Invitation.admits` keeps the floor
+        inside the set while they go back and forth. Naming the whole panel is
+        an open floor, normalised by `_named_scope` exactly as a spoken
+        invitation naming everybody is.
+
+        An invitation is installed for *both* shapes, and in the one-name case
+        that is a fix rather than bookkeeping. Forcing an agent that has no
+        proposal parked asks for one (`_grant`'s forced branch) and used to
+        leave nothing for it to land in: no invitation meant nothing re-opened
+        arbitration when it arrived, so the console's last-resort key quietly
+        did nothing in precisely the situation it exists for — a panel that has
+        already gone silent. With the invitation live, `PanelRuntime.
+        _maybe_rearbitrate` grants the line when it lands, and `_grant` closes a
+        one-name invitation the moment it is answered, so this cannot run on
+        into a second turn.
+        """
+        scope = self._named_scope(state, event.agents)
+        if scope is None:
+            # Nothing named is on this panel — not a scope, and not something
+            # to guess at. See `_named_scope`.
+            return state, []
+
+        commands: list[Command] = []
+        if state.speaking:
+            # This used to clear `speaking` without stopping anything, so the
+            # agent being overruled kept its TTS stream and its place in the
+            # mixer: two voices on the PA at once, which is the one thing an
+            # override key must not cause. Every other interrupting action here
+            # (`KILL_ALL`, `HAND_TO_MODERATOR`) has always emitted this.
+            commands.append(StopSpeech(agent=state.speaking, reason=StopReason.OPERATOR))
+            state = state.with_agent(state.speaking, state=AgentState.IDLE, speaking_since=None)
+            state = replace(state, speaking=None)
+
+        state = replace(
+            state,
+            invitation=Invitation(
+                agents=scope,
+                turns_remaining=(
+                    self.config.address_invitation_turns
+                    if scope
+                    else self.config.open_invitation_turns
+                ),
+                source=InvitationSource.OPERATOR,
+                t=event.t,
+                role="operator",
+                rule="operator_force_agent",
+            ),
+            # A deliberate human act is the answer to an ambiguous address,
+            # same as `OPEN_FLOOR`.
+            address_conflict=(),
+            # A fresh invitation, so the cue latch starts clean — a cue already
+            # spent on the exchange this is rescuing would otherwise suppress
+            # the one that belongs to this invitation.
+            moderator_cued=False,
+            # The operator is restarting the exchange. The ceiling that would
+            # otherwise cue Ricky instead of granting (`_turn_yielded`) must not
+            # refuse the key that exists to overrule the floor.
+            consecutive_agent_turns=0,
+            # Abandoned, not spent — safe to retry later, same as every other
+            # action here that takes the floor somewhere else.
+            intro_queue=None,
+            closing_queue=None,
+        ).not_awaiting()
+
+        if len(scope) == 1:
+            state, granted = self._grant(state, scope[0], now=event.t, forced=True)
+            return state, commands + granted
+
+        # A group, or the whole panel. Arbitrating is `_turn_yielded`'s job and
+        # every part of it applies: scoring within the invitation, the grace
+        # beat for an agent that has not written a line yet, the cue and the
+        # fresh request when nobody has one. Reusing it is also what keeps a
+        # forced group and a spoken one from drifting apart.
+        state, arbitrated = self._turn_yielded(state, TurnYielded(t=event.t))
+        return state, commands + arbitrated
 
     # ---------------------------------------------------------------- helpers
 

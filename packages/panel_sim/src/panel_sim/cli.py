@@ -295,8 +295,11 @@ HELP = r"""
   /open \[agent] \[n]  open the floor by hand (backstop for a missed cue)
   /close          revoke a standing invitation
   /scores         show live proposal scores
-  /force <agent>  give an agent the floor now
+  /force <agent>… give an agent the floor now; several names open the floor
+                  to exactly those, as the live console's chord does
   /mute <agent>   mute / unmute an agent
+  /skipintros     declare introductions done without running them, so the
+                  panel may answer — one-way, as the live console's `i` is
   /kill           emergency silence  (/unkill to release)
   /state          dump floor state
   /quit
@@ -358,7 +361,7 @@ def main() -> None:
                         OperatorCommand(
                             t=sim.clock,
                             action=OperatorAction.OPEN_FLOOR,
-                            agent=agent or None,
+                            agents=(agent,) if agent else (),
                             turns=int(turns) if turns.strip().isdigit() else 1,
                         )
                     )
@@ -367,14 +370,25 @@ def main() -> None:
                     sim.emit(OperatorCommand(t=sim.clock, action=OperatorAction.CLOSE_FLOOR))
                     console.print("  [dim]floor closed[/]")
                 case "force" if arg:
+                    # `force wayne` or `force melia wayne` — the text-mode
+                    # equivalent of the live console's chord. See
+                    # `FloorController._force`.
+                    forced = tuple(a for a in arg.split() if a)
                     sim.emit(
-                        OperatorCommand(t=sim.clock, action=OperatorAction.FORCE_AGENT, agent=arg)
+                        OperatorCommand(
+                            t=sim.clock, action=OperatorAction.FORCE_AGENT, agents=forced
+                        )
                     )
                 case "mute" if arg:
                     muted = sim.state.agents[arg].muted
                     action = OperatorAction.UNMUTE_AGENT if muted else OperatorAction.MUTE_AGENT
-                    sim.emit(OperatorCommand(t=sim.clock, action=action, agent=arg))
+                    sim.emit(OperatorCommand(t=sim.clock, action=action, agents=(arg,)))
                     console.print(f"  [dim]{arg} {'unmuted' if muted else 'muted'}[/]")
+                case "skipintros" | "skipintro":
+                    sim.emit(
+                        OperatorCommand(t=sim.clock, action=OperatorAction.SKIP_INTRODUCTIONS)
+                    )
+                    console.print("  [dim]introductions skipped — the panel may answer[/]")
                 case "kill":
                     sim.emit(OperatorCommand(t=sim.clock, action=OperatorAction.KILL_ALL))
                 case "unkill":

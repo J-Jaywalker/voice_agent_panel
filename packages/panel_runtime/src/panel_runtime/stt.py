@@ -408,6 +408,7 @@ class _AgentSTTSession:
         events: asyncio.Queue,
         name: str,
         on_speakers: Callable[[dict[str, Any]], None] | None = None,
+        on_status: Callable[[str, bool, str], None] | None = None,
     ) -> None:
         self._speaker = speaker
         self._source = source
@@ -416,6 +417,15 @@ class _AgentSTTSession:
         self._events = events
         self._name = name
         self._on_speakers = on_speakers
+        # Called with `(channel, up, detail)` whenever this socket starts
+        # carrying transcripts or stops. The reconnect loop below is silent by
+        # design — it recovers without help — but silence is also what a dead
+        # socket looks like from the stage, and the two are indistinguishable
+        # to the one person who can do anything about it. `log.warning` does
+        # not answer that: nothing in the runtime configures logging, so it
+        # arrives unstyled and unstamped on stderr, and the recovery is a
+        # `log.info` nobody sees at all. This is the operator-facing channel.
+        self._on_status = on_status
         self._running = True
         self._started = False
         # Non-empty only on Ricky's mic, post-enrolment. This is the whole
@@ -435,10 +445,26 @@ class _AgentSTTSession:
         # deployment config, so it lives here rather than on `STTConfig`.
         self._vocab_enabled = bool(config.additional_vocab)
 
+    def _status(self, *, up: bool, detail: str = "") -> None:
+        """Tell the operator this socket changed state. Never fatal.
+
+        A console line may not be the reason a transcription session dies, so
+        a raising callback is logged and swallowed — the same standing as the
+        display server's hooks.
+        """
+        if self._on_status is None:
+            return
+        try:
+            self._on_status(self._name, up, detail)
+        except Exception:
+            # An indicator must never be the reason a socket dies.
+            log.exception("stt[%s]: on_status raised", self._name)
+
     async def run(self) -> None:
         backoff = self._config.reconnect_initial_s
         while self._running:
             self._started = False
+            reason = "closed by the server"
             try:
                 await self._session()
             except _VocabRejected as exc:
@@ -452,13 +478,21 @@ class _AgentSTTSession:
                     exc,
                 )
                 self._vocab_enabled = False
+                # No `_status` call: this reconnects within milliseconds and
+                # never reached `RecognitionStarted`, so it was never up. The
+                # `_status(up=True)` that follows is the whole story.
                 continue  # config change, not a transient fault — no backoff
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — a dead socket must not end the show
                 log.warning("stt[%s]: session failed: %s", self._name, exc)
+                reason = str(exc)
             if not self._running or self._source.eof:
+                # An ordinary shutdown. Reported as nothing at all, because
+                # "STT DOWN" in red as the operator presses Ctrl-C is a fault
+                # report for something that is not a fault.
                 return
+            self._status(up=False, detail=reason)
             # A socket that carried transcripts and then broke is a transient
             # fault, not a bad config — retry it at full speed.
             backoff = (
@@ -489,6 +523,14 @@ class _AgentSTTSession:
             # connection actually identified.
             self._turn_had_identified = False
             log.info("stt[%s]: recognition started", self._name)
+            # Reported here rather than at `websockets.connect` above: an open
+            # socket that has not been told what to recognise yet carries no
+            # transcripts, and "up" has to mean the thing the operator cares
+            # about, which is words arriving.
+            self._status(
+                up=True,
+                detail="diarised" if self._identified else "",
+            )
 
             seq_no = 0
 
@@ -694,6 +736,7 @@ class PanelSTT:
         *,
         config: STTConfig | None = None,
         api_key: str | None = None,
+        on_status: Callable[[str, bool, str], None] | None = None,
     ) -> None:
         """`channels` maps a channel id to the speaker id used on events.
 
@@ -705,7 +748,8 @@ class PanelSTT:
         A channel id is a wiring name — it names a socket, appears in logs and
         task names, and is never compared against a diarization label (see
         `identify`). `"ricky"` and the enrolled label `"Ricky"` are unrelated
-        strings.
+        strings. It is also what `on_status` is called with, so whatever the
+        operator reads on the console is that same wiring name.
         """
         if not channels:
             raise ValueError("at least one channel is required")
@@ -715,6 +759,7 @@ class PanelSTT:
         if not key:
             raise RuntimeError("SPEECHMATICS_API_KEY is not set")
         self._api_key = key
+        self._on_status = on_status
         self.events: asyncio.Queue = asyncio.Queue()
         self.sources: dict[str, PushAudioSource] = {}
         self._sessions: dict[str, _AgentSTTSession] = {}
@@ -779,6 +824,7 @@ class PanelSTT:
                 api_key=self._api_key,
                 events=self.events,
                 name=channel,
+                on_status=self._on_status,
             )
             self._sessions[channel] = session
             self._tasks.append(asyncio.create_task(session.run(), name=f"agent-stt-{channel}"))
